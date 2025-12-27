@@ -1,0 +1,221 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment
+concurrency:
+  group: "deploy"
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Run flake checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: hack
+        run: ./.github/workflows/free-disk-space.bash
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Configure Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Run flake check
+        run: nix flake check -L
+
+  build-wasm-release:
+    name: Build WASM (Release)
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Configure Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build WASM release
+        run: nix build .#mitchty-wasm-release -L
+
+      - name: Prepare site for GitHub Pages
+        run: |
+          mkdir -p _site/wasm
+          cp -r result/wasm/* _site/wasm/
+          cp index.html _site/
+          ls -lh _site/wasm/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+
+      - name: Prepare release artifact
+        run: |
+          mkdir -p dist
+          cp -r result/wasm dist/
+          ls -lh dist/wasm/
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mitchty-wasm
+          path: dist/wasm
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows (MinGW cross-compile)
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Configure Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build Windows binary
+        run: nix build .#mitchty-release-windows -L
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p dist
+          cp result/bin/mitchty.exe dist/mitchty-windows-x86_64.exe
+          chmod +x dist/mitchty-windows-x86_64.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mitchty-windows-x86_64
+          path: dist/mitchty-windows-x86_64.exe
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS
+    runs-on: macos-latest
+    needs: [check]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Configure Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build macOS binary
+        run: nix build .#mitchty-release -L
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p dist
+          cp result/bin/mitchty dist/mitchty-darwin-aarch64
+          chmod +x dist/mitchty-darwin-aarch64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mitchty-darwin-aarch64
+          path: dist/mitchty-darwin-aarch64
+          if-no-files-found: error
+
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: [build-wasm-release, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  create-prerelease:
+    name: Create Pre-Release
+    needs: [build-wasm-release, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          # Create a tarball of WASM files
+          cd artifacts/mitchty-wasm
+          tar czf ../../release/mitchty-wasm.tar.gz *
+          cd ../..
+          cp artifacts/mitchty-windows-x86_64/mitchty-windows-x86_64.exe release/
+          cp artifacts/mitchty-darwin-aarch64/mitchty-darwin-aarch64 release/
+          ls -lh release/
+
+      - name: Delete existing pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Delete the pre-release tag and release if it exists
+          if gh release view pre-release >/dev/null 2>&1; then
+            echo "Deleting existing pre-release"
+            gh release delete pre-release --yes --cleanup-tag
+          fi
+
+      - name: Create pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create pre-release \
+            --title "Latest main" \
+            --notes "Automated pre-release build from main branch
+
+          **Commit:** \`${{ github.sha }}\`
+
+          ### 🌐 WASM (Web)
+
+          Visit [mitchty.github.com](https://mitchty.github.com) to run the WASM version in your browser.
+
+          Or download \`mitchty-wasm.tar.gz\` to host it yourself.
+
+          ### 📦 Native Downloads
+
+          **macOS (Apple Silicon):**
+          \`\`\`bash
+          curl -Lo mitchty https://github.com/${{ github.repository }}/releases/download/pre-release/mitchty-darwin-aarch64
+          chmod +x mitchty
+          ./mitchty
+          \`\`\`
+
+          **Windows (x86_64):**
+          Download \`mitchty-windows-x86_64.exe\` and run it.
+
+          ---
+          ⚠️ **Note:** These are automated builds from the main development branch, they could be sus.
+
+          Windows builds are cross-compiled and largely untested but here for funsies. Let me know if they work." \
+            --prerelease \
+            release/mitchty-wasm.tar.gz \
+            release/mitchty-windows-x86_64.exe \
+            release/mitchty-darwin-aarch64

@@ -1,0 +1,27 @@
+* my wasm page setup/site
+
+Oi wots all this then? Mostly me just avoiding learning how to do any web programming by abusing wasm to make my "web page". Basically my page is now a video game. Cause... reasons I guess it seemed like a good idea at the time.
+
+** How to build this stuff?
+
+I've no clue why anyone would want to build this but me or github actions but... you're gonna need nix installed. Thats well outside of the scope of this readme.
+
+Note there is also a .envrc file so you can use direnv with nix too if you just cd into the dir.
+
+To run all checks/unit tests formatting tests etc...
+
+#+begin_src sh
+nix flake check -L
+#+end_src
+
+Linux build, should work on xorg or wayland but not well tested whatever I run is what I test with. Note that macos
+
+#+begin_src sh
+nix build .#mitchty
+#+end_src
+
+Windows x86_64 cross compilation build, note only builds on a linux system won't work on macos nix/arm basically.
+
+#+begin_src sh
+nix build .#mitchty-release-windows
+#+end_src

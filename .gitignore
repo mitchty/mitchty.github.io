@@ -1,0 +1,6 @@
+# The cachix hooks generates this file and uses it via the devShell derivation
+.pre-commit-config.yaml
+todo.org
+result
+target
+doc/adr/*.html

@@ -1,0 +1,72 @@
+[package]
+name = "mitchty"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mitchty"
+path = "src/main.rs"
+
+[dependencies]
+# The default features don't work with bevy reflect and bevy_embedded_assets it
+# seems, kept getting compilation errors and had to add
+# reflect_auto_register_static to the default feature list, this is mostly the
+# default feature set + that. I removed stuff I won't ever use like android.
+bevy = { version = "~0.17.3", default-features = false, features = [
+  "std",
+  "async_executor",
+  "animation",
+  "bevy_asset",
+  # "bevy_audio",
+  "bevy_color",
+  "bevy_core_pipeline",
+  "bevy_post_process",
+  "bevy_anti_alias",
+  "bevy_gilrs",
+  "bevy_gizmos",
+  "bevy_gltf",
+  "bevy_input_focus",
+  "bevy_log",
+  "bevy_mesh_picking_backend",
+  "bevy_pbr",
+  "bevy_picking",
+  "bevy_render",
+  "bevy_scene",
+  "bevy_image",
+  "bevy_mesh",
+  "bevy_camera",
+  "bevy_light",
+  "bevy_shader",
+  "bevy_sprite",
+  "bevy_sprite_picking_backend",
+  "bevy_sprite_render",
+  "bevy_state",
+  "bevy_text",
+  "bevy_ui",
+  "bevy_ui_picking_backend",
+  "bevy_ui_render",
+  "bevy_window",
+  "bevy_winit",
+  "custom_cursor",
+  "default_font",
+  "hdr",
+  "ktx2",
+  "multi_threaded",
+  "png",
+  "smaa_luts",
+  "sysinfo_plugin",
+  "tonemapping_luts",
+  "vorbis",
+  "webgl2",
+  "x11",
+  "wayland",
+  "debug",
+  "zstd_rust",
+  "reflect_auto_register",
+  "reflect_auto_register_static",
+  #  "embedded_watcher",
+] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.7"
