@@ -220,24 +220,29 @@
         #
         # I can rewrite the commit history to fix it at that point if things
         # fail or not.
-        git-hooks-check = inputs.git-hooks.lib.${system}.run {
-          src = ./.;
-          tools = hookTools;
-          hooks = {
-            nix-flake-check = {
-              enable = true;
-              name = "nix-flake-check";
-              entry = "${pkgs.nix}/bin/nix flake check -L";
-              language = "system";
-              pass_filenames = false;
-              stages = [ "pre-push" ];
-            };
-            # Make sure code is formatted in pre-commit
-            # Note: We use the formatter check separately, so we disable this
-            # in the git-hooks check to avoid sandbox timestamp issues
-            treefmt.enable = false;
-          };
-        };
+        #
+        # TODO: Need to brain on how to do this with syncing my git clone around
+        # on separate machines, the pre-hook gets data that points to the local
+        # git store. Thinking I'll need to have mutagen not sync .git/hooknames
+        # directly for now until I get yeet working
+        # git-hooks-check = inputs.git-hooks.lib.${system}.run {
+        #   src = ./.;
+        #   tools = hookTools;
+        #   hooks = {
+        #     nix-flake-check = {
+        #       enable = true;
+        #       name = "nix-flake-check";
+        #       entry = "${pkgs.nix}/bin/nix flake check -L";
+        #       language = "system";
+        #       pass_filenames = false;
+        #       stages = [ "pre-push" ];
+        #     };
+        #     # Make sure code is formatted in pre-commit
+        #     # Note: We use the formatter check separately, so we disable this
+        #     # in the git-hooks check to avoid sandbox timestamp issues
+        #     treefmt.enable = false;
+        #   };
+        # };
 
         # Common arguments can be set here to avoid repeating them later
         commonArgs = {
@@ -632,7 +637,8 @@
       {
         checks = {
           formatter = treefmtEval.config.build.check self;
-          git-hooks = git-hooks-check;
+          # TODO: see above comment
+          # git-hooks = git-hooks-check;
           # Build the crates as part of `nix flake check` for convenience
           inherit mitchty;
 
@@ -912,11 +918,10 @@
             ++ commonArgs.nativeBuildInputs
           );
 
-          # Install git hooks when entering the dev shell
-          shellHook = ''
-            ${git-hooks-check.shellHook}
-            export BEVY_ASSET_PATH=$(pwd)/crates/mitchty/src/assets
-          '';
+          # TODO: once hook syncing is working re-enable
+          # shellHook = ''
+          #   ${git-hooks-check.shellHook}
+          # '';
 
           # Make sure eglot+etc.. pick the right rust-src for eglot+lsp mode stuff using direnv
           RUST_SRC_PATH = "${stableRust}/lib/rustlib/src/rust/library";

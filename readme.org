@@ -1,6 +1,10 @@
-* my wasm page setup/site
+* Oi wots all this then?
 
-Oi wots all this then? Mostly me just avoiding learning how to do any web programming by abusing wasm to make my "web page". Basically my page is now a video game. Cause... reasons I guess it seemed like a good idea at the time.
+Mostly me just avoiding learning how to do any web programming by abusing wasm to make a "web page". Basically my page is now a video game. Cause... reasons I guess it seemed like a good idea at the time.
+
+[[https://mitchty.github.io][View things in your browser here]]
+
+Note this is basically a "cross platform" game essentially. Thus yes it can compile to windows/macos/linux binaries as well. Technically ios/android could be setup too but I've no need for such things if the wasm build works.
 
 ** How to build this stuff?
 
