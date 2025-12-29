@@ -20,6 +20,14 @@ struct Rotator {
     base_speed: Vec3,
 }
 
+/// Marker component for the FPS text entity
+#[derive(Component)]
+struct FpsText;
+
+/// Marker component to indicate FPS should be displayed and updated
+#[derive(Component)]
+struct ShowFps;
+
 fn main() {
     // Set up better panic messages for WASM for when this stuff seems to not
     // work or I manage to use a library that won't run on it without paying
@@ -31,8 +39,20 @@ fn main() {
         .add_plugins(assets::create_default_plugins())
         .add_plugins(AssetConfigPlugin)
         .insert_resource(ClearColor(Color::BLACK))
-        .add_systems(Startup, setup)
-        .add_systems(Update, (animate_materials, rotate_entities))
+        .add_systems(Startup, (setup, setup_fps_ui))
+        .add_systems(
+            Update,
+            (
+                animate_materials,
+                rotate_entities,
+                toggle_fps_display,
+                update_fps_display
+                    .run_if(any_with_component::<ShowFps>)
+                    .run_if(bevy::time::common_conditions::on_timer(
+                        std::time::Duration::from_secs_f32(0.5),
+                    )),
+            ),
+        )
         .run();
 }
 
@@ -80,6 +100,7 @@ fn setup(
     }
 }
 
+/// System to enable the cube materials to animate over time
 fn animate_materials(
     material_handles: Query<&MeshMaterial3d<StandardMaterial>>,
     time: Res<Time>,
@@ -94,6 +115,7 @@ fn animate_materials(
     }
 }
 
+/// System to rotate all the cubes over every axis independently and randomly
 fn rotate_entities(mut query: Query<(&mut Transform, &mut Rotator)>, time: Res<Time>) {
     let mut rng = rand::rng();
     let delta = time.delta_secs();
@@ -130,5 +152,57 @@ fn rotate_entities(mut query: Query<(&mut Transform, &mut Rotator)>, time: Res<T
         transform.rotate_x(rotator.base_speed.x * delta);
         transform.rotate_y(rotator.base_speed.y * delta);
         transform.rotate_z(rotator.base_speed.z * delta);
+    }
+}
+
+/// System to start an text overlay for fps
+fn setup_fps_ui(mut commands: Commands) {
+    commands.spawn((
+        Text::new("0.0 fps"),
+        TextFont {
+            font_size: 20.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.0, 1.0, 0.0)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(10.0),
+            right: Val::Px(10.0),
+            ..default()
+        },
+        Visibility::Hidden,
+        FpsText,
+    ));
+}
+
+/// Toggle ShowFps marker component to control systems that display the fps text
+/// Keyboard input of f toggles this on/off. The marker entity is not created by default.
+fn toggle_fps_display(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    fps_text_query: Query<(Entity, Has<ShowFps>), With<FpsText>>,
+    mut commands: Commands,
+) {
+    if keyboard.just_pressed(KeyCode::KeyF) {
+        for (entity, has_show_fps) in fps_text_query.iter() {
+            if has_show_fps {
+                commands.entity(entity).remove::<ShowFps>();
+                commands.entity(entity).insert(Visibility::Hidden);
+            } else {
+                commands.entity(entity).insert(ShowFps);
+                commands.entity(entity).insert(Visibility::Visible);
+            }
+        }
+    }
+}
+
+// Iff we have the ShowFps marker component hanging around, update the fps text.
+fn update_fps_display(
+    time: Res<Time>,
+    mut fps_text_query: Query<&mut Text, (With<FpsText>, With<ShowFps>)>,
+) {
+    let fps = 1.0 / time.delta_secs();
+
+    for mut text in fps_text_query.iter_mut() {
+        text.0 = format!("{:.1} fps", fps);
     }
 }
