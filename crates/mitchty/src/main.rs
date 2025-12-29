@@ -2,12 +2,22 @@ mod assets;
 
 use assets::{AssetConfigPlugin, asset_path};
 use bevy::prelude::*;
+use rand::Rng;
+
+/// Absolute rotation speed
+const SPEED: f32 = 2.25;
+/// Minimum rotation speed in radians per second
+const MIN_SPEED: f32 = -SPEED;
+/// Maximum rotation speed in radians per second
+const MAX_SPEED: f32 = SPEED;
+/// Golden angle for rotation calculations
+const GOLDEN_ANGLE: f32 = 137.507_77;
 
 /// Marker component for entities that should rotate
 #[derive(Component)]
 struct Rotator {
-    /// Rotation speed in radians per second
-    speed: f32,
+    /// Base rotation speed in radians per second for each axis (x, y, z)
+    base_speed: Vec3,
 }
 
 fn main() {
@@ -48,16 +58,22 @@ fn setup(
 
     let cube = meshes.add(Cuboid::new(0.5, 0.5, 0.5));
 
-    const GOLDEN_ANGLE: f32 = 137.507_77;
-
     let mut hsla = Hsla::hsl(0.0, 1.0, 0.5);
+    let mut rng = rand::rng();
+
     for x in -1..2 {
         for z in -1..2 {
+            let base_speed = Vec3::new(
+                rng.random_range(MIN_SPEED..=MAX_SPEED),
+                rng.random_range(MIN_SPEED..=MAX_SPEED),
+                rng.random_range(MIN_SPEED..=MAX_SPEED),
+            );
+
             commands.spawn((
                 Mesh3d(cube.clone()),
                 MeshMaterial3d(materials.add(Color::from(hsla))),
                 Transform::from_translation(Vec3::new(x as f32, 0.0, z as f32)),
-                Rotator { speed: 1.0 }, // Rotate at 1 radian per second
+                Rotator { base_speed },
             ));
             hsla = hsla.rotate_hue(GOLDEN_ANGLE);
         }
@@ -78,8 +94,41 @@ fn animate_materials(
     }
 }
 
-fn rotate_entities(mut query: Query<(&mut Transform, &Rotator)>, time: Res<Time>) {
-    for (mut transform, rotator) in &mut query {
-        transform.rotate_y(rotator.speed * time.delta_secs());
+fn rotate_entities(mut query: Query<(&mut Transform, &mut Rotator)>, time: Res<Time>) {
+    let mut rng = rand::rng();
+    let delta = time.delta_secs();
+
+    for (mut transform, mut rotator) in &mut query {
+        let change_x = rng.random_range(-0.1..=0.1);
+        let change_y = rng.random_range(-0.1..=0.1);
+        let change_z = rng.random_range(-0.1..=0.1);
+
+        rotator.base_speed.x += change_x;
+        rotator.base_speed.y += change_y;
+        rotator.base_speed.z += change_z;
+
+        if rotator.base_speed.x > MAX_SPEED {
+            rotator.base_speed.x = MAX_SPEED - (rotator.base_speed.x - MAX_SPEED);
+        }
+        if rotator.base_speed.y > MAX_SPEED {
+            rotator.base_speed.y = MAX_SPEED - (rotator.base_speed.y - MAX_SPEED);
+        }
+        if rotator.base_speed.z > MAX_SPEED {
+            rotator.base_speed.z = MAX_SPEED - (rotator.base_speed.z - MAX_SPEED);
+        }
+
+        if rotator.base_speed.x < MIN_SPEED {
+            rotator.base_speed.x = MIN_SPEED + (MIN_SPEED - rotator.base_speed.x);
+        }
+        if rotator.base_speed.y < MIN_SPEED {
+            rotator.base_speed.y = MIN_SPEED + (MIN_SPEED - rotator.base_speed.y);
+        }
+        if rotator.base_speed.z < MIN_SPEED {
+            rotator.base_speed.z = MIN_SPEED + (MIN_SPEED - rotator.base_speed.z);
+        }
+
+        transform.rotate_x(rotator.base_speed.x * delta);
+        transform.rotate_y(rotator.base_speed.y * delta);
+        transform.rotate_z(rotator.base_speed.z * delta);
     }
 }

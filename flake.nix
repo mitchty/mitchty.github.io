@@ -368,6 +368,16 @@
           }
         );
 
+        # Cargo artifacts for release builds
+        cargoArtifactsRelease = craneLib.buildDepsOnly (
+          commonArgs
+          // nixEnvArgs
+          // releaseArgs
+          // {
+            src = srcDeps;
+          }
+        );
+
         # Cargo artifacts for WASM builds (release)
         cargoArtifactsWasm = craneLibWasm.buildDepsOnly (
           commonArgsWasm
@@ -388,11 +398,12 @@
           }
         );
 
-        # Cargo artifacts for Darwin builds
+        # Cargo artifacts for Darwin builds (release)
         cargoArtifactsDarwin =
           if pkgs.stdenv.isDarwin then
             craneLibDarwin.buildDepsOnly (
               commonArgsDarwin
+              // releaseArgs
               // {
                 src = srcDeps;
               }
@@ -402,6 +413,7 @@
 
         cargoArtifactsWindows = craneLibWindows.buildDepsOnly (
           commonArgsWindows
+          // releaseArgs
           // {
             src = srcDeps;
           }
@@ -428,6 +440,83 @@
               (lib.fileset.maybeMissing ./crates/${crate}/Cargo.toml)
               (lib.fileset.fileFilter (file: file.hasExt "ktx2") ./.)
             ];
+          };
+
+        webServerRuntimeInputs = [
+          pkgs.python3
+        ]
+        ++ lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.system_cmds ]
+        ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.xdg-utils ];
+
+        # sh fragment to open a url on macos/linux, used in the web/web-release
+        # apps for dev testing of wasm builds.
+        openBrowserScript = ''
+          URL="http://localhost:8000"
+          if command -v open >/dev/null 2>&1; then
+            echo "open $URL"
+            open "$URL" || :
+          elif command -v xdg-open >/dev/null 2>&1; then
+            echo "xdg-open $URL"
+            xdg-open "$URL" || :
+          else
+            echo "unsure how to open a browser programmatically on this os."
+            echo "in your browser of choice manually open: $URL"
+          fi
+        '';
+
+        # Function to cover building local testing web app scripts for
+        # debug/release builds in web/web-release apps.
+        mkWebServerApp =
+          name: wasmPackage: includeAssets:
+          let
+            buildType = if includeAssets then " debug build" else " release build";
+            assetCopyScript =
+              if includeAssets then
+                ''
+                  echo "copying assets for debug build"
+                  cp -rv ${./crates/mitchty/src/assets} "$TMPDIR/assets"
+                  chmod -R u+w "$TMPDIR/assets"
+                ''
+              else
+                ''
+                  # nop
+                '';
+          in
+          pkgs.writeShellApplication {
+            inherit name;
+            runtimeInputs = webServerRuntimeInputs;
+            text = ''
+              set -e
+              # Create temporary directory for serving
+              TMPDIR=$(mktemp -d)
+              trap 'rm -rf "$TMPDIR"' EXIT TERM INT QUIT
+
+              echo "building wasm files for${buildType}"
+              mkdir -p "$TMPDIR/wasm"
+              cp -rv ${wasmPackage}/wasm/* "$TMPDIR/wasm/"
+              cp ${./index.html} "$TMPDIR/index.html"
+
+              ${assetCopyScript}
+
+              echo "starting local webserver at http://localhost:8000"
+              echo "press Ctrl+C to stop"
+
+              cd "$TMPDIR"
+
+              # Start server in background
+              python3 -m http.server 8000 &
+              SERVER_PID=$!
+              trap 'kill $SERVER_PID 2>/dev/null || true; rm -rf "$TMPDIR"' EXIT
+
+              # Give the server a bit to start before trying to open a browser
+              # to it.
+              sleep 1
+
+              ${openBrowserScript}
+
+              # Block on the python webserver.
+              wait $SERVER_PID
+            '';
           };
 
         nixEnvArgs = {
@@ -467,13 +556,15 @@
 
         # Optimized LTO build with release profile
         mitchty-lto = craneLib.buildPackage (
-          individualCrateArgs
+          commonArgs
           // nixEnvArgs
           // releaseArgs
           // {
             pname = "mitchty";
+            cargoArtifacts = cargoArtifactsRelease;
             cargoExtraArgs = "-p mitchty";
             src = fileSetForCrate ./crates/mitchty;
+            doCheck = false;
           }
         );
 
@@ -593,6 +684,7 @@
           if pkgs.stdenv.isDarwin then
             craneLibDarwin.buildPackage (
               commonArgsDarwin
+              // releaseArgs
               // {
                 pname = "mitchty-release";
                 version = version;
@@ -618,6 +710,7 @@
 
         mitchty-release-windows = craneLibWindows.buildPackage (
           commonArgsWindows
+          // releaseArgs
           // {
             pname = "mitchty-release";
             version = version;
@@ -639,8 +732,6 @@
           formatter = treefmtEval.config.build.check self;
           # TODO: see above comment
           # git-hooks = git-hooks-check;
-          # Build the crates as part of `nix flake check` for convenience
-          inherit mitchty;
 
           # Run clippy (and deny all warnings) on the workspace source,
           # again, reusing the dependency artifacts from above.
@@ -789,37 +880,7 @@
           # nix run .#web
           web = {
             type = "app";
-            program = "${
-              pkgs.writeShellApplication {
-                name = "web";
-                runtimeInputs = [ pkgs.python3 ];
-                text = ''
-                  set -e
-                  # Create temporary directory for serving
-                  TMPDIR=$(mktemp -d)
-                  trap 'rm -rf "$TMPDIR"' EXIT
-
-                  echo "Preparing WASM files..."
-                  mkdir -p "$TMPDIR/wasm"
-                  cp -rv ${mitchty-wasm}/wasm/* "$TMPDIR/wasm/"
-                  cp ${./index.html} "$TMPDIR/index.html"
-
-                  # Copy assets directory for HTTP loading
-                  echo "Copying assets..."
-                  cp -rv ${./crates/mitchty/src/assets} "$TMPDIR/assets"
-                  chmod -R u+w "$TMPDIR/assets"
-
-                  echo ""
-                  echo "Starting local server at http://localhost:8000"
-                  echo "Open http://localhost:8000 in your browser"
-                  echo "Press Ctrl+C to stop"
-                  echo ""
-
-                  cd "$TMPDIR"
-                  python3 -m http.server 8000
-                '';
-              }
-            }/bin/web";
+            program = "${mkWebServerApp "web" mitchty-wasm true}/bin/web";
             meta = {
               description = "Serve WASM build locally for testing";
               mainProgram = "web";
@@ -829,35 +890,7 @@
           # nix run .#web-release
           web-release = {
             type = "app";
-            program = "${
-              pkgs.writeShellApplication {
-                name = "web-release";
-                runtimeInputs = [ pkgs.python3 ];
-                text = ''
-                  set -e
-                  # Create temporary directory for serving
-                  TMPDIR=$(mktemp -d)
-                  trap 'rm -rf "$TMPDIR"' EXIT
-
-                  echo "Preparing WASM files (release build)..."
-                  mkdir -p "$TMPDIR/wasm"
-                  cp -rv ${mitchty-wasm-release}/wasm/* "$TMPDIR/wasm/"
-                  cp ${./index.html} "$TMPDIR/index.html"
-
-                  # Note: Assets are embedded in the WASM binary for release builds
-                  # No need to copy assets directory
-
-                  echo ""
-                  echo "Starting local server at http://localhost:8000"
-                  echo "Open http://localhost:8000 in your browser"
-                  echo "Press Ctrl+C to stop"
-                  echo ""
-
-                  cd "$TMPDIR"
-                  python3 -m http.server 8000
-                '';
-              }
-            }/bin/web-release";
+            program = "${mkWebServerApp "web-release" mitchty-wasm-release false}/bin/web-release";
             meta = {
               description = "Serve WASM release build locally for testing";
               mainProgram = "web-release";
@@ -899,7 +932,7 @@
           packages = (
             with pkgs;
             [
-              # Bevy development tools
+              act
               adrs
               cargo-bloat
               cargo-edit

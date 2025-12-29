@@ -25,7 +25,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: hack
+        # building all this junk/checks takes slightly more than the default
+        # 17GiB of space. So stole this script from elsewhere to get enough
+        # space for this to pass consistently.
+      - name: Free some more disk space
         run: ./.github/workflows/free-disk-space.bash
 
       - name: Install Nix
