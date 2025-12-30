@@ -4,6 +4,8 @@ use assets::{AssetConfigPlugin, asset_path};
 use bevy::prelude::*;
 use rand::Rng;
 
+use bevy_old_tv_shader::prelude::*;
+
 /// Absolute rotation speed
 const SPEED: f32 = 2.25;
 /// Minimum rotation speed in radians per second
@@ -38,6 +40,7 @@ fn main() {
     App::new()
         .add_plugins(assets::create_default_plugins())
         .add_plugins(AssetConfigPlugin)
+        .add_plugins(OldTvPlugin)
         .insert_resource(ClearColor(Color::BLACK))
         .add_systems(Startup, (setup, setup_fps_ui))
         .add_systems(
@@ -65,8 +68,20 @@ fn setup(
     let diffuse_path = asset_path("environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2");
     let specular_path = asset_path("environment_maps/pisa_specular_rgb9e5_zstd.ktx2");
 
+    #[allow(clippy::field_reassign_with_default)]
+    let tv_settings = {
+        let mut tv_settings = OldTvSettings::default();
+        tv_settings.screen_shape_factor = 0.3;
+        tv_settings.rows = 192.0;
+        tv_settings.brightness = 3.0;
+        tv_settings.edges_transition_size = 0.025;
+        tv_settings.channels_mask_min = 0.1;
+        tv_settings
+    };
+
     commands.spawn((
         Camera3d::default(),
+        tv_settings,
         Transform::from_xyz(3.0, 1.0, 3.0).looking_at(Vec3::new(0.0, -0.5, 0.0), Vec3::Y),
         EnvironmentMapLight {
             diffuse_map: asset_server.load(diffuse_path),
