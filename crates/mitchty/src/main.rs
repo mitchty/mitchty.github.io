@@ -22,6 +22,14 @@ struct Rotator {
     base_speed: Vec3,
 }
 
+/// Marker component to indicate cube rotation is enabled
+#[derive(Component)]
+struct CubeRotationEnabled;
+
+/// Marker component to indicate hue animation is enabled
+#[derive(Component)]
+struct HueAnimationEnabled;
+
 /// Marker component for the FPS text entity
 #[derive(Component)]
 struct FpsText;
@@ -29,6 +37,36 @@ struct FpsText;
 /// Marker component to indicate FPS should be displayed and updated
 #[derive(Component)]
 struct ShowFps;
+
+/// Marker component to indicate camera should be rotating
+#[derive(Component)]
+struct CameraRotationEnabled;
+
+/// Marker component for the main camera to enable TV effect toggling
+#[derive(Component)]
+struct MainCamera;
+
+/// Resource for the tv shader settings, for future maybe to make it so I can
+/// change stuff in it dynamically.
+#[derive(Resource)]
+struct TvSettingsResource {
+    settings: OldTvSettings,
+}
+
+/// Marker component for camera rotation
+#[derive(Component)]
+struct RotatingCamera {
+    /// Rotation speed in radians per second (positive = clockwise when viewed from above)
+    speed: f32,
+    /// Radius of rotation around the center
+    radius: f32,
+    /// Center to rotate around
+    center: Vec3,
+    /// Current angle in radians
+    angle: f32,
+    /// Height of the camera
+    height: f32,
+}
 
 fn main() {
     // Set up better panic messages for WASM for when this stuff seems to not
@@ -41,19 +79,22 @@ fn main() {
         .add_plugins(assets::create_default_plugins())
         .add_plugins(AssetConfigPlugin)
         .add_plugins(OldTvPlugin)
-        .insert_resource(ClearColor(Color::BLACK))
+        .insert_resource(ClearColor(Color::WHITE))
         .add_systems(Startup, (setup, setup_fps_ui))
         .add_systems(
             Update,
             (
-                animate_materials,
-                rotate_entities,
+                animate_materials.run_if(any_with_component::<HueAnimationEnabled>),
+                rotate_entities.run_if(any_with_component::<CubeRotationEnabled>),
+                rotate_camera.run_if(any_with_component::<CameraRotationEnabled>),
                 toggle_fps_display,
-                update_fps_display
-                    .run_if(any_with_component::<ShowFps>)
-                    .run_if(bevy::time::common_conditions::on_timer(
-                        std::time::Duration::from_secs_f32(0.5),
-                    )),
+                toggle_camera_rotation,
+                toggle_cube_rotation,
+                toggle_hue_animation,
+                toggle_tv_effect,
+                update_fps_display.run_if(bevy::time::common_conditions::on_timer(
+                    std::time::Duration::from_secs_f32(0.5),
+                )),
             ),
         )
         .run();
@@ -71,24 +112,41 @@ fn setup(
     #[allow(clippy::field_reassign_with_default)]
     let tv_settings = {
         let mut tv_settings = OldTvSettings::default();
-        tv_settings.screen_shape_factor = 0.3;
-        tv_settings.rows = 192.0;
+        tv_settings.screen_shape_factor = 0.2;
+        tv_settings.rows = 112.0;
         tv_settings.brightness = 3.0;
         tv_settings.edges_transition_size = 0.025;
         tv_settings.channels_mask_min = 0.1;
         tv_settings
     };
 
+    let initial_pos = Vec3::new(3.0, 1.0, 3.0);
+    let center = Vec3::new(0.0, -0.5, 0.0);
+
+    commands.insert_resource(TvSettingsResource {
+        settings: tv_settings,
+    });
+
     commands.spawn((
         Camera3d::default(),
         tv_settings,
-        Transform::from_xyz(3.0, 1.0, 3.0).looking_at(Vec3::new(0.0, -0.5, 0.0), Vec3::Y),
+        Transform::from_xyz(initial_pos.x, initial_pos.y, initial_pos.z)
+            .looking_at(center, Vec3::Y),
         EnvironmentMapLight {
             diffuse_map: asset_server.load(diffuse_path),
             specular_map: asset_server.load(specular_path),
             intensity: 2_000.0,
             ..default()
         },
+        RotatingCamera {
+            speed: 0.3,
+            radius: (initial_pos.x.powi(2) + initial_pos.z.powi(2)).sqrt(),
+            center,
+            angle: initial_pos.z.atan2(initial_pos.x),
+            height: initial_pos.y,
+        },
+        CameraRotationEnabled,
+        MainCamera,
     ));
 
     let cube = meshes.add(Cuboid::new(0.5, 0.5, 0.5));
@@ -109,15 +167,17 @@ fn setup(
                 MeshMaterial3d(materials.add(Color::from(hsla))),
                 Transform::from_translation(Vec3::new(x as f32, 0.0, z as f32)),
                 Rotator { base_speed },
+                CubeRotationEnabled,
+                HueAnimationEnabled,
             ));
             hsla = hsla.rotate_hue(GOLDEN_ANGLE);
         }
     }
 }
 
-/// System to enable the cube materials to animate over time
+/// System to enable cube material animation
 fn animate_materials(
-    material_handles: Query<&MeshMaterial3d<StandardMaterial>>,
+    material_handles: Query<&MeshMaterial3d<StandardMaterial>, With<HueAnimationEnabled>>,
     time: Res<Time>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -131,7 +191,10 @@ fn animate_materials(
 }
 
 /// System to rotate all the cubes over every axis independently and randomly
-fn rotate_entities(mut query: Query<(&mut Transform, &mut Rotator)>, time: Res<Time>) {
+fn rotate_entities(
+    mut query: Query<(&mut Transform, &mut Rotator), With<CubeRotationEnabled>>,
+    time: Res<Time>,
+) {
     let mut rng = rand::rng();
     let delta = time.delta_secs();
 
@@ -170,10 +233,45 @@ fn rotate_entities(mut query: Query<(&mut Transform, &mut Rotator)>, time: Res<T
     }
 }
 
-/// System to start an text overlay for fps
+/// System to rotate the camera around a center point
+fn rotate_camera(
+    time: Res<Time>,
+    mut query: Query<(&mut Transform, &mut RotatingCamera), With<CameraRotationEnabled>>,
+) {
+    for (mut transform, mut camera) in query.iter_mut() {
+        camera.angle += camera.speed * time.delta_secs();
+
+        let x = camera.center.x + camera.radius * camera.angle.cos();
+        let z = camera.center.z + camera.radius * camera.angle.sin();
+
+        transform.translation = Vec3::new(x, camera.height, z);
+
+        *transform = transform.looking_at(camera.center, Vec3::Y);
+    }
+}
+
+/// Toggle CameraRotationEnabled marker component to control camera rotation
+/// r toggles on/off
+fn toggle_camera_rotation(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    camera_query: Query<(Entity, Has<CameraRotationEnabled>), With<RotatingCamera>>,
+    mut commands: Commands,
+) {
+    if keyboard.just_pressed(KeyCode::KeyR) {
+        for (entity, has_rotation_enabled) in camera_query.iter() {
+            if has_rotation_enabled {
+                commands.entity(entity).remove::<CameraRotationEnabled>();
+            } else {
+                commands.entity(entity).insert(CameraRotationEnabled);
+            }
+        }
+    }
+}
+
+/// System to spawn the fps text entity
 fn setup_fps_ui(mut commands: Commands) {
     commands.spawn((
-        Text::new("0.0 fps"),
+        Text::new(""),
         TextFont {
             font_size: 20.0,
             ..default()
@@ -185,13 +283,12 @@ fn setup_fps_ui(mut commands: Commands) {
             right: Val::Px(10.0),
             ..default()
         },
-        Visibility::Hidden,
         FpsText,
     ));
 }
 
 /// Toggle ShowFps marker component to control systems that display the fps text
-/// Keyboard input of f toggles this on/off. The marker entity is not created by default.
+/// f toggles on/off
 fn toggle_fps_display(
     keyboard: Res<ButtonInput<KeyCode>>,
     fps_text_query: Query<(Entity, Has<ShowFps>), With<FpsText>>,
@@ -201,23 +298,86 @@ fn toggle_fps_display(
         for (entity, has_show_fps) in fps_text_query.iter() {
             if has_show_fps {
                 commands.entity(entity).remove::<ShowFps>();
-                commands.entity(entity).insert(Visibility::Hidden);
             } else {
                 commands.entity(entity).insert(ShowFps);
-                commands.entity(entity).insert(Visibility::Visible);
             }
         }
     }
 }
 
-// Iff we have the ShowFps marker component hanging around, update the fps text.
+/// System to update fps display when toggled
 fn update_fps_display(
     time: Res<Time>,
-    mut fps_text_query: Query<&mut Text, (With<FpsText>, With<ShowFps>)>,
+    mut fps_text_query: Query<&mut Text, With<FpsText>>,
+    show_fps_query: Query<(), With<ShowFps>>,
 ) {
-    let fps = 1.0 / time.delta_secs();
+    // Only update if ShowFps marker exists
+    if show_fps_query.is_empty() {
+        // Clear the text when FPS display is off
+        for mut text in fps_text_query.iter_mut() {
+            if !text.0.is_empty() {
+                text.0.clear();
+            }
+        }
+    } else {
+        let fps = 1.0 / time.delta_secs();
+        for mut text in fps_text_query.iter_mut() {
+            text.0 = format!("{:.1} fps", fps);
+        }
+    }
+}
 
-    for mut text in fps_text_query.iter_mut() {
-        text.0 = format!("{:.1} fps", fps);
+/// Toggle TV effect on the main camera
+/// t toggles on/off
+fn toggle_tv_effect(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    camera_query: Query<(Entity, Has<OldTvSettings>), With<MainCamera>>,
+    tv_settings: Res<TvSettingsResource>,
+    mut commands: Commands,
+) {
+    if keyboard.just_pressed(KeyCode::KeyT) {
+        for (entity, has_tv_settings) in camera_query.iter() {
+            if has_tv_settings {
+                commands.entity(entity).remove::<OldTvSettings>();
+            } else {
+                commands.entity(entity).insert(tv_settings.settings);
+            }
+        }
+    }
+}
+
+/// Toggle CubeRotationEnabled marker component to control cube rotation
+/// c toggles on/off
+fn toggle_cube_rotation(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    cube_query: Query<(Entity, Has<CubeRotationEnabled>), With<Rotator>>,
+    mut commands: Commands,
+) {
+    if keyboard.just_pressed(KeyCode::KeyC) {
+        for (entity, has_rotation_enabled) in cube_query.iter() {
+            if has_rotation_enabled {
+                commands.entity(entity).remove::<CubeRotationEnabled>();
+            } else {
+                commands.entity(entity).insert(CubeRotationEnabled);
+            }
+        }
+    }
+}
+
+/// Toggle HueAnimationEnabled marker component to control hue animation
+/// h toggles on/off
+fn toggle_hue_animation(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    cube_query: Query<(Entity, Has<HueAnimationEnabled>), With<Rotator>>,
+    mut commands: Commands,
+) {
+    if keyboard.just_pressed(KeyCode::KeyH) {
+        for (entity, has_hue_animation) in cube_query.iter() {
+            if has_hue_animation {
+                commands.entity(entity).remove::<HueAnimationEnabled>();
+            } else {
+                commands.entity(entity).insert(HueAnimationEnabled);
+            }
+        }
     }
 }

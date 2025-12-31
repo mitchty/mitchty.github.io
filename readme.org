@@ -6,6 +6,13 @@ Mostly me just avoiding learning how to do any web programming by abusing wasm t
 
 Note this is basically a "cross platform" game essentially. Thus yes it can compile to windows/macos/linux binaries as well. Technically ios/android could be setup too but I've no need for such things if the wasm build works.
 
+You can toggle effects on/off like so:
+- f toggles fps display
+- r toggles camera rotation
+- t toggles a tv overlay shader to make things look like a crt
+- c toggles cube rotation
+- h toggles hue changes
+
 ** How to build this stuff?
 
 I've no clue why anyone would want to build this but me or github actions but... you're gonna need nix installed. Thats well outside of the scope of this readme.
@@ -18,7 +25,7 @@ To run all checks/unit tests formatting tests etc...
 nix flake check -L
 #+end_src
 
-Linux build, should work on xorg or wayland but not well tested whatever I run is what I test with. Note that macos
+Linux build, should work on xorg or wayland but not well tested whatever I run is what I test with. Note that macos builds the same.
 
 #+begin_src sh
 nix build .#mitchty
