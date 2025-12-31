@@ -40,8 +40,8 @@ jobs:
       - name: Run flake check
         run: nix flake check -L
 
-  build-wasm-release:
-    name: Build WASM (Release)
+  build-wasm-lto:
+    name: Build WASM (LTO)
     runs-on: ubuntu-latest
     needs: [check]
     steps:
@@ -54,8 +54,8 @@ jobs:
       - name: Configure Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@main
 
-      - name: Build WASM release
-        run: nix build .#mitchty-wasm-release -L
+      - name: Build WASM LTO
+        run: nix build .#mitchty-wasm-lto -L
 
       - name: Prepare site for GitHub Pages
         run: |
@@ -142,7 +142,7 @@ jobs:
 
   deploy-pages:
     name: Deploy to GitHub Pages
-    needs: [build-wasm-release, build-windows, build-macos]
+    needs: [build-wasm-lto, build-windows, build-macos]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -154,7 +154,7 @@ jobs:
 
   create-prerelease:
     name: Create Pre-Release
-    needs: [build-wasm-release, build-windows, build-macos]
+    needs: [build-wasm-lto, build-windows, build-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

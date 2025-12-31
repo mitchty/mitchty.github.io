@@ -568,14 +568,14 @@
           }
         );
 
-        mitchty-wasm-release =
+        mitchty-wasm-lto =
           let
             wasmBuild = craneLibWasm.buildPackage (
               commonArgsWasm
               // nixEnvArgs
               // releaseArgs
               // {
-                pname = "mitchty-wasm-release";
+                pname = "mitchty-wasm-lto";
                 version = version;
                 cargoArtifacts = cargoArtifactsWasm;
                 cargoExtraArgs = "-p mitchty";
@@ -597,7 +597,7 @@
               }
             );
           in
-          pkgsWasm.runCommand "mitchty-wasm-release-bindgen"
+          pkgsWasm.runCommand "mitchty-wasm-lto-bindgen"
             {
               nativeBuildInputs = [
                 wasmBindgenCli
@@ -789,7 +789,7 @@
             mitchty
             mitchty-lto
             mitchty-wasm
-            mitchty-wasm-release
+            mitchty-wasm-lto
             ;
           default = mitchty;
           # Expose checks as packages for individual running with shorter names
@@ -829,7 +829,7 @@
                       mitchty
                       mitchty-lto
                       mitchty-wasm
-                      mitchty-wasm-release
+                      mitchty-wasm-lto
                     ]
                     ++ lib.optionals pkgs.stdenv.isLinux [
                       mitchty-release-windows
@@ -886,14 +886,14 @@
               mainProgram = "web";
             };
           };
-          # Serve WASM release build locally for testing
-          # nix run .#web-release
-          web-release = {
+          # Serve WASM LTO build locally for testing
+          # nix run .#web-lto
+          web-lto = {
             type = "app";
-            program = "${mkWebServerApp "web-release" mitchty-wasm-release false}/bin/web-release";
+            program = "${mkWebServerApp "web-lto" mitchty-wasm-lto false}/bin/web-lto";
             meta = {
-              description = "Serve WASM release build locally for testing";
-              mainProgram = "web-release";
+              description = "Serve WASM LTO optimized build";
+              mainProgram = "web-lto";
             };
           };
         }

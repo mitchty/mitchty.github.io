@@ -7,11 +7,12 @@ Mostly me just avoiding learning how to do any web programming by abusing wasm t
 Note this is basically a "cross platform" game essentially. Thus yes it can compile to windows/macos/linux binaries as well. Technically ios/android could be setup too but I've no need for such things if the wasm build works.
 
 You can toggle effects on/off like so:
+- d toggles a debug window (on touch screen devices a tap will do the same)
+- h toggles hue changes
 - f toggles fps display
+- c toggles cube rotation
 - r toggles camera rotation
 - t toggles a tv overlay shader to make things look like a crt
-- c toggles cube rotation
-- h toggles hue changes
 
 ** How to build this stuff?
 
