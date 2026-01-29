@@ -48,6 +48,25 @@ pub fn asset_path(path: &str) -> String {
     }
 }
 
+/// Macro to generate asset path expressions based on build profile
+/// Use this when you need a compile-time &'static str (e.g., for ShaderRef::from(&str))
+///
+/// # Examples
+/// ```
+/// use crate::asset_path_raw;
+/// let shader_ref: ShaderRef = asset_path_raw!("shaders/my_shader.wgsl").into();
+/// ```
+#[macro_export]
+macro_rules! asset_path_raw {
+    ($path:expr) => {
+        if cfg!(debug_assertions) {
+            $path
+        } else {
+            concat!("embedded://mitchty/assets/", $path)
+        }
+    };
+}
+
 /// Plugin that configures assets based on build type and platform
 pub struct AssetConfigPlugin;
 
@@ -56,6 +75,7 @@ impl Plugin for AssetConfigPlugin {
         // Only embed assets in release builds
         #[cfg(not(debug_assertions))]
         {
+            // Environment maps for the cube hues
             embedded_asset!(
                 _app,
                 "assets/environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2"
@@ -64,14 +84,25 @@ impl Plugin for AssetConfigPlugin {
                 _app,
                 "assets/environment_maps/pisa_specular_rgb9e5_zstd.ktx2"
             );
+
+            // Fonts for the 3d text thingy. I should make a 3d console/shell.... maybe?
+            embedded_asset!(_app, "assets/fonts/FiraMono-Medium.ttf");
+
+            // Shaders
+            embedded_asset!(_app, "assets/shaders/em-interference.wgsl");
+            // TODO: moooooore effects for funsies, also I should make ui for
+            // farting around with their inputs dynamically. That would be
+            // wizard.
+            // embedded_asset!(_app, "assets/shaders/fullscreen_effect.wgsl");
+            // embedded_asset!(_app, "assets/shaders/vhs-effect.wgsl");
         }
     }
 }
 
 // TODO: I might need to find out if for native I can use embedded reloading or
-// not, saw it in the feature list.
+// not, saw it in the feature list. Probably not a huge thing.
 pub fn create_default_plugins() -> bevy::app::PluginGroupBuilder {
-    // In debug builds (native only), configure AssetPlugin to load from filesystem
+    // In debug builds, configure AssetPlugin to load from the filesystem
     #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
     {
         use bevy::asset::AssetPlugin;
@@ -87,7 +118,8 @@ pub fn create_default_plugins() -> bevy::app::PluginGroupBuilder {
         })
     }
 
-    // WASM-specific configuration, basically sets window equal to the container its in size wise
+    // WASM-specific configuration, basically sets window equal to the container
+    // its in size wise
     #[cfg(target_arch = "wasm32")]
     {
         DefaultPlugins.set(WindowPlugin {
@@ -100,7 +132,7 @@ pub fn create_default_plugins() -> bevy::app::PluginGroupBuilder {
         })
     }
 
-    // Default configuration for release native builds to abuse embedding.
+    // Default configuration for release native builds to abuse embedding of assets
     #[cfg(all(not(debug_assertions), not(target_arch = "wasm32")))]
     {
         DefaultPlugins.build()

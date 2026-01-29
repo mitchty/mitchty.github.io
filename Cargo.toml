@@ -4,7 +4,7 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
-license = "Blue Oak Model License 1.0.0"
+license = "BlueOak-1.0.0"
 version = "0.0.4"
 
 [workspace.metadata.crane]
@@ -39,3 +39,7 @@ strip = "debuginfo"
 codegen-units = 1
 opt-level = "z"
 strip = "debuginfo"
+
+[patch.crates-io]
+bevy_fontmesh = { git = "https://github.com/mitchty/bevy_fontmesh", branch = "main" }
+bevy = { git = "https://github.com/mitchty/bevy", branch = "colorplane-wasm-fix-0.18" }

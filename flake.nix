@@ -1,27 +1,6 @@
 {
   description = "mitchty.github.io flake";
 
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
-
-    crane.url = "github:ipetkov/crane";
-
-    flake-utils.url = "github:numtide/flake-utils";
-
-    fenix.url = "github:nix-community/fenix";
-    treefmt-nix.url = "github:numtide/treefmt-nix";
-
-    git-hooks = {
-      url = "github:cachix/git-hooks.nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
-    advisory-db = {
-      url = "github:rustsec/advisory-db";
-      flake = false;
-    };
-  };
-
   outputs =
     { self, ... }@inputs:
     inputs.flake-utils.lib.eachDefaultSystem (
@@ -50,6 +29,7 @@
 
           overlays = [
             inputs.fenix.overlays.default
+            inputs.mitchty.overlays.cargo-unused-features
             (self: super: {
               apple-sdk-test = super.apple-sdk;
             })
@@ -86,14 +66,14 @@
         # Build wasm-bindgen-cli at the version used by Bevy
         wasmBindgenCli = pkgsWasm.rustPlatform.buildRustPackage rec {
           pname = "wasm-bindgen-cli";
-          version = "0.2.106";
+          version = "0.2.108";
 
           src = pkgsWasm.fetchCrate {
             inherit pname version;
-            hash = "sha256-M6WuGl7EruNopHZbqBpucu4RWz44/MSdv6f0zkYw+44=";
+            hash = "sha256-UsuxILm1G6PkmVw0I/JF12CRltAfCJQFOaT4hFwvR8E=";
           };
 
-          cargoHash = "sha256-ElDatyOwdKwHg3bNH/1pcxKI7LXkhsotlDPQjiLHBwA=";
+          cargoHash = "sha256-iqQiWbsKlLBiJFeqIYiXo3cqxGLSjNM8SOWXGM9u43E=";
 
           nativeBuildInputs = [ pkgsWasm.pkg-config ];
 
@@ -275,6 +255,7 @@
             ++ lib.optionals pkgs.stdenv.isDarwin [
               apple-sdk
               rustPlatform.bindgenHook
+              llvmPackages.libclang
             ];
 
           # Additional environment variables can be set directly
@@ -385,6 +366,7 @@
           // releaseArgs
           // {
             src = srcDeps;
+            cargoExtraArgs = "--features web";
           }
         );
 
@@ -395,6 +377,7 @@
           // devArgs
           // {
             src = srcDeps;
+            cargoExtraArgs = "--features web";
           }
         );
 
@@ -439,6 +422,8 @@
               (lib.fileset.fileFilter (file: file.hasExt "rs") ./crates/mitchty/src)
               (lib.fileset.maybeMissing ./crates/${crate}/Cargo.toml)
               (lib.fileset.fileFilter (file: file.hasExt "ktx2") ./.)
+              (lib.fileset.fileFilter (file: file.hasExt "ttf") ./.)
+              (lib.fileset.fileFilter (file: file.hasExt "wgsl") ./.)
             ];
           };
 
@@ -578,7 +563,7 @@
                 pname = "mitchty-wasm-lto";
                 version = version;
                 cargoArtifacts = cargoArtifactsWasm;
-                cargoExtraArgs = "-p mitchty";
+                cargoExtraArgs = "-p mitchty --features web";
                 src = fileSetForCrate ./crates/mitchty;
 
                 STUPIDNIXFLAKEHACK = version;
@@ -637,7 +622,7 @@
                 pname = "mitchty-wasm";
                 version = version;
                 cargoArtifacts = cargoArtifactsWasmDebug;
-                cargoExtraArgs = "-p mitchty";
+                cargoExtraArgs = "-p mitchty --features web";
                 src = fileSetForCrate ./crates/mitchty;
 
                 STUPIDNIXFLAKEHACK = version;
@@ -726,6 +711,35 @@
             meta = metaCommon "release windows x86_64 build";
           }
         );
+
+        cargo-deny-0_19_0 = pkgs.rustPlatform.buildRustPackage rec {
+          pname = "cargo-deny";
+          version = "0.19.0";
+
+          src = pkgs.fetchFromGitHub {
+            owner = "EmbarkStudios";
+            repo = "cargo-deny";
+            rev = version;
+            hash = "sha256-kDjRP+UXYzsXTrcsPbomtATzDVTSZqXoRXf6qqCGOZw=";
+          };
+
+          cargoHash = "sha256-Lu1KhQmsQGvzgozFTcv9/hY3ZXOuaxkv0I+QPmAdZBU=";
+
+          nativeBuildInputs = with pkgs; [ pkg-config ];
+          buildInputs = with pkgs; [ zstd ] ++ lib.optionals stdenv.hostPlatform.isDarwin [ apple-sdk ];
+
+          env = {
+            ZSTD_SYS_USE_PKG_CONFIG = true;
+          };
+
+          # Tests require network access
+          doCheck = false;
+
+          meta = with lib; {
+            description = "Cargo plugin to help you manage large dependency graphs";
+            mainProgram = "cargo-deny";
+          };
+        };
       in
       {
         checks = {
@@ -865,7 +879,7 @@
                 # ];
                 text = ''
                   set -e
-                  nix flake update
+                  ${pkgs.nix}/bin/nix flake update
                   cargo update --verbose
                   cargo upgrade --verbose
                 '';
@@ -946,6 +960,7 @@
               binaryen
               wasm-pack
             ]
+            ++ [ cargo-deny-0_19_0 ]
             ++ (lib.attrValues hookTools)
             ++ commonArgs.buildInputs
             ++ commonArgs.nativeBuildInputs
@@ -961,7 +976,35 @@
 
           # Set library path for Bevy
           LD_LIBRARY_PATH = commonArgs.LD_LIBRARY_PATH;
+
+          # Set libclang path for bindgen (needed by coreaudio-sys on macOS)
+          LIBCLANG_PATH = lib.optionalString pkgs.stdenv.isDarwin "${pkgs.llvmPackages.libclang.lib}/lib";
         };
       }
     );
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+
+    crane.url = "github:ipetkov/crane";
+
+    flake-utils.url = "github:numtide/flake-utils";
+
+    fenix.url = "github:nix-community/fenix";
+    treefmt-nix.url = "github:numtide/treefmt-nix";
+
+    git-hooks = {
+      url = "github:cachix/git-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    advisory-db = {
+      url = "github:rustsec/advisory-db";
+      flake = false;
+    };
+
+    # For overlays.cargo-unused-features overlay which gives me 2024 edition
+    # support.
+    mitchty.url = "github:mitchty/nix";
+  };
 }

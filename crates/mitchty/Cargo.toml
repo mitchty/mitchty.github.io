@@ -8,70 +8,32 @@ license.workspace = true
 name = "mitchty"
 path = "src/main.rs"
 
+# wasm/web builds should use webgl2 for now, webgpu is slow af in every browser
+# aka 4fps vs like 120 frame limited with webgl2
+#
+# That or I didn't enable webgpu right in safari/chrome/firefox I dunno.
+[features]
+web = ["bevy/webgl2"]
+
 [dependencies]
-# The default features don't work with bevy reflect and bevy_embedded_assets it
-# seems, kept getting compilation errors and had to add
-# reflect_auto_register_static to the default feature list, this is mostly the
-# default feature set + that. I removed stuff I won't ever use like android.
-bevy = { version = "~0.17.3", default-features = false, features = [
-  "std",
-  "async_executor",
-  "animation",
-  "bevy_asset",
-  # "bevy_audio",
-  "bevy_color",
-  "bevy_core_pipeline",
-  "bevy_post_process",
-  "bevy_anti_alias",
-  "bevy_gilrs",
-  "bevy_gizmos",
-  "bevy_gltf",
-  "bevy_input_focus",
-  "bevy_log",
-  "bevy_mesh_picking_backend",
-  "bevy_pbr",
-  "bevy_picking",
-  "bevy_render",
-  "bevy_scene",
-  "bevy_image",
-  "bevy_mesh",
-  "bevy_camera",
-  "bevy_light",
-  "bevy_shader",
-  "bevy_sprite",
-  "bevy_sprite_picking_backend",
-  "bevy_sprite_render",
-  "bevy_state",
-  "bevy_text",
-  "bevy_ui",
-  "bevy_ui_picking_backend",
-  "bevy_ui_render",
-  "bevy_window",
-  "bevy_winit",
-  "custom_cursor",
-  "default_font",
-  "hdr",
-  "ktx2",
-  "multi_threaded",
-  "png",
-  "smaa_luts",
-  "sysinfo_plugin",
-  "tonemapping_luts",
-  "vorbis",
-  "webgl2",
-  "x11",
-  "wayland",
-  "debug",
-  "zstd_rust",
-  "reflect_auto_register",
-  "reflect_auto_register_static",
-  #  "embedded_watcher",
+bevy = { version = "0.18.0", default-features = false, features = [
+  "ui",
+  "3d",
+  "experimental_bevy_feathers",
 ] }
 
-rand = { version = "~0.9.2" }
+rand = { version = "~0.9.2", default-features = false, features = [
+  "thread_rng",
+] }
 getrandom = { version = "~0.3.4", features = ["wasm_js"] }
-bevy_old_tv_shader = "~0.4.0"
-bevy_egui = "~0.38.0"
+clap = "~4.5.55"
+bevy_fontmesh = "0.1.4"
 
+# console_error_panic_hook is here so that the web console for js? or whatever
+# dumps out backtraces.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "~0.1.7"
+# TODO: browser detection needed at some point? I actually caught a
+# bevy_feathers bug and wasn't sure if it was safari or not. Here for future me
+# to remember to use this if needed.
+#web-sys = { version = "~0.3", features = ["Navigator", "Window"] }
