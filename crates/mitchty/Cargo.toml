@@ -25,14 +25,14 @@ bevy = { version = "0.18.0", default-features = false, features = [
 rand = { version = "~0.9.2", default-features = false, features = [
   "thread_rng",
 ] }
-getrandom = { version = "~0.3.4", features = ["wasm_js"] }
 clap = "~4.5.55"
-bevy_fontmesh = "0.1.4"
+bevy_fontmesh = "~0.1.4"
 
 # console_error_panic_hook is here so that the web console for js? or whatever
 # dumps out backtraces.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "~0.1.7"
+getrandom = { version = "~0.3.4", features = ["wasm_js"] }
 # TODO: browser detection needed at some point? I actually caught a
 # bevy_feathers bug and wasn't sure if it was safari or not. Here for future me
 # to remember to use this if needed.

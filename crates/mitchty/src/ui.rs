@@ -1,16 +1,20 @@
 use crate::fullscreen_effect::FullscreenEffectEnabled;
 use crate::{CameraRotation, CubeRotation, DragState, FpsDisplay, HueAnimation};
-use bevy::feathers::controls::{
-    ColorPlane, ColorPlaneValue, ColorSwatch, ColorSwatchValue, color_plane, color_swatch,
+use bevy::{
+    color::Hsla,
+    feathers::controls::{
+        ColorChannel, ColorPlane, ColorPlaneValue, ColorSlider, ColorSliderProps, ColorSwatch,
+        ColorSwatchValue, SliderBaseColor, color_plane, color_slider, color_swatch,
+    },
+    input::touch::TouchPhase,
+    prelude::*,
+    text::TextColor,
+    ui::{
+        AlignItems, BackgroundColor, BorderColor, FlexDirection, Interaction, JustifyContent, Node,
+        PositionType, UiRect, Val, widget::Text,
+    },
+    ui_widgets::{ValueChange, observe},
 };
-use bevy::input::touch::TouchPhase;
-use bevy::prelude::*;
-use bevy::text::TextColor;
-use bevy::ui::{
-    AlignItems, BackgroundColor, BorderColor, FlexDirection, Interaction, JustifyContent, Node,
-    PositionType, UiRect, Val, widget::Text,
-};
-use bevy::ui_widgets::{ValueChange, observe};
 
 /// Marker component to indicate TV effect is enabled
 #[allow(dead_code)]
@@ -71,6 +75,7 @@ impl Plugin for SettingsUiPlugin {
                 sync_widgets_from_clear_color,
                 manage_color_plane_parenting,
                 update_toggle_button_states,
+                sync_color_sliders_from_clear_color,
             ),
         );
     }
@@ -115,22 +120,30 @@ fn setup_ui(mut commands: Commands) {
 
 /// Unified UI toggle system handling keyboard, mouse, and touch input
 /// Only toggles when input doesn't hit UI controls (prevents event propagation issues)
+#[allow(clippy::too_many_arguments)]
 fn toggle_ui_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut touch_events: MessageReader<TouchInput>,
     ui_entity: Query<Entity, With<SettingsUiRoot>>,
     interaction_query: Query<&Interaction>,
+    ui_root_interaction: Query<&Interaction, With<SettingsUiRoot>>,
     drag_state: Res<DragState>,
     mut commands: Commands,
 ) {
     // Check for keyboard toggle (always works, regardless of UI interaction)
     let keyboard_toggle = keyboard.just_pressed(KeyCode::KeyG);
 
-    // Check if any UI element is currently being interacted with
-    let ui_is_interacted = interaction_query
-        .iter()
-        .any(|interaction| *interaction != Interaction::None);
+    // Check if any UI element is currently being interacted with, try the ui
+    // nodes first to prevent accidental clicks hitting the other systems
+    // accidentally.
+    let ui_is_interacted = if let Ok(root_interaction) = ui_root_interaction.single() {
+        *root_interaction != Interaction::None
+    } else {
+        interaction_query
+            .iter()
+            .any(|interaction| *interaction != Interaction::None)
+    };
 
     // Check for mouse click (only toggle if not on UI and not a drag)
     // A click is only valid if the mouse was released and didn't move much (< 5 pixels)
@@ -179,6 +192,7 @@ fn spawn_settings_ui(commands: &mut Commands) {
             },
             BorderColor::from(Color::srgb(0.3, 0.3, 0.3)),
             BackgroundColor(Color::srgba(0.1, 0.1, 0.1, 0.9)),
+            Interaction::None,
             SettingsUiRoot,
         ))
         .id();
@@ -228,6 +242,70 @@ fn spawn_settings_ui(commands: &mut Commands) {
         ))
         .id();
     commands.entity(root).add_child(container);
+
+    // HSL Color Sliders to help change background color.
+    let hue_label = commands
+        .spawn((TextColor(Color::srgb(0.8, 0.8, 0.8)), Text("Hue".into())))
+        .id();
+    commands.entity(root).add_child(hue_label);
+
+    let hue_slider = commands
+        .spawn((
+            color_slider(
+                ColorSliderProps {
+                    value: 0.0,
+                    channel: ColorChannel::HslHue,
+                },
+                (),
+            ),
+            observe(handle_hsl_hue_change),
+        ))
+        .id();
+    commands.entity(root).add_child(hue_slider);
+
+    let saturation_label = commands
+        .spawn((
+            TextColor(Color::srgb(0.8, 0.8, 0.8)),
+            Text("Saturation".into()),
+        ))
+        .id();
+    commands.entity(root).add_child(saturation_label);
+
+    let saturation_slider = commands
+        .spawn((
+            color_slider(
+                ColorSliderProps {
+                    value: 1.0,
+                    channel: ColorChannel::HslSaturation,
+                },
+                (),
+            ),
+            observe(handle_hsl_saturation_change),
+        ))
+        .id();
+    commands.entity(root).add_child(saturation_slider);
+
+    let lightness_label = commands
+        .spawn((
+            TextColor(Color::srgb(0.8, 0.8, 0.8)),
+            Text("Lightness".into()),
+        ))
+        .id();
+    commands.entity(root).add_child(lightness_label);
+
+    let lightness_slider = commands
+        .spawn((
+            color_slider(
+                ColorSliderProps {
+                    value: 0.5,
+                    channel: ColorChannel::HslLightness,
+                },
+                (),
+            ),
+            observe(handle_hsl_lightness_change),
+        ))
+        .id();
+    commands.entity(root).add_child(lightness_slider);
 
     // Fullscreen effect toggle row
     spawn_fullscreen_toggle_row(commands, root, true);
@@ -568,8 +646,32 @@ fn handle_plane_value_change(change: On<ValueChange<Vec2>>, mut clear_color: Res
 
 /// Observer: Handle color swatch value changes and update ClearColor
 fn handle_swatch_value_change(change: On<ValueChange<Color>>, mut clear_color: ResMut<ClearColor>) {
-    info!("ColorSwatch value changed to: {:?}", change.value);
+    trace!("ColorSwatch value changed to: {:?}", change.value);
     clear_color.0 = change.value;
+}
+
+/// Observer: Handle HSL Hue slider changes
+fn handle_hsl_hue_change(change: On<ValueChange<f32>>, mut clear_color: ResMut<ClearColor>) {
+    let mut hsla = Hsla::from(clear_color.0);
+    hsla.hue = change.value;
+    clear_color.0 = Color::from(hsla);
+    trace!("HSL Hue changed to: {}", change.value);
+}
+
+/// Observer: Handle HSL Saturation slider changes
+fn handle_hsl_saturation_change(change: On<ValueChange<f32>>, mut clear_color: ResMut<ClearColor>) {
+    let mut hsla = Hsla::from(clear_color.0);
+    hsla.saturation = change.value;
+    clear_color.0 = Color::from(hsla);
+    trace!("HSL Saturation changed to: {}", change.value);
+}
+
+/// Observer: Handle HSL Lightness slider changes
+fn handle_hsl_lightness_change(change: On<ValueChange<f32>>, mut clear_color: ResMut<ClearColor>) {
+    let mut hsla = Hsla::from(clear_color.0);
+    hsla.lightness = change.value;
+    clear_color.0 = Color::from(hsla);
+    trace!("HSL Lightness changed to: {}", change.value);
 }
 
 /// Sync widgets from ClearColor when it changes (but not during user interaction)
@@ -613,5 +715,40 @@ fn manage_color_plane_parenting(
         } else {
             Display::None
         };
+    }
+}
+
+/// Sync color sliders from the clear color
+fn sync_color_sliders_from_clear_color(
+    clear_color: Res<ClearColor>,
+    mut sliders: Query<(Entity, &ColorSlider, &mut SliderBaseColor)>,
+    mut commands: Commands,
+) {
+    if !clear_color.is_changed() {
+        return;
+    }
+
+    let hsla = Hsla::from(clear_color.0);
+
+    for (entity, slider, mut base_color) in sliders.iter_mut() {
+        base_color.0 = clear_color.0;
+        match slider.channel {
+            ColorChannel::HslHue => {
+                commands
+                    .entity(entity)
+                    .insert(bevy::ui_widgets::SliderValue(hsla.hue));
+            }
+            ColorChannel::HslSaturation => {
+                commands
+                    .entity(entity)
+                    .insert(bevy::ui_widgets::SliderValue(hsla.saturation));
+            }
+            ColorChannel::HslLightness => {
+                commands
+                    .entity(entity)
+                    .insert(bevy::ui_widgets::SliderValue(hsla.lightness));
+            }
+            _ => {}
+        }
     }
 }

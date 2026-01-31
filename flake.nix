@@ -184,7 +184,7 @@
           inherit
             # Formatters needed by treefmt
             taplo
-            nixfmt-rfc-style
+            nixfmt
             rustfmt
             # Build tools needed by nix flake check
             git
@@ -249,7 +249,7 @@
               xorg.libXrandr
               libxkbcommon
               wayland
-              pkgs.mold-wrapped
+              pkgs.mold
               pkgs.lld
             ]
             ++ lib.optionals pkgs.stdenv.isDarwin [
@@ -293,6 +293,11 @@
           CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
         };
 
+        # Macos env vars shared between the derivation environment and the devshell env
+        commonEnvDarwin = {
+          LIBCLANG_PATH = lib.optionalString pkgs.stdenv.isDarwin "${pkgs.llvmPackages.libclang.lib}/lib";
+        };
+
         # Common arguments for Darwin builds (system libraries only)
         commonArgsDarwin =
           if pkgs.stdenv.isDarwin then
@@ -307,6 +312,7 @@
                 libiconv
               ];
             }
+            // commonEnvDarwin
           else
             { };
 
@@ -682,7 +688,7 @@
                 # Don't check during cross-compilation
                 doCheck = false;
 
-                meta = metaCommon "release apple silicon build" // {
+                meta = metaCommon "release macos build" // {
                   platforms = [
                     "x86_64-darwin"
                     "aarch64-darwin"
@@ -940,51 +946,50 @@
             };
         };
 
-        devShells.default = craneLib.devShell {
-          checks = self.checks.${system};
+        devShells.default =
+          craneLib.devShell {
+            checks = self.checks.${system};
 
-          packages = (
-            with pkgs;
-            [
-              act
-              adrs
-              cargo-bloat
-              cargo-edit
-              cargo-outdated
-              cargo-unused-features
-              gitFull
-              nil
-              pandoc
-              stableRust
-              wasm-bindgen-cli
-              binaryen
-              wasm-pack
-            ]
-            ++ [ cargo-deny-0_19_0 ]
-            ++ (lib.attrValues hookTools)
-            ++ commonArgs.buildInputs
-            ++ commonArgs.nativeBuildInputs
-          );
+            packages = (
+              with pkgs;
+              [
+                act
+                adrs
+                cargo-bloat
+                cargo-edit
+                cargo-outdated
+                cargo-unused-features
+                gitFull
+                nil
+                pandoc
+                stableRust
+                wasm-bindgen-cli
+                binaryen
+                wasm-pack
+              ]
+              ++ [ cargo-deny-0_19_0 ]
+              ++ (lib.attrValues hookTools)
+              ++ commonArgs.buildInputs
+              ++ commonArgs.nativeBuildInputs
+            );
 
-          # TODO: once hook syncing is working re-enable
-          # shellHook = ''
-          #   ${git-hooks-check.shellHook}
-          # '';
+            # TODO: once hook syncing is working re-enable
+            # shellHook = ''
+            #   ${git-hooks-check.shellHook}
+            # '';
 
-          # Make sure eglot+etc.. pick the right rust-src for eglot+lsp mode stuff using direnv
-          RUST_SRC_PATH = "${stableRust}/lib/rustlib/src/rust/library";
+            # Make sure eglot+etc.. pick the right rust-src for eglot+lsp mode stuff using direnv
+            RUST_SRC_PATH = "${stableRust}/lib/rustlib/src/rust/library";
 
-          # Set library path for Bevy
-          LD_LIBRARY_PATH = commonArgs.LD_LIBRARY_PATH;
-
-          # Set libclang path for bindgen (needed by coreaudio-sys on macOS)
-          LIBCLANG_PATH = lib.optionalString pkgs.stdenv.isDarwin "${pkgs.llvmPackages.libclang.lib}/lib";
-        };
+            # Set library path for Bevy
+            LD_LIBRARY_PATH = commonArgs.LD_LIBRARY_PATH;
+          }
+          // lib.optionalAttrs pkgs.stdenv.isDarwin commonEnvDarwin;
       }
     );
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     crane.url = "github:ipetkov/crane";
 
