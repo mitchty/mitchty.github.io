@@ -1,5 +1,5 @@
 use crate::fullscreen_effect::FullscreenEffectEnabled;
-use crate::{CameraRotation, CubeRotation, DragState, FpsDisplay, HueAnimation};
+use crate::{CameraRotation, ColorState, CubeRotation, DragState, FpsDisplay, HueAnimation};
 use bevy::{
     color::Hsla,
     feathers::controls::{
@@ -16,7 +16,8 @@ use bevy::{
     ui_widgets::{ValueChange, observe},
 };
 
-/// Marker component to indicate TV effect is enabled
+/// Marker component to indicate TV effect is enabled disabled for now, I should
+/// port the wgsl shader to full screen.
 #[allow(dead_code)]
 #[derive(Component, Default)]
 pub struct TvEffectEnabled;
@@ -119,7 +120,6 @@ fn setup_ui(mut commands: Commands) {
 }
 
 /// Unified UI toggle system handling keyboard, mouse, and touch input
-/// Only toggles when input doesn't hit UI controls (prevents event propagation issues)
 #[allow(clippy::too_many_arguments)]
 fn toggle_ui_input(
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -129,14 +129,11 @@ fn toggle_ui_input(
     interaction_query: Query<&Interaction>,
     ui_root_interaction: Query<&Interaction, With<SettingsUiRoot>>,
     drag_state: Res<DragState>,
+    color_state: Res<ColorState>,
     mut commands: Commands,
 ) {
-    // Check for keyboard toggle (always works, regardless of UI interaction)
     let keyboard_toggle = keyboard.just_pressed(KeyCode::KeyG);
 
-    // Check if any UI element is currently being interacted with, try the ui
-    // nodes first to prevent accidental clicks hitting the other systems
-    // accidentally.
     let ui_is_interacted = if let Ok(root_interaction) = ui_root_interaction.single() {
         *root_interaction != Interaction::None
     } else {
@@ -145,19 +142,16 @@ fn toggle_ui_input(
             .any(|interaction| *interaction != Interaction::None)
     };
 
-    // Check for mouse click (only toggle if not on UI and not a drag)
-    // A click is only valid if the mouse was released and didn't move much (< 5 pixels)
+    // A click is only valid if the mouse was released and didn't move much about 5 pixels
     let mouse_toggle = mouse.just_released(MouseButton::Left)
         && !ui_is_interacted
         && drag_state.drag_distance < 5.0;
 
-    // Check for touch tap (only toggle if not on UI)
     let touch_toggle = touch_events
         .read()
         .any(|event| event.phase == TouchPhase::Ended)
         && !ui_is_interacted;
 
-    // Determine if we should toggle
     let should_toggle = keyboard_toggle || mouse_toggle || touch_toggle;
 
     if should_toggle {
@@ -169,15 +163,14 @@ fn toggle_ui_input(
                 commands.entity(entity).despawn();
             }
         } else {
-            // Open the menu
-            spawn_settings_ui(&mut commands);
+            // Open the menu with current background color
+            spawn_settings_ui(&mut commands, Color::from(color_state.color));
         }
     }
 }
 
 /// Spawn the complete settings UI hierarchy
-fn spawn_settings_ui(commands: &mut Commands) {
-    // Create root container
+fn spawn_settings_ui(commands: &mut Commands, current_color: Color) {
     let root = commands
         .spawn((
             Node {
@@ -197,7 +190,6 @@ fn spawn_settings_ui(commands: &mut Commands) {
         ))
         .id();
 
-    // Title
     let title = commands
         .spawn((
             TextColor(Color::srgb(0.9, 0.9, 0.9)),
@@ -206,7 +198,6 @@ fn spawn_settings_ui(commands: &mut Commands) {
         .id();
     commands.entity(root).add_child(title);
 
-    // Background Color label
     let label = commands
         .spawn((
             TextColor(Color::srgb(0.8, 0.8, 0.8)),
@@ -215,12 +206,10 @@ fn spawn_settings_ui(commands: &mut Commands) {
         .id();
     commands.entity(root).add_child(label);
 
-    // Color Swatch - Try only setting width, let widget control its own height
     let swatch = commands
         .spawn((color_swatch(()), observe(handle_swatch_value_change)))
         .id();
 
-    // Only set width to fill, let height be automatic
     commands.entity(swatch).insert(Node {
         width: Val::Percent(100.0),
         margin: UiRect::all(Val::Px(5.0)),
@@ -229,7 +218,6 @@ fn spawn_settings_ui(commands: &mut Commands) {
 
     commands.entity(root).add_child(swatch);
 
-    // Color Plane Container
     let container = commands
         .spawn((
             Node {
@@ -243,7 +231,8 @@ fn spawn_settings_ui(commands: &mut Commands) {
         .id();
     commands.entity(root).add_child(container);
 
-    // HSL Color Sliders to help change background color.
+    let hsla = Hsla::from(current_color);
+
     let hue_label = commands
         .spawn((TextColor(Color::srgb(0.8, 0.8, 0.8)), Text("Hue".into())))
         .id();
@@ -253,7 +242,7 @@ fn spawn_settings_ui(commands: &mut Commands) {
         .spawn((
             color_slider(
                 ColorSliderProps {
-                    value: 0.0,
+                    value: hsla.hue,
                     channel: ColorChannel::HslHue,
                 },
                 (),
@@ -261,6 +250,10 @@ fn spawn_settings_ui(commands: &mut Commands) {
             observe(handle_hsl_hue_change),
         ))
         .id();
+
+    commands
+        .entity(hue_slider)
+        .insert(SliderBaseColor(current_color));
     commands.entity(root).add_child(hue_slider);
 
     let saturation_label = commands
@@ -275,7 +268,7 @@ fn spawn_settings_ui(commands: &mut Commands) {
         .spawn((
             color_slider(
                 ColorSliderProps {
-                    value: 1.0,
+                    value: hsla.saturation,
                     channel: ColorChannel::HslSaturation,
                 },
                 (),
@@ -283,6 +276,10 @@ fn spawn_settings_ui(commands: &mut Commands) {
             observe(handle_hsl_saturation_change),
         ))
         .id();
+
+    commands
+        .entity(saturation_slider)
+        .insert(SliderBaseColor(current_color));
     commands.entity(root).add_child(saturation_slider);
 
     let lightness_label = commands
@@ -297,7 +294,7 @@ fn spawn_settings_ui(commands: &mut Commands) {
         .spawn((
             color_slider(
                 ColorSliderProps {
-                    value: 0.5,
+                    value: hsla.lightness,
                     channel: ColorChannel::HslLightness,
                 },
                 (),
@@ -305,28 +302,20 @@ fn spawn_settings_ui(commands: &mut Commands) {
             observe(handle_hsl_lightness_change),
         ))
         .id();
+
+    commands
+        .entity(lightness_slider)
+        .insert(SliderBaseColor(current_color));
     commands.entity(root).add_child(lightness_slider);
 
-    // Fullscreen effect toggle row
     spawn_fullscreen_toggle_row(commands, root, true);
-
-    // FPS toggle row
     spawn_fps_toggle_row(commands, root, true);
-
-    // Camera rotation toggle row
     spawn_camera_toggle_row(commands, root, true);
-
-    // Cube rotation toggle row
     spawn_cube_toggle_row(commands, root, true);
-
-    // Hue animation toggle row
     spawn_hue_toggle_row(commands, root, true);
-
-    // Close menu toggle row
     spawn_close_menu_toggle(commands, root);
 }
 
-/// Helper to spawn fullscreen effect toggle row
 fn spawn_fullscreen_toggle_row(commands: &mut Commands, parent: Entity, enabled: bool) {
     spawn_toggle_row_generic::<FullscreenToggle>(
         commands,
@@ -336,27 +325,22 @@ fn spawn_fullscreen_toggle_row(commands: &mut Commands, parent: Entity, enabled:
     );
 }
 
-/// Helper to spawn FPS toggle row
 fn spawn_fps_toggle_row(commands: &mut Commands, parent: Entity, enabled: bool) {
     spawn_toggle_row_generic::<FpsToggle>(commands, parent, "FPS Display [F]", enabled);
 }
 
-/// Helper to spawn camera toggle row
 fn spawn_camera_toggle_row(commands: &mut Commands, parent: Entity, enabled: bool) {
     spawn_toggle_row_generic::<CameraToggle>(commands, parent, "Camera Rotation [R]", enabled);
 }
 
-/// Helper to spawn cube toggle row
 fn spawn_cube_toggle_row(commands: &mut Commands, parent: Entity, enabled: bool) {
     spawn_toggle_row_generic::<CubeToggle>(commands, parent, "Cube Rotation [C]", enabled);
 }
 
-/// Helper to spawn hue toggle row
 fn spawn_hue_toggle_row(commands: &mut Commands, parent: Entity, enabled: bool) {
     spawn_toggle_row_generic::<HueToggle>(commands, parent, "Hue Animation [H]", enabled);
 }
 
-/// Generic toggle row spawner
 fn spawn_toggle_row_generic<T: Component + Default>(
     commands: &mut Commands,
     parent: Entity,
@@ -401,7 +385,6 @@ fn spawn_toggle_row_generic<T: Component + Default>(
         .id();
     commands.entity(row).add_child(toggle_button);
 
-    // Toggle knob
     let knob = commands
         .spawn((
             Node {
@@ -414,7 +397,6 @@ fn spawn_toggle_row_generic<T: Component + Default>(
         .id();
     commands.entity(toggle_button).add_child(knob);
 
-    // Label
     let label = commands
         .spawn((
             TextColor(Color::srgb(0.9, 0.9, 0.9)),
@@ -436,7 +418,6 @@ fn spawn_close_menu_toggle(commands: &mut Commands, parent: Entity) {
         .id();
     commands.entity(parent).add_child(row);
 
-    // Close menu button
     let toggle_button = commands
         .spawn((
             Node {
@@ -456,7 +437,6 @@ fn spawn_close_menu_toggle(commands: &mut Commands, parent: Entity) {
         .id();
     commands.entity(row).add_child(toggle_button);
 
-    // Toggle knob
     let knob = commands
         .spawn((
             Node {
@@ -469,7 +449,6 @@ fn spawn_close_menu_toggle(commands: &mut Commands, parent: Entity) {
         .id();
     commands.entity(toggle_button).add_child(knob);
 
-    // Label
     let label = commands
         .spawn((
             TextColor(Color::srgb(0.9, 0.9, 0.9)),
@@ -631,72 +610,71 @@ fn update_toggle_button_states(
     }
 }
 
-/// Observer: Handle color plane value changes and update ClearColor
-fn handle_plane_value_change(change: On<ValueChange<Vec2>>, mut clear_color: ResMut<ClearColor>) {
+/// Observer: Handle color plane value changes and update ColorState
+fn handle_plane_value_change(change: On<ValueChange<Vec2>>, mut color_state: ResMut<ColorState>) {
     // ColorPlane::RedGreen uses x=red, y=green
-    // We'll keep the existing blue component
-    let srgba = clear_color.0.to_srgba();
-    let new_color = Color::srgb(change.value.x, change.value.y, srgba.blue);
+    // We'll keep the existing blue component until I learn how this works.
+    let new_color = bevy::color::Srgba::rgb(change.value.x, change.value.y, color_state.color.blue);
     trace!(
-        "ColorPlane value changed to: {:?}, updating ClearColor to: {:?}",
+        "ColorPlane value changed to: {:?}, updating ColorState to: {:?}",
         change.value, new_color
     );
-    clear_color.0 = new_color;
+    color_state.color = new_color;
 }
 
-/// Observer: Handle color swatch value changes and update ClearColor
-fn handle_swatch_value_change(change: On<ValueChange<Color>>, mut clear_color: ResMut<ClearColor>) {
+/// Observer: Handle color swatch value changes and update ColorState
+fn handle_swatch_value_change(change: On<ValueChange<Color>>, mut color_state: ResMut<ColorState>) {
     trace!("ColorSwatch value changed to: {:?}", change.value);
-    clear_color.0 = change.value;
+    color_state.color = change.value.to_srgba();
 }
 
 /// Observer: Handle HSL Hue slider changes
-fn handle_hsl_hue_change(change: On<ValueChange<f32>>, mut clear_color: ResMut<ClearColor>) {
-    let mut hsla = Hsla::from(clear_color.0);
+fn handle_hsl_hue_change(change: On<ValueChange<f32>>, mut color_state: ResMut<ColorState>) {
+    let mut hsla = Hsla::from(Color::from(color_state.color));
     hsla.hue = change.value;
-    clear_color.0 = Color::from(hsla);
+    color_state.color = Color::from(hsla).to_srgba();
     trace!("HSL Hue changed to: {}", change.value);
 }
 
 /// Observer: Handle HSL Saturation slider changes
-fn handle_hsl_saturation_change(change: On<ValueChange<f32>>, mut clear_color: ResMut<ClearColor>) {
-    let mut hsla = Hsla::from(clear_color.0);
+fn handle_hsl_saturation_change(change: On<ValueChange<f32>>, mut color_state: ResMut<ColorState>) {
+    let mut hsla = Hsla::from(Color::from(color_state.color));
     hsla.saturation = change.value;
-    clear_color.0 = Color::from(hsla);
+    color_state.color = Color::from(hsla).to_srgba();
     trace!("HSL Saturation changed to: {}", change.value);
 }
 
 /// Observer: Handle HSL Lightness slider changes
-fn handle_hsl_lightness_change(change: On<ValueChange<f32>>, mut clear_color: ResMut<ClearColor>) {
-    let mut hsla = Hsla::from(clear_color.0);
+fn handle_hsl_lightness_change(change: On<ValueChange<f32>>, mut color_state: ResMut<ColorState>) {
+    let mut hsla = Hsla::from(Color::from(color_state.color));
     hsla.lightness = change.value;
-    clear_color.0 = Color::from(hsla);
+    color_state.color = Color::from(hsla).to_srgba();
     trace!("HSL Lightness changed to: {}", change.value);
 }
 
-/// Sync widgets from ClearColor when it changes (but not during user interaction)
+/// Sync widgets from ColorState when it changes (but not during user interaction)
 fn sync_widgets_from_clear_color(
-    clear_color: Res<ClearColor>,
+    color_state: Res<ColorState>,
     mut swatches: Query<(&mut ColorSwatchValue, &Interaction), With<ColorSwatch>>,
     mut planes: Query<(&mut ColorPlaneValue, &Interaction), With<ColorPlane>>,
 ) {
-    if !clear_color.is_changed() {
+    if !color_state.is_changed() {
         return;
     }
 
-    let srgba = clear_color.0.to_srgba();
-
-    // Update swatch (only if not being interacted with)
     for (mut swatch_value, interaction) in swatches.iter_mut() {
         if *interaction == Interaction::None {
-            swatch_value.0 = clear_color.0;
+            swatch_value.0 = Color::from(color_state.color);
         }
     }
 
-    // Update color plane - always update to keep visual indicator in sync
     for (mut plane_value, _interaction) in planes.iter_mut() {
         // ColorPlane::RedGreen: x=red, y=green, z=blue (fixed third component)
-        plane_value.0 = Vec3::new(srgba.red, srgba.green, srgba.blue);
+        plane_value.0 = Vec3::new(
+            color_state.color.red,
+            color_state.color.green,
+            color_state.color.blue,
+        );
     }
 }
 
@@ -718,37 +696,46 @@ fn manage_color_plane_parenting(
     }
 }
 
-/// Sync color sliders from the clear color
+/// Sync color sliders from the color state
 fn sync_color_sliders_from_clear_color(
-    clear_color: Res<ClearColor>,
-    mut sliders: Query<(Entity, &ColorSlider, &mut SliderBaseColor)>,
+    color_state: Res<ColorState>,
+    mut sliders: Query<(
+        Entity,
+        &ColorSlider,
+        &mut SliderBaseColor,
+        Option<&Interaction>,
+    )>,
     mut commands: Commands,
 ) {
-    if !clear_color.is_changed() {
+    if !color_state.is_changed() {
         return;
     }
 
-    let hsla = Hsla::from(clear_color.0);
+    let hsla = Hsla::from(Color::from(color_state.color));
 
-    for (entity, slider, mut base_color) in sliders.iter_mut() {
-        base_color.0 = clear_color.0;
-        match slider.channel {
-            ColorChannel::HslHue => {
-                commands
-                    .entity(entity)
-                    .insert(bevy::ui_widgets::SliderValue(hsla.hue));
+    for (entity, slider, mut base_color, interaction) in sliders.iter_mut() {
+        base_color.0 = Color::from(color_state.color);
+
+        let is_being_interacted = interaction.is_some_and(|i| *i != Interaction::None);
+        if !is_being_interacted {
+            match slider.channel {
+                ColorChannel::HslHue => {
+                    commands
+                        .entity(entity)
+                        .insert(bevy::ui_widgets::SliderValue(hsla.hue));
+                }
+                ColorChannel::HslSaturation => {
+                    commands
+                        .entity(entity)
+                        .insert(bevy::ui_widgets::SliderValue(hsla.saturation));
+                }
+                ColorChannel::HslLightness => {
+                    commands
+                        .entity(entity)
+                        .insert(bevy::ui_widgets::SliderValue(hsla.lightness));
+                }
+                _ => {}
             }
-            ColorChannel::HslSaturation => {
-                commands
-                    .entity(entity)
-                    .insert(bevy::ui_widgets::SliderValue(hsla.saturation));
-            }
-            ColorChannel::HslLightness => {
-                commands
-                    .entity(entity)
-                    .insert(bevy::ui_widgets::SliderValue(hsla.lightness));
-            }
-            _ => {}
         }
     }
 }

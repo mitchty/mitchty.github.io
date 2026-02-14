@@ -12,8 +12,15 @@ path = "src/main.rs"
 # aka 4fps vs like 120 frame limited with webgl2
 #
 # That or I didn't enable webgpu right in safari/chrome/firefox I dunno.
+#
+# I'll stick to webgl until bevy nukes support for it in a year or two according
+# to discord chatter.
 [features]
-web = ["bevy/webgl2"]
+default = ["egui", "webgl"]
+webgl = ["bevy/webgl2"]
+webgpu = ["bevy/webgpu"]
+egui = ["dep:bevy_egui"]
+feathers = []
 
 [dependencies]
 bevy = { version = "0.18.0", default-features = false, features = [
@@ -25,14 +32,17 @@ bevy = { version = "0.18.0", default-features = false, features = [
 rand = { version = "~0.9.2", default-features = false, features = [
   "thread_rng",
 ] }
-clap = "~4.5.55"
-bevy_fontmesh = "~0.1.4"
+clap = "~4.5.58"
+bevy_fontmesh = "~0.2.0"
+bevy_egui = { version = "~0.39.1", optional = true }
 
 # console_error_panic_hook is here so that the web console for js? or whatever
 # dumps out backtraces.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "~0.1.7"
-getrandom = { version = "~0.3.4", features = ["wasm_js"] }
+# FUTURE MITCH: this is a dependency OF rand, and without the wasm_js feature
+# crap don't work. Stop uncommenting things dammit trust past mitch.
+getrandom = { version = "~0.4.1", features = ["wasm_js"] }
 # TODO: browser detection needed at some point? I actually caught a
 # bevy_feathers bug and wasn't sure if it was safari or not. Here for future me
 # to remember to use this if needed.

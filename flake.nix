@@ -372,7 +372,6 @@
           // releaseArgs
           // {
             src = srcDeps;
-            cargoExtraArgs = "--features web";
           }
         );
 
@@ -383,7 +382,6 @@
           // devArgs
           // {
             src = srcDeps;
-            cargoExtraArgs = "--features web";
           }
         );
 
@@ -569,7 +567,7 @@
                 pname = "mitchty-wasm-lto";
                 version = version;
                 cargoArtifacts = cargoArtifactsWasm;
-                cargoExtraArgs = "-p mitchty --features web";
+                cargoExtraArgs = "-p mitchty";
                 src = fileSetForCrate ./crates/mitchty;
 
                 STUPIDNIXFLAKEHACK = version;
@@ -628,7 +626,7 @@
                 pname = "mitchty-wasm";
                 version = version;
                 cargoArtifacts = cargoArtifactsWasmDebug;
-                cargoExtraArgs = "-p mitchty --features web";
+                cargoExtraArgs = "-p mitchty";
                 src = fileSetForCrate ./crates/mitchty;
 
                 STUPIDNIXFLAKEHACK = version;
@@ -746,6 +744,30 @@
             mainProgram = "cargo-deny";
           };
         };
+
+        pugio = pkgs.rustPlatform.buildRustPackage rec {
+          pname = "pugio";
+          version = "0.2.0";
+
+          src = pkgs.fetchCrate {
+            inherit pname version;
+            hash = "sha256-Eqc6Ferh5AUstigkLPRhf+xAZXFH3AEfaVjvlaPAJ/8=";
+          };
+
+          cargoHash = "sha256-RC5dPLuA32VTLk2GVFnjJ+ijl64+HYHWY6pYrIUk0Rw=";
+
+          nativeBuildInputs = with pkgs; [ pkg-config ];
+          buildInputs = with pkgs; [ ] ++ lib.optionals stdenv.hostPlatform.isDarwin [ apple-sdk ];
+
+          doCheck = false;
+
+          meta = with lib; {
+            description = "Binary size profiler for ELF, Mach-O, PE, and WASM binaries";
+            mainProgram = "pugio";
+            homepage = "https://github.com/Gnarus-G/pugio";
+            license = with licenses; [ mit ];
+          };
+        };
       in
       {
         checks = {
@@ -810,6 +832,7 @@
             mitchty-lto
             mitchty-wasm
             mitchty-wasm-lto
+            pugio
             ;
           default = mitchty;
           # Expose checks as packages for individual running with shorter names
@@ -962,12 +985,17 @@
                 gitFull
                 nil
                 pandoc
+                pugio
+                graphviz
                 stableRust
                 wasm-bindgen-cli
                 binaryen
                 wasm-pack
               ]
-              ++ [ cargo-deny-0_19_0 ]
+              ++ [
+                cargo-deny-0_19_0
+                pugio
+              ]
               ++ (lib.attrValues hookTools)
               ++ commonArgs.buildInputs
               ++ commonArgs.nativeBuildInputs

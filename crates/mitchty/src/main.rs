@@ -3,9 +3,8 @@ mod fullscreen_effect;
 mod ui;
 
 use bevy::core_pipeline::fullscreen_material::FullscreenMaterialPlugin;
-use bevy::feathers::FeathersPlugins;
-use bevy::feathers::dark_theme::create_dark_theme;
-use bevy::feathers::theme::UiTheme;
+#[cfg(feature = "feathers")]
+use bevy::feathers::{FeathersPlugins, dark_theme::create_dark_theme, theme::UiTheme};
 use bevy::prelude::*;
 
 /// Resource to hold the current background color state
@@ -134,19 +133,30 @@ fn main() {
     #[cfg(target_arch = "wasm32")]
     console_error_panic_hook::set_once();
 
-    App::new()
-        .add_plugins(assets::create_default_plugins())
+    let mut app = App::new();
+
+    app.add_plugins(assets::create_default_plugins())
         .add_plugins(AssetConfigPlugin)
-        .add_plugins(FeathersPlugins)
-        // .add_plugins(OldTvPlugin)
-        .add_plugins(SettingsUiPlugin)
         .add_plugins(FontMeshPlugin)
         .add_plugins(FullscreenMaterialPlugin::<FullscreenEffect>::default())
-        .insert_resource(ClearColor(Color::WHITE))
-        .insert_resource(UiTheme(create_dark_theme()))
+        .insert_resource(ClearColor(Color::srgb(0.5, 0.5, 0.5)))
         .insert_resource(ColorState {
-            color: Srgba::WHITE,
-        })
+            color: Srgba::gray(0.5),
+        });
+
+    // Conditionally add UI-specific plugins
+    #[cfg(feature = "egui")]
+    {
+        app.add_plugins(bevy_egui::EguiPlugin::default());
+    }
+
+    #[cfg(feature = "feathers")]
+    {
+        app.add_plugins(FeathersPlugins)
+            .insert_resource(UiTheme(create_dark_theme()));
+    }
+
+    app.add_plugins(SettingsUiPlugin)
         .init_resource::<DragState>()
         .add_systems(Startup, (setup, setup_fps_ui, setup_3d_text))
         .add_systems(
@@ -550,6 +560,8 @@ fn setup_3d_text(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let font_path = asset_path("fonts/FiraMono-Medium.ttf");
+    // let font_path = asset_path("fonts/ComicCode-Regular.otf");
+    // let font_path = asset_path("fonts/PragmataPro-Regular.ttf");
 
     let text_material = materials.add(StandardMaterial {
         base_color: Color::from(Hsla::hsl(180.0, 1.0, 0.5)),
@@ -583,20 +595,25 @@ fn setup_3d_text(
 }
 
 /// Track mouse and touch drag state for distinguishing clicks from drags
-// TODO: This setups not perfect and drag taps can catch the settings ui. I'm
-// obviously not doing something right and need to learn of a better way.
 fn track_input_drag(
     mouse: Res<ButtonInput<MouseButton>>,
     mut motion: MessageReader<CursorMoved>,
     mut touch_events: MessageReader<TouchInput>,
     mut drag_state: ResMut<DragState>,
     interaction_query: Query<&Interaction>,
+    #[cfg(feature = "egui")] egui_wants_input: Res<ui::EguiWantsInput>,
 ) {
     let ui_is_interacted = interaction_query
         .iter()
         .any(|interaction| *interaction != Interaction::None);
 
-    if ui_is_interacted {
+    // Check if egui is using the input
+    #[cfg(feature = "egui")]
+    let egui_is_using_input = egui_wants_input.wants_pointer;
+    #[cfg(not(feature = "egui"))]
+    let egui_is_using_input = false;
+
+    if ui_is_interacted || egui_is_using_input {
         drag_state.is_dragging = false;
         drag_state.drag_start = None;
         drag_state.active_touch_id = None;
