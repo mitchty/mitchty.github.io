@@ -1,8 +1,8 @@
 mod assets;
 mod fullscreen_effect;
+mod post_process;
 mod ui;
 
-use bevy::core_pipeline::fullscreen_material::FullscreenMaterialPlugin;
 #[cfg(feature = "feathers")]
 use bevy::feathers::{FeathersPlugins, dark_theme::create_dark_theme, theme::UiTheme};
 use bevy::prelude::*;
@@ -19,9 +19,10 @@ use rand::Rng;
 use assets::{AssetConfigPlugin, asset_path};
 use bevy_fontmesh::prelude::*;
 use fullscreen_effect::{
-    FullscreenEffect, apply_fullscreen_effect, toggle_fullscreen_effect,
-    update_fullscreen_effect_time,
+    CameraConfig, CameraOrbit, manage_effect_settings, next_effect, previous_effect, spawn_camera,
+    toggle_fullscreen_effect, update_effect_time,
 };
+use post_process::PostProcessPlugin;
 use ui::SettingsUiPlugin;
 
 /// Absolute rotation speed
@@ -90,40 +91,20 @@ pub struct DragState {
 }
 
 /// Camera free-look component
-#[derive(Component)]
-struct FreeLookCamera {
+#[derive(Component, Clone, Copy)]
+pub struct FreeLookCamera {
     /// Yaw in radians
-    yaw: f32,
+    pub yaw: f32,
     /// Pitch in radians
-    pitch: f32,
+    pub pitch: f32,
     /// Sensitivity?
-    sensitivity: f32,
+    pub sensitivity: f32,
 }
 
 /// Marker component indicating free-look is currently active (blocks automatic rotation)
 /// Stores the last interaction time so that auto rotate can resume if on
 #[derive(Component)]
 struct FreeLookActive(f64);
-
-// Resource for the tv shader settings, for future maybe to make it so I can
-// change stuff in it dynamically.
-// #[derive(Resource, Component)]
-// pub struct TvSettingsResource {
-//     pub settings: OldTvSettings,
-// }
-
-/// Marker component for camera rotation (using spherical coordinates like FreeLookCamera)
-#[derive(Component)]
-struct RotatingCamera {
-    /// Rotation speed in radians per second positive = counter-clockwise when
-    /// viewed from above, TODO: how is that referred to by graphics peeps? Only
-    /// the shadow knows. Ooh I should add shadows... squirrel!
-    speed: f32,
-    /// Radius of rotation around the center
-    radius: f32,
-    /// Center to rotate around
-    center: Vec3,
-}
 
 /// TODO: This files getting obscenely too long time to start splitting stuff up.
 fn main() {
@@ -138,11 +119,12 @@ fn main() {
     app.add_plugins(assets::create_default_plugins())
         .add_plugins(AssetConfigPlugin)
         .add_plugins(FontMeshPlugin)
-        .add_plugins(FullscreenMaterialPlugin::<FullscreenEffect>::default())
+        .add_plugins(PostProcessPlugin)
         .insert_resource(ClearColor(Color::srgb(0.5, 0.5, 0.5)))
         .insert_resource(ColorState {
             color: Srgba::gray(0.5),
-        });
+        })
+        .init_resource::<CameraConfig>();
 
     // Conditionally add UI-specific plugins
     #[cfg(feature = "egui")]
@@ -158,7 +140,7 @@ fn main() {
 
     app.add_plugins(SettingsUiPlugin)
         .init_resource::<DragState>()
-        .add_systems(Startup, (setup, setup_fps_ui, setup_3d_text))
+        .add_systems(Startup, (setup, setup_fps_ui, setup_3d_text, spawn_camera))
         .add_systems(
             Update,
             (
@@ -168,19 +150,16 @@ fn main() {
                 cleanup_free_look_after_inactivity,
                 animate_materials.run_if(any_with_component::<HueAnimationEnabled>),
                 rotate_entities.run_if(any_with_component::<CubeRotationEnabled>),
-                rotate_camera.run_if(any_with_component::<CameraRotationEnabled>),
                 toggle_fps_display,
-                toggle_camera_rotation,
                 toggle_cube_rotation,
                 toggle_hue_animation,
                 toggle_fullscreen_effect,
-                // toggle_tv_effect,
-                // apply_tv_effect,
-                apply_camera_rotation,
+                next_effect,
+                previous_effect,
                 apply_cube_rotation,
                 apply_hue_animation,
-                apply_fullscreen_effect,
-                update_fullscreen_effect_time,
+                manage_effect_settings,
+                update_effect_time,
                 update_fps_display.run_if(bevy::time::common_conditions::on_timer(
                     std::time::Duration::from_secs_f32(0.5),
                 )),
@@ -191,61 +170,11 @@ fn main() {
 
 fn setup(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let diffuse_path = asset_path("environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2");
-    let specular_path = asset_path("environment_maps/pisa_specular_rgb9e5_zstd.ktx2");
-
-    // #[allow(clippy::field_reassign_with_default)]
-    // let tv_settings = {
-    //     let mut tv_settings = OldTvSettings::default();
-    //     tv_settings.screen_shape_factor = 0.2;
-    //     tv_settings.rows = 112.0;
-    //     tv_settings.brightness = 3.0;
-    //     tv_settings.edges_transition_size = 0.025;
-    //     tv_settings.channels_mask_min = 0.1;
-    //     tv_settings
-    // };
-
-    let initial_pos = Vec3::new(3.0, 1.0, 3.0);
-    let center = Vec3::new(0.0, -0.5, 0.0);
-
-    // commands.insert_resource(TvSettingsResource {
-    //     settings: tv_settings,
-    // });
-
-    // Calculate initial spherical coordinates from position
-    let offset = initial_pos - center;
-    let distance = offset.length();
-    let yaw = offset.z.atan2(offset.x);
-    let pitch = (offset.y / distance).asin();
-
-    commands.spawn((
-        Camera3d::default(),
-        // tv_settings,
-        Transform::from_xyz(initial_pos.x, initial_pos.y, initial_pos.z)
-            .looking_at(center, Vec3::Y),
-        EnvironmentMapLight {
-            diffuse_map: asset_server.load(diffuse_path),
-            specular_map: asset_server.load(specular_path),
-            intensity: 2_000.0,
-            ..default()
-        },
-        RotatingCamera {
-            speed: 0.3,
-            radius: distance,
-            center,
-        },
-        FreeLookCamera {
-            yaw,
-            pitch,
-            sensitivity: 0.003,
-        },
-        CameraRotationEnabled,
-        MainCamera,
-    ));
+    // let diffuse_path = asset_path("environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2");
+    // let specular_path = asset_path("environment_maps/pisa_specular_rgb9e5_zstd.ktx2");
 
     let cube = meshes.add(Cuboid::new(0.5, 0.5, 0.5));
 
@@ -328,68 +257,6 @@ fn rotate_entities(
         transform.rotate_x(rotator.base_speed.x * delta);
         transform.rotate_y(rotator.base_speed.y * delta);
         transform.rotate_z(rotator.base_speed.z * delta);
-    }
-}
-
-#[derive(Component, Default)]
-pub struct CameraRotation;
-
-/// Rotation of the camera around the origin/center point using spherical coords
-/// for now, once I yeet 2d as well into this playground I'll have to figure out
-/// other options.
-#[allow(clippy::type_complexity)]
-fn rotate_camera(
-    time: Res<Time>,
-    mut query: Query<
-        (&mut Transform, &mut FreeLookCamera, &RotatingCamera),
-        (With<CameraRotationEnabled>, Without<FreeLookActive>),
-    >,
-) {
-    for (mut transform, mut free_look, rotating_camera) in query.iter_mut() {
-        // Auto rotate across the z axis/yaw
-        free_look.yaw += rotating_camera.speed * time.delta_secs();
-
-        let x = rotating_camera.center.x
-            + rotating_camera.radius * free_look.yaw.cos() * free_look.pitch.cos();
-        let y = rotating_camera.center.y + rotating_camera.radius * free_look.pitch.sin();
-        let z = rotating_camera.center.z
-            + rotating_camera.radius * free_look.yaw.sin() * free_look.pitch.cos();
-
-        transform.translation = Vec3::new(x, y, z);
-        *transform = transform.looking_at(rotating_camera.center, Vec3::Y);
-    }
-}
-
-/// Toggle camera rotation
-/// r toggles on/off
-fn toggle_camera_rotation(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    rotation_query: Query<Entity, With<CameraRotation>>,
-    mut commands: Commands,
-) {
-    if keyboard.just_pressed(KeyCode::KeyR) {
-        if let Ok(entity) = rotation_query.single() {
-            commands.entity(entity).despawn();
-        } else {
-            commands.spawn(CameraRotation);
-        }
-    }
-}
-
-/// System to apply camera rotation.
-fn apply_camera_rotation(
-    rotation_marker: Query<(), With<CameraRotation>>,
-    camera_query: Query<(Entity, Has<CameraRotationEnabled>), With<RotatingCamera>>,
-    mut commands: Commands,
-) {
-    let should_rotate = !rotation_marker.is_empty();
-
-    for (entity, has_rotation) in camera_query.iter() {
-        if should_rotate && !has_rotation {
-            commands.entity(entity).insert(CameraRotationEnabled);
-        } else if !should_rotate && has_rotation {
-            commands.entity(entity).remove::<CameraRotationEnabled>();
-        }
     }
 }
 
@@ -688,7 +555,7 @@ fn free_look_camera(
     mut drag_state: ResMut<DragState>,
     time: Res<Time>,
     mut camera_query: Query<
-        (Entity, &mut Transform, &mut FreeLookCamera, &RotatingCamera),
+        (Entity, &mut Transform, &mut FreeLookCamera, &CameraOrbit),
         With<MainCamera>,
     >,
     mut commands: Commands,
@@ -699,8 +566,7 @@ fn free_look_camera(
         return;
     }
 
-    let Ok((entity, mut transform, mut free_look, rotating_camera)) = camera_query.single_mut()
-    else {
+    let Ok((entity, mut transform, mut free_look, orbit)) = camera_query.single_mut() else {
         return;
     };
 
@@ -719,14 +585,12 @@ fn free_look_camera(
                 // Clamp pitch to prevent camera flips, its weird and I don't like it
                 free_look.pitch = free_look.pitch.clamp(-1.5, 1.5);
 
-                let x = rotating_camera.center.x
-                    + rotating_camera.radius * free_look.yaw.cos() * free_look.pitch.cos();
-                let y = rotating_camera.center.y + rotating_camera.radius * free_look.pitch.sin();
-                let z = rotating_camera.center.z
-                    + rotating_camera.radius * free_look.yaw.sin() * free_look.pitch.cos();
+                let x = orbit.center.x + orbit.radius * free_look.yaw.cos() * free_look.pitch.cos();
+                let y = orbit.center.y + orbit.radius * free_look.pitch.sin();
+                let z = orbit.center.z + orbit.radius * free_look.yaw.sin() * free_look.pitch.cos();
 
                 transform.translation = Vec3::new(x, y, z);
-                *transform = transform.looking_at(rotating_camera.center, Vec3::Y);
+                *transform = transform.looking_at(orbit.center, Vec3::Y);
 
                 drag_state.previous_pos = Some(event.position);
             }
@@ -752,14 +616,12 @@ fn free_look_camera(
                 // NEW COMMENTS FOR NO RAISIN
                 free_look.pitch = free_look.pitch.clamp(-1.5, 1.5);
 
-                let x = rotating_camera.center.x
-                    + rotating_camera.radius * free_look.yaw.cos() * free_look.pitch.cos();
-                let y = rotating_camera.center.y + rotating_camera.radius * free_look.pitch.sin();
-                let z = rotating_camera.center.z
-                    + rotating_camera.radius * free_look.yaw.sin() * free_look.pitch.cos();
+                let x = orbit.center.x + orbit.radius * free_look.yaw.cos() * free_look.pitch.cos();
+                let y = orbit.center.y + orbit.radius * free_look.pitch.sin();
+                let z = orbit.center.z + orbit.radius * free_look.yaw.sin() * free_look.pitch.cos();
 
                 transform.translation = Vec3::new(x, y, z);
-                *transform = transform.looking_at(rotating_camera.center, Vec3::Y);
+                *transform = transform.looking_at(orbit.center, Vec3::Y);
             }
 
             drag_state.previous_pos = Some(event.position);

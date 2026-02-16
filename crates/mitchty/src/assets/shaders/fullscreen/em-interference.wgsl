@@ -27,6 +27,12 @@ fn rng2(seed : vec2<f32>) -> f32 {
 fn rng(seed : f32) -> f32 { return rng2(vec2<f32>(seed, 1.0)); }
 
 @fragment fn fragment(in : FullscreenVertexOutput) -> @location(0) vec4<f32> {
+  // Pass through unchanged if intensity is 0
+  // if settings
+  //   .intensity <= 0.0 {
+  //     return textureSample(screen_texture, texture_sampler, in.uv);
+  //   }
+
   let resolution = vec2<f32>(textureDimensions(screen_texture));
   let uv = in.position.xy / resolution;
 

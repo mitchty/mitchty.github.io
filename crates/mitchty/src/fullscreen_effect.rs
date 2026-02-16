@@ -1,111 +1,180 @@
-// TODO: better name for this in future fullscreenshader maybe
-use bevy::{
-    core_pipeline::{core_3d::graph::Node3d, fullscreen_material::FullscreenMaterial},
-    prelude::*,
-    render::{
-        extract_component::ExtractComponent,
-        render_graph::{InternedRenderLabel, RenderLabel},
-        render_resource::ShaderType,
-    },
-    shader::ShaderRef,
-};
+// Fullscreen post-processing effect management
+use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled, PostProcessSettings};
+use bevy::prelude::*;
 
-use crate::asset_path_raw;
-
-/// Fullscreen effect shader struct. Future me can figure out how to maybe
-/// generate multiple? Eh whatever.
-#[derive(Component, ExtractComponent, Clone, Copy, ShaderType, Default)]
-pub struct FullscreenEffect {
-    /// Intensity of the effect, basically treat it like an alpha channel 0. =
-    /// transparent 1. = opaque
-    pub intensity: f32,
-    pub time: f32,
-    #[cfg(target_arch = "wasm32")]
-    _webgl2_padding: Vec2,
+/// Camera orbit data for where the camera is pointing.
+#[derive(Component, Clone, Copy)]
+pub struct CameraOrbit {
+    pub center: Vec3,
+    pub radius: f32,
 }
 
-impl FullscreenMaterial for FullscreenEffect {
-    // TODO: brain up a way to wire the asset server shaders into a dropdown
-    // with bevy ui if thats possible? This is a future mitch task that past
-    // mitch has zero regrets pawning off to future mitch.
-    fn fragment_shader() -> ShaderRef {
-        asset_path_raw!("shaders/em-interference.wgsl").into()
-    }
+/// Camera configuration data that needs to be preserved across camera swaps
+#[derive(Resource, Clone, Copy)]
+pub struct CameraConfig {
+    pub transform: Transform,
+    pub free_look: crate::FreeLookCamera,
+    pub orbit: CameraOrbit,
+}
 
-    fn node_edges() -> Vec<InternedRenderLabel> {
-        vec![
-            Node3d::Tonemapping.intern(),
-            Self::node_label().intern(),
-            Node3d::EndMainPassPostProcessing.intern(),
-        ]
+impl Default for CameraConfig {
+    fn default() -> Self {
+        let initial_pos = Vec3::new(3.0, 1.0, 3.0);
+        let center = Vec3::new(0.0, -0.5, 0.0);
+        let offset = initial_pos - center;
+        let distance = offset.length();
+        let yaw = offset.z.atan2(offset.x);
+        let pitch = (offset.y / distance).asin();
+
+        Self {
+            transform: Transform::from_xyz(initial_pos.x, initial_pos.y, initial_pos.z)
+                .looking_at(center, Vec3::Y),
+            free_look: crate::FreeLookCamera {
+                yaw,
+                pitch,
+                sensitivity: 0.003,
+            },
+            orbit: CameraOrbit {
+                center,
+                radius: distance,
+            },
+        }
     }
 }
 
-#[derive(Component, Default)]
-pub struct FullscreenEffectEnabled;
-
-/// Toggle fullscreen effect
+/// Toggle fullscreen effects on/off
 /// e toggles on/off
 pub fn toggle_fullscreen_effect(
     keyboard: Res<ButtonInput<KeyCode>>,
-    effect_query: Query<Entity, With<FullscreenEffectEnabled>>,
-    mut commands: Commands,
+    mut effects_enabled: ResMut<EffectsEnabled>,
+    available_shaders: Res<AvailableShaders>,
+    active_shader: Res<ActiveShader>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyE) {
-        if let Ok(entity) = effect_query.single() {
-            commands.entity(entity).despawn();
+        effects_enabled.0 = !effects_enabled.0;
+        let status = if effects_enabled.0 {
+            "enabled"
         } else {
-            commands.spawn(FullscreenEffectEnabled);
+            "disabled"
+        };
+        debug!(
+            "effects {}: {}",
+            status,
+            active_shader.display_name(&available_shaders)
+        );
+    }
+}
+
+/// Cycle to next effect
+/// . cycles forward for now
+pub fn next_effect(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut active_shader: ResMut<ActiveShader>,
+    available_shaders: Res<AvailableShaders>,
+    effects_enabled: Res<EffectsEnabled>,
+) {
+    if keyboard.just_pressed(KeyCode::Period) {
+        active_shader.next(&available_shaders);
+        if effects_enabled.0 {
+            debug!(
+                "effect == {}",
+                active_shader.display_name(&available_shaders)
+            );
         }
     }
 }
 
-/// Apply or disable fullscreen effect on the main camera
-/// Note: We don't remove the component to avoid render graph state issues, that
-/// led to... unique results lets just say. I need to figure out how the full
-/// screen shader works internally cause adding it and removing it was a bad
-/// idea. Did produce some interesting output at least. If ugly.
-///
-/// So abuse the 0.0/1.0 nonsense to cover if something should be active or not.
-/// Future task is making it truly like alpha channels.
-pub fn apply_fullscreen_effect(
-    effect_marker: Query<(), With<FullscreenEffectEnabled>>,
-    mut camera_query: Query<(Entity, Option<&mut FullscreenEffect>), With<crate::MainCamera>>,
-    time: Res<Time>,
+/// Cycle to back to a prior effect
+/// , cycles backward
+pub fn previous_effect(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut active_shader: ResMut<ActiveShader>,
+    available_shaders: Res<AvailableShaders>,
+    effects_enabled: Res<EffectsEnabled>,
+) {
+    if keyboard.just_pressed(KeyCode::Comma) {
+        active_shader.previous(&available_shaders);
+        if effects_enabled.0 {
+            debug!(
+                "effect ==  {}",
+                active_shader.display_name(&available_shaders)
+            );
+        }
+    }
+}
+
+/// Spawn camera with post-processing settings
+pub fn spawn_camera(
     mut commands: Commands,
+    config: Res<CameraConfig>,
+    asset_server: Res<AssetServer>,
+    effects_enabled: Res<EffectsEnabled>,
 ) {
-    let should_enable = !effect_marker.is_empty();
-    let current_time = time.elapsed_secs();
+    let diffuse_path = crate::asset_path("environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2");
+    let specular_path = crate::asset_path("environment_maps/pisa_specular_rgb9e5_zstd.ktx2");
 
-    for (entity, effect) in camera_query.iter_mut() {
-        match effect {
-            Some(mut effect) => {
-                effect.intensity = if should_enable { 1.0 } else { 0.0 };
-                effect.time = current_time;
-            }
-            None => {
-                if should_enable {
-                    commands.entity(entity).insert(FullscreenEffect {
-                        intensity: 1.0,
-                        time: current_time,
-                        #[cfg(target_arch = "wasm32")]
-                        _webgl2_padding: Default::default(),
-                    });
-                }
-            }
+    let intensity = if effects_enabled.0 { 1.0 } else { 0.0 };
+
+    commands.spawn((
+        Camera3d::default(),
+        config.transform,
+        EnvironmentMapLight {
+            diffuse_map: asset_server.load(diffuse_path),
+            specular_map: asset_server.load(specular_path),
+            intensity: 2_000.0,
+            ..default()
+        },
+        config.free_look,
+        config.orbit,
+        crate::MainCamera,
+        PostProcessSettings {
+            intensity,
+            time: 0.0,
+            #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
+            _webgl2_padding: Vec2::ZERO,
+        },
+    ));
+
+    debug!("camera post-processing {}", effects_enabled.0);
+}
+
+/// Update post-processing settings based on enabled state
+pub fn manage_effect_settings(
+    mut camera_query: Query<&mut PostProcessSettings, With<crate::MainCamera>>,
+    effects_enabled: Res<EffectsEnabled>,
+    active_shader: Res<ActiveShader>,
+    available_shaders: Res<AvailableShaders>,
+) {
+    // Only run when something changes
+    if !effects_enabled.is_changed() && !active_shader.is_changed() {
+        return;
+    }
+
+    let Ok(mut settings) = camera_query.single_mut() else {
+        return;
+    };
+
+    let new_intensity = if effects_enabled.0 { 1.0 } else { 0.0 };
+
+    if settings.intensity != new_intensity {
+        settings.intensity = new_intensity;
+
+        if effects_enabled.0 {
+            debug!(
+                "enabled effect: {}",
+                active_shader.display_name(&available_shaders)
+            );
+        } else {
+            debug!("all post processing effects disabled");
         }
     }
 }
 
-/// Is this needed? I thought I can get time in shaders but I barely know what
-/// I'm doing with graphics at the best of times. Whatever it worked passing it
-/// into the shader so ship it.
-pub fn update_fullscreen_effect_time(
-    time: Res<Time>,
-    mut effect_query: Query<&mut FullscreenEffect>,
-) {
+/// Update time uniform for animated effects
+pub fn update_effect_time(time: Res<Time>, mut settings_query: Query<&mut PostProcessSettings>) {
     let current_time = time.elapsed_secs();
-    for mut effect in effect_query.iter_mut() {
-        effect.time = current_time;
+
+    for mut settings in settings_query.iter_mut() {
+        settings.time = current_time;
     }
 }

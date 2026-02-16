@@ -1,5 +1,5 @@
-use crate::fullscreen_effect::FullscreenEffectEnabled;
-use crate::{CameraRotation, ColorState, CubeRotation, FpsDisplay, HueAnimation};
+use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled};
+use crate::{ColorState, CubeRotation, FpsDisplay, HueAnimation};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
@@ -22,36 +22,49 @@ impl Plugin for SettingsUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EguiWantsInput>()
             .add_systems(Startup, setup_egui)
-            .add_systems(Update, toggle_egui)
             .add_systems(
                 EguiPrimaryContextPass,
-                (settings_ui, update_egui_input_state).chain(),
+                (settings_ui, update_egui_input_state, toggle_egui).chain(),
             );
     }
 }
 
 /// Spawn marker entities for egui state
-fn setup_egui(mut commands: Commands) {
-    // Start with these enabled
-    commands.spawn(ShowEgui);
-    commands.spawn(FullscreenEffectEnabled);
-    commands.spawn(CameraRotation);
+fn setup_egui(mut commands: Commands, mut effects_enabled: ResMut<EffectsEnabled>) {
+    // Start with effects enabled by default
+    effects_enabled.0 = true;
+
+    // Spawn other markers
     commands.spawn(CubeRotation);
     commands.spawn(HueAnimation);
     commands.spawn(FpsDisplay);
 }
 
 /// System to control the egui settings/debug panel visibility
-/// g or touch (for things like ipad/wasm builds) toggles
+/// g, mouse click, or touch toggles
 fn toggle_egui(
     keyboard: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
     touches: Res<Touches>,
+    egui_wants_input: Res<EguiWantsInput>,
     egui_entity: Query<Entity, With<ShowEgui>>,
     mut commands: Commands,
 ) {
-    let should_toggle = keyboard.just_pressed(KeyCode::KeyG) || touches.any_just_pressed();
+    // Only toggle if keyboard pressed or if click/touch happened outside of any
+    // egui panel
+    let mouse_toggle = mouse.just_pressed(MouseButton::Left) && !egui_wants_input.wants_pointer;
+    let touch_toggle = touches.any_just_pressed() && !egui_wants_input.wants_pointer;
+    let should_toggle = keyboard.just_pressed(KeyCode::KeyG) || mouse_toggle || touch_toggle;
+
+    if mouse.just_pressed(MouseButton::Left) {
+        trace!(
+            "mouse clicked wants_pointer: {}, toggle: {}",
+            egui_wants_input.wants_pointer, mouse_toggle
+        );
+    }
 
     if should_toggle {
+        debug!("toggling egui panel");
         if let Ok(entity) = egui_entity.single() {
             commands.entity(entity).despawn();
         } else {
@@ -65,17 +78,20 @@ fn toggle_egui(
 fn settings_ui(
     mut contexts: EguiContexts,
     mut color_state: ResMut<ColorState>,
-    fullscreen_query: Query<Entity, With<FullscreenEffectEnabled>>,
+    mut effects_enabled: ResMut<EffectsEnabled>,
     fps_query: Query<Entity, With<FpsDisplay>>,
-    camera_rotation_query: Query<Entity, With<CameraRotation>>,
     cube_rotation_query: Query<Entity, With<CubeRotation>>,
     hue_animation_query: Query<Entity, With<HueAnimation>>,
     show_egui_query: Query<(), With<ShowEgui>>,
+    mut active_shader: ResMut<ActiveShader>,
+    available_shaders: Res<AvailableShaders>,
     mut commands: Commands,
 ) -> Result {
     if show_egui_query.is_empty() {
         return Ok(());
     }
+
+    trace!("settings_ui running - ShowEgui exists");
 
     egui::SidePanel::left("settings_panel")
         .default_width(250.0)
@@ -99,35 +115,41 @@ fn settings_ui(
             ui.separator();
             ui.heading("Effects");
 
-            let mut fullscreen_enabled = fullscreen_query.single().is_ok();
+            let mut fullscreen_enabled = effects_enabled.0;
             if ui
                 .checkbox(&mut fullscreen_enabled, "Fullscreen Effect [E]")
                 .changed()
             {
-                if fullscreen_enabled {
-                    commands.spawn(FullscreenEffectEnabled);
-                } else if let Ok(entity) = fullscreen_query.single() {
-                    commands.entity(entity).despawn();
-                }
+                effects_enabled.0 = fullscreen_enabled;
             }
+
+            ui.horizontal(|ui| {
+                ui.label("Shader:");
+                let old_index = active_shader.index;
+                egui::ComboBox::from_id_salt("shader_effect")
+                    .selected_text(active_shader.display_name(&available_shaders))
+                    .show_ui(ui, |ui| {
+                        for (idx, shader_info) in available_shaders.shaders.iter().enumerate() {
+                            ui.selectable_value(
+                                &mut active_shader.index,
+                                idx,
+                                &shader_info.display_name,
+                            );
+                        }
+                    });
+                if active_shader.index != old_index {
+                    trace!(
+                        "shader effect changed to {}",
+                        active_shader.display_name(&available_shaders)
+                    );
+                }
+            });
 
             let mut fps_enabled = fps_query.single().is_ok();
             if ui.checkbox(&mut fps_enabled, "FPS Display [F]").changed() {
                 if fps_enabled {
                     commands.spawn(FpsDisplay);
                 } else if let Ok(entity) = fps_query.single() {
-                    commands.entity(entity).despawn();
-                }
-            }
-
-            let mut camera_rotation_enabled = camera_rotation_query.single().is_ok();
-            if ui
-                .checkbox(&mut camera_rotation_enabled, "Camera Rotation [R]")
-                .changed()
-            {
-                if camera_rotation_enabled {
-                    commands.spawn(CameraRotation);
-                } else if let Ok(entity) = camera_rotation_query.single() {
                     commands.entity(entity).despawn();
                 }
             }

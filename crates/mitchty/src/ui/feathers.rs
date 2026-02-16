@@ -615,16 +615,13 @@ fn handle_plane_value_change(change: On<ValueChange<Vec2>>, mut color_state: Res
     // ColorPlane::RedGreen uses x=red, y=green
     // We'll keep the existing blue component until I learn how this works.
     let new_color = bevy::color::Srgba::rgb(change.value.x, change.value.y, color_state.color.blue);
-    trace!(
-        "ColorPlane value changed to: {:?}, updating ColorState to: {:?}",
-        change.value, new_color
-    );
+    trace!("colorplane: {:?}, state: {:?}", change.value, new_color);
     color_state.color = new_color;
 }
 
 /// Observer: Handle color swatch value changes and update ColorState
 fn handle_swatch_value_change(change: On<ValueChange<Color>>, mut color_state: ResMut<ColorState>) {
-    trace!("ColorSwatch value changed to: {:?}", change.value);
+    trace!("colorswatch: {:?}", change.value);
     color_state.color = change.value.to_srgba();
 }
 
@@ -633,7 +630,7 @@ fn handle_hsl_hue_change(change: On<ValueChange<f32>>, mut color_state: ResMut<C
     let mut hsla = Hsla::from(Color::from(color_state.color));
     hsla.hue = change.value;
     color_state.color = Color::from(hsla).to_srgba();
-    trace!("HSL Hue changed to: {}", change.value);
+    trace!("hsl hue changed to: {}", change.value);
 }
 
 /// Observer: Handle HSL Saturation slider changes
@@ -641,7 +638,7 @@ fn handle_hsl_saturation_change(change: On<ValueChange<f32>>, mut color_state: R
     let mut hsla = Hsla::from(Color::from(color_state.color));
     hsla.saturation = change.value;
     color_state.color = Color::from(hsla).to_srgba();
-    trace!("HSL Saturation changed to: {}", change.value);
+    trace!("hsl saturation changed to: {}", change.value);
 }
 
 /// Observer: Handle HSL Lightness slider changes
@@ -649,10 +646,10 @@ fn handle_hsl_lightness_change(change: On<ValueChange<f32>>, mut color_state: Re
     let mut hsla = Hsla::from(Color::from(color_state.color));
     hsla.lightness = change.value;
     color_state.color = Color::from(hsla).to_srgba();
-    trace!("HSL Lightness changed to: {}", change.value);
+    trace!("hsl lightness changed to: {}", change.value);
 }
 
-/// Sync widgets from ColorState when it changes (but not during user interaction)
+/// Sync widgets from ColorState when it changes
 fn sync_widgets_from_clear_color(
     color_state: Res<ColorState>,
     mut swatches: Query<(&mut ColorSwatchValue, &Interaction), With<ColorSwatch>>,

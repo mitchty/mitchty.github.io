@@ -88,13 +88,11 @@ impl Plugin for AssetConfigPlugin {
             // Fonts for the 3d text thingy. I should make a 3d console/shell.... maybe?
             embedded_asset!(_app, "assets/fonts/FiraMono-Medium.ttf");
 
-            // Shaders
-            embedded_asset!(_app, "assets/shaders/em-interference.wgsl");
-            // TODO: moooooore effects for funsies, also I should make ui for
-            // farting around with their inputs dynamically. That would be
-            // wizard.
-            // embedded_asset!(_app, "assets/shaders/fullscreen_effect.wgsl");
-            // embedded_asset!(_app, "assets/shaders/vhs-effect.wgsl");
+            // Note, these are in fullscreen to make the dropdown in egui a bit
+            // easier to be dynamic.
+            embedded_asset!(_app, "assets/shaders/fullscreen/em-interference.wgsl");
+            embedded_asset!(_app, "assets/shaders/fullscreen/chromatic-aberration.wgsl");
+            embedded_asset!(_app, "assets/shaders/fullscreen/vhs-effect.wgsl");
         }
     }
 }
