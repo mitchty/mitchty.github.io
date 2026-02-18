@@ -106,6 +106,10 @@ pub struct FreeLookCamera {
 #[derive(Component)]
 struct FreeLookActive(f64);
 
+/// Marker component for the initial touch help overlay mostly for web stuff
+#[derive(Component)]
+pub struct DisplayInitialHelp;
+
 /// TODO: This files getting obscenely too long time to start splitting stuff up.
 fn main() {
     // Set up better panic messages for WASM for when this stuff seems to not
@@ -164,8 +168,16 @@ fn main() {
                     std::time::Duration::from_secs_f32(0.5),
                 )),
             ),
-        )
-        .run();
+        );
+
+    // Touch help overlay
+    #[cfg(target_arch = "wasm32")]
+    {
+        app.add_systems(Startup, setup_help_text)
+            .add_systems(Update, dismiss_help_on_input);
+    }
+
+    app.run();
 }
 
 fn setup(
@@ -262,6 +274,13 @@ fn rotate_entities(
 
 /// System to spawn the fps text entity in the upper right of screen
 fn setup_fps_ui(mut commands: Commands) {
+    // When the egui menu bar is active squeeze the FPS readout down to avoid
+    // overlap.
+    #[cfg(feature = "egui")]
+    let top = Val::Px(40.0);
+    #[cfg(not(feature = "egui"))]
+    let top = Val::Px(10.0);
+
     commands.spawn((
         Text::new(""),
         TextFont {
@@ -271,12 +290,56 @@ fn setup_fps_ui(mut commands: Commands) {
         TextColor(Color::srgb(0.0, 1.0, 0.0)),
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(10.0),
+            top,
             right: Val::Px(10.0),
             ..default()
         },
         FpsText,
     ));
+}
+
+/// Spawn the initial touch help overlay for wasm.
+#[cfg(target_arch = "wasm32")]
+fn setup_help_text(mut commands: Commands) {
+    commands.spawn((
+        Text::new(
+            "Touch and pan to rotate, touch or click to display a menubar to change settings. g key also toggles the menubar.",
+        ),
+        TextFont {
+            font_size: 22.0,
+            ..default()
+        },
+        TextColor(Color::WHITE),
+        TextLayout::new_with_justify(Justify::Center),
+        Node {
+            position_type: PositionType::Absolute,
+            // Centre horizontally and sit in the lower third of the screen...ish
+            width: Val::Percent(80.0),
+            left: Val::Percent(10.0),
+            bottom: Val::Px(80.0),
+            ..default()
+        },
+        DisplayInitialHelp,
+    ));
+}
+
+/// Remove the help overlay when some interaction has occurred then nuke the
+/// marker component so it never shows again.
+#[cfg(target_arch = "wasm32")]
+fn dismiss_help_on_input(
+    mut touch_events: MessageReader<TouchInput>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    help_query: Query<Entity, With<DisplayInitialHelp>>,
+    mut commands: Commands,
+) {
+    let touched = touch_events.read().next().is_some();
+    let clicked = mouse.get_just_pressed().next().is_some();
+
+    if touched || clicked {
+        for entity in help_query.iter() {
+            commands.entity(entity).despawn();
+        }
+    }
 }
 
 /// Toggle FpsDisplay marker component to control systems that display the fps text
