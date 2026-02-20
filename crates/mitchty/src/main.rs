@@ -110,6 +110,24 @@ struct FreeLookActive(f64);
 #[derive(Component)]
 pub struct DisplayInitialHelp;
 
+/// cli arguments, note for wasm I need to find a way to get clap to map to
+/// /uri/paths and params I can yeet into the binary as an equivalent.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(clap::Parser, Debug)]
+#[command(about = "mitchty - just me playing around for funsies")]
+struct Cli {
+    /// Enable gamepad support
+    #[arg(long, overrides_with = "no_gamepad")]
+    with_gamepad: bool,
+
+    // Note: I added this vs default features false and whatnot to not have to
+    // deal with running this in wine on linux and having an xbox controller
+    // cause a panic in a dependency of a dependency.
+    /// Disable gamepad support, default
+    #[arg(long = "no-gamepad", overrides_with = "with_gamepad")]
+    no_gamepad: bool,
+}
+
 /// TODO: This files getting obscenely too long time to start splitting stuff up.
 fn main() {
     // Set up better panic messages for WASM for when this stuff seems to not
@@ -118,9 +136,19 @@ fn main() {
     #[cfg(target_arch = "wasm32")]
     console_error_panic_hook::set_once();
 
+    // wasm arg passing is TBD
+    #[cfg(not(target_arch = "wasm32"))]
+    let enable_gamepad = {
+        use clap::Parser;
+        let cli = Cli::parse();
+        cli.with_gamepad
+    };
+    #[cfg(target_arch = "wasm32")]
+    let enable_gamepad = false;
+
     let mut app = App::new();
 
-    app.add_plugins(assets::create_default_plugins())
+    app.add_plugins(assets::create_default_plugins(enable_gamepad))
         .add_plugins(AssetConfigPlugin)
         .add_plugins(FontMeshPlugin)
         .add_plugins(PostProcessPlugin)
@@ -467,11 +495,12 @@ fn toggle_hue_animation(
 fn apply_hue_animation(
     hue_marker: Query<(), With<HueAnimation>>,
     cube_query: Query<(Entity, Has<HueAnimationEnabled>), With<Rotator>>,
+    text3d_query: Query<(Entity, Has<HueAnimationEnabled>), With<Text3d>>,
     mut commands: Commands,
 ) {
     let should_animate = !hue_marker.is_empty();
 
-    for (entity, has_animation) in cube_query.iter() {
+    for (entity, has_animation) in cube_query.iter().chain(text3d_query.iter()) {
         if should_animate && !has_animation {
             commands.entity(entity).insert(HueAnimationEnabled);
         } else if !should_animate && has_animation {

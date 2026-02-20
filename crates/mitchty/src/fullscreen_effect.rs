@@ -19,8 +19,10 @@ pub struct CameraConfig {
 
 impl Default for CameraConfig {
     fn default() -> Self {
-        let initial_pos = Vec3::new(3.0, 1.0, 3.0);
-        let center = Vec3::new(0.0, -0.5, 0.0);
+        // TODO: Should make this calculation to center the 3d stuff to be
+        // dynamic, future me problem.
+        let initial_pos = Vec3::new(3.0, 1.85, 3.0);
+        let center = Vec3::new(0.0, 0.35, 0.0);
         let offset = initial_pos - center;
         let distance = offset.length();
         let yaw = offset.z.atan2(offset.x);

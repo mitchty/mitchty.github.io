@@ -99,10 +99,16 @@ impl Plugin for AssetConfigPlugin {
 
 // TODO: I might need to find out if for native I can use embedded reloading or
 // not, saw it in the feature list. Probably not a huge thing.
-pub fn create_default_plugins() -> bevy::app::PluginGroupBuilder {
+/// Build the default Bevy plugin group for the current platform.
+///
+/// Note gamepad spiel is to make running windows binaries in wine more easily.
+///
+/// Nothing yet.... in this supports it. More a wine bug when a gamepad is
+/// present as a usb device.
+pub fn create_default_plugins(enable_gamepad: bool) -> bevy::app::PluginGroupBuilder {
     // In debug builds, configure AssetPlugin to load from the filesystem
     #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
-    {
+    let plugins = {
         use bevy::asset::AssetPlugin;
 
         let asset_base = get_asset_base_path(
@@ -114,26 +120,30 @@ pub fn create_default_plugins() -> bevy::app::PluginGroupBuilder {
             file_path: asset_base,
             ..default()
         })
-    }
+    };
 
     // WASM-specific configuration, basically sets window equal to the container
     // its in size wise
     #[cfg(target_arch = "wasm32")]
-    {
-        DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                fit_canvas_to_parent: true,
-                prevent_default_event_handling: false,
-                ..default()
-            }),
+    let plugins = DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            fit_canvas_to_parent: true,
+            prevent_default_event_handling: false,
             ..default()
-        })
-    }
+        }),
+        ..default()
+    });
 
     // Default configuration for release native builds to abuse embedding of assets
     #[cfg(all(not(debug_assertions), not(target_arch = "wasm32")))]
-    {
-        DefaultPlugins.build()
+    let plugins = DefaultPlugins.build();
+
+    // Need --with-gamepad anywhere for now for bevy_input to care about
+    // gamepads. Future me problem for when/if I add support.
+    if enable_gamepad {
+        plugins
+    } else {
+        plugins.disable::<bevy::gilrs::GilrsPlugin>()
     }
 }
 

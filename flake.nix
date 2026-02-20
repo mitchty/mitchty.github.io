@@ -818,6 +818,11 @@
               cargoNextestPartitionsExtraArgs = "--no-tests=pass";
             }
           );
+
+          inherit mitchty-lto mitchty-wasm-lto;
+        }
+        // lib.optionalAttrs pkgs.stdenv.isLinux {
+          inherit mitchty-release-windows;
         };
 
         packages = {
@@ -965,7 +970,18 @@
 
         devShells.default =
           craneLib.devShell {
-            checks = self.checks.${system};
+            checks = lib.filterAttrs (
+              n: _:
+              !lib.elem n [
+                # Filtered out cause they cause the build settings to bleed
+                # through to the devshell. We only want them for things like
+                # checks not the devshell. If people want to build either, nix
+                # build .#whatever, its setup right and works. The devshells for
+                # local only development/testing with cargo build.
+                "mitchty-release-windows"
+                "mitchty-wasm-lto"
+              ]
+            ) self.checks.${system};
 
             packages = (
               with pkgs;
