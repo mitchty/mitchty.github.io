@@ -199,11 +199,8 @@ fn main() {
         );
 
     // Touch help overlay
-    #[cfg(target_arch = "wasm32")]
-    {
-        app.add_systems(Startup, setup_help_text)
-            .add_systems(Update, dismiss_help_on_input);
-    }
+    app.add_systems(Startup, setup_help_text)
+        .add_systems(Update, dismiss_help_on_input);
 
     app.run();
 }
@@ -326,8 +323,7 @@ fn setup_fps_ui(mut commands: Commands) {
     ));
 }
 
-/// Spawn the initial touch help overlay for wasm.
-#[cfg(target_arch = "wasm32")]
+/// Spawn the initial touch help overlay.
 fn setup_help_text(mut commands: Commands) {
     commands.spawn((
         Text::new(
@@ -353,7 +349,6 @@ fn setup_help_text(mut commands: Commands) {
 
 /// Remove the help overlay when some interaction has occurred then nuke the
 /// marker component so it never shows again.
-#[cfg(target_arch = "wasm32")]
 fn dismiss_help_on_input(
     mut touch_events: MessageReader<TouchInput>,
     mouse: Res<ButtonInput<MouseButton>>,
