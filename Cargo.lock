@@ -455,7 +455,7 @@ name = "bevy_animation_macros"
 version = "0.18.0"
 source = "git+https://github.com/bevyengine/bevy?branch=release-0.18.1#c0bc60bed5c6ecd0d783e25ea1fe3a246080bfb0"
 dependencies = [
- "bevy_macro_utils",
+ "bevy_macro_utils 0.18.0 (git+https://github.com/bevyengine/bevy?branch=release-0.18.1)",
  "quote",
  "syn",
 ]
@@ -549,7 +549,7 @@ name = "bevy_asset_macros"
 version = "0.18.0"
 source = "git+https://github.com/bevyengine/bevy?branch=release-0.18.1#c0bc60bed5c6ecd0d783e25ea1fe3a246080bfb0"
 dependencies = [
- "bevy_macro_utils",
+ "bevy_macro_utils 0.18.0 (git+https://github.com/bevyengine/bevy?branch=release-0.18.1)",
  "proc-macro2",
  "quote",
  "syn",
@@ -646,7 +646,7 @@ name = "bevy_derive"
 version = "0.18.0"
 source = "git+https://github.com/bevyengine/bevy?branch=release-0.18.1#c0bc60bed5c6ecd0d783e25ea1fe3a246080bfb0"
 dependencies = [
- "bevy_macro_utils",
+ "bevy_macro_utils 0.18.0 (git+https://github.com/bevyengine/bevy?branch=release-0.18.1)",
  "quote",
  "syn",
 ]
@@ -728,7 +728,7 @@ name = "bevy_ecs_macros"
 version = "0.18.0"
 source = "git+https://github.com/bevyengine/bevy?branch=release-0.18.1#c0bc60bed5c6ecd0d783e25ea1fe3a246080bfb0"
 dependencies = [
- "bevy_macro_utils",
+ "bevy_macro_utils 0.18.0 (git+https://github.com/bevyengine/bevy?branch=release-0.18.1)",
  "proc-macro2",
  "quote",
  "syn",
@@ -786,7 +786,7 @@ name = "bevy_encase_derive"
 version = "0.18.0"
 source = "git+https://github.com/bevyengine/bevy?branch=release-0.18.1#c0bc60bed5c6ecd0d783e25ea1fe3a246080bfb0"
 dependencies = [
- "bevy_macro_utils",
+ "bevy_macro_utils 0.18.0 (git+https://github.com/bevyengine/bevy?branch=release-0.18.1)",
  "encase_derive_impl",
 ]
 
@@ -869,7 +869,7 @@ name = "bevy_gizmos_macros"
 version = "0.18.0"
 source = "git+https://github.com/bevyengine/bevy?branch=release-0.18.1#c0bc60bed5c6ecd0d783e25ea1fe3a246080bfb0"
 dependencies = [
- "bevy_macro_utils",
+ "bevy_macro_utils 0.18.0 (git+https://github.com/bevyengine/bevy?branch=release-0.18.1)",
  "quote",
  "syn",
 ]
@@ -1088,6 +1088,18 @@ dependencies = [
 [[package]]
 name = "bevy_macro_utils"
 version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b7272fca0bf30d8ca2571a803598856104b63e5c596d52850f811ed37c5e1e3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+ "toml_edit",
+]
+
+[[package]]
+name = "bevy_macro_utils"
+version = "0.18.0"
 source = "git+https://github.com/bevyengine/bevy?branch=release-0.18.1#c0bc60bed5c6ecd0d783e25ea1fe3a246080bfb0"
 dependencies = [
  "proc-macro2",
@@ -1253,6 +1265,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_pretty_text"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7614b44781eb031ae8dcac9668074365a68ca04ec88cac12072d60904f0186eb"
+dependencies = [
+ "bevy",
+ "bevy_reflect",
+ "bytemuck",
+ "dyn-clone",
+ "pretty_text_macros",
+ "pretty_text_parser",
+ "rand",
+ "serde",
+ "thiserror 2.0.18",
+ "winnow",
+]
+
+[[package]]
 name = "bevy_ptr"
 version = "0.18.0"
 source = "git+https://github.com/bevyengine/bevy?branch=release-0.18.1#c0bc60bed5c6ecd0d783e25ea1fe3a246080bfb0"
@@ -1290,7 +1320,7 @@ name = "bevy_reflect_derive"
 version = "0.18.0"
 source = "git+https://github.com/bevyengine/bevy?branch=release-0.18.1#c0bc60bed5c6ecd0d783e25ea1fe3a246080bfb0"
 dependencies = [
- "bevy_macro_utils",
+ "bevy_macro_utils 0.18.0 (git+https://github.com/bevyengine/bevy?branch=release-0.18.1)",
  "indexmap",
  "proc-macro2",
  "quote",
@@ -1352,7 +1382,7 @@ name = "bevy_render_macros"
 version = "0.18.0"
 source = "git+https://github.com/bevyengine/bevy?branch=release-0.18.1#c0bc60bed5c6ecd0d783e25ea1fe3a246080bfb0"
 dependencies = [
- "bevy_macro_utils",
+ "bevy_macro_utils 0.18.0 (git+https://github.com/bevyengine/bevy?branch=release-0.18.1)",
  "proc-macro2",
  "quote",
  "syn",
@@ -1470,7 +1500,7 @@ name = "bevy_state_macros"
 version = "0.18.0"
 source = "git+https://github.com/bevyengine/bevy?branch=release-0.18.1#c0bc60bed5c6ecd0d783e25ea1fe3a246080bfb0"
 dependencies = [
- "bevy_macro_utils",
+ "bevy_macro_utils 0.18.0 (git+https://github.com/bevyengine/bevy?branch=release-0.18.1)",
  "quote",
  "syn",
 ]
@@ -2046,6 +2076,15 @@ dependencies = [
 
 [[package]]
 name = "convert_case"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baaaa0ecca5b51987b9423ccdc971514dd8b0bb7b4060b983d3664dad3f1f89f"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
@@ -2288,7 +2327,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
- "convert_case",
+ "convert_case 0.10.0",
  "proc-macro2",
  "quote",
  "rustc_version",
@@ -2366,6 +2405,12 @@ name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
+
+[[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "ecolor"
@@ -3565,6 +3610,7 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "bevy_fontmesh",
+ "bevy_pretty_text",
  "clap",
  "console_error_panic_hook",
  "getrandom 0.4.1",
@@ -4334,6 +4380,36 @@ name = "presser"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
+
+[[package]]
+name = "pretty_text_macros"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4de058d13ce22a5d0fd0bfd6c16d924c559c5c20d4d2fbe24d1ebb538e2833a0"
+dependencies = [
+ "bevy_macro_utils 0.18.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "bevy_reflect",
+ "convert_case 0.8.0",
+ "pretty_text_parser",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "pretty_text_parser"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3cf79dc4b25253b4d9868579b9a04bac2f8c6da5fd2fafef2c9c279246bf8a51"
+dependencies = [
+ "bevy",
+ "convert_case 0.8.0",
+ "proc-macro2",
+ "quote",
+ "smallvec",
+ "thiserror 2.0.18",
+ "winnow",
+]
 
 [[package]]
 name = "prettyplease"

@@ -6,6 +6,7 @@ mod ui;
 #[cfg(feature = "feathers")]
 use bevy::feathers::{FeathersPlugins, dark_theme::create_dark_theme, theme::UiTheme};
 use bevy::prelude::*;
+use bevy_pretty_text::prelude::*;
 
 /// Resource to hold the current background color state
 #[derive(Resource)]
@@ -152,6 +153,7 @@ fn main() {
         .add_plugins(AssetConfigPlugin)
         .add_plugins(FontMeshPlugin)
         .add_plugins(PostProcessPlugin)
+        .add_plugins(PrettyTextPlugin)
         .insert_resource(ClearColor(Color::srgb(0.5, 0.5, 0.5)))
         .insert_resource(ColorState {
             color: Srgba::gray(0.5),
@@ -337,12 +339,12 @@ fn setup_help_text(mut commands: Commands) {
         TextLayout::new_with_justify(Justify::Center),
         Node {
             position_type: PositionType::Absolute,
-            // Centre horizontally and sit in the lower third of the screen...ish
             width: Val::Percent(80.0),
             left: Val::Percent(10.0),
-            bottom: Val::Px(80.0),
+            top: Val::Percent(50.0),
             ..default()
         },
+        Shake::default(),
         DisplayInitialHelp,
     ));
 }
