@@ -2686,7 +2686,7 @@ checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
 name = "flan"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "bevy",
  "shaders",
@@ -3838,7 +3838,7 @@ dependencies = [
 
 [[package]]
 name = "mitchty"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "bevy",
  "bevy_egui",
@@ -5133,7 +5133,7 @@ dependencies = [
 
 [[package]]
 name = "shaders"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "bevy",
  "bytemuck",
