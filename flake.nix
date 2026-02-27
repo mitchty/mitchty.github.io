@@ -462,8 +462,9 @@
               if includeAssets then
                 ''
                   echo "copying assets for debug build"
-                  cp -rv ${./crates/mitchty/src/assets} "$TMPDIR/assets"
-                  chmod -R u+w "$TMPDIR/assets"
+                  mkdir -p "$TMPDIR/assets/crates/mitchty/src/assets"
+                  cp -rv ${./crates/mitchty/src/assets}/. "$TMPDIR/assets/crates/mitchty/src/assets/"
+                  chmod -R u+w "$TMPDIR/assets/crates/mitchty/src/assets"
                 ''
               else
                 ''

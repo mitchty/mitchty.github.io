@@ -13,5 +13,10 @@ webgl = ["shaders/webgl"]
 webgpu = ["bevy/webgpu"]
 
 [dependencies]
-bevy = "~0.18.0"
+bevy = { version = "~0.18.0", default-features = false, features = [
+  "bevy_ui",
+  "bevy_sprite",
+  "bevy_render",
+  "bevy_asset",
+] }
 shaders = { path = "../shaders" }

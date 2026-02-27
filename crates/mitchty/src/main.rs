@@ -1,6 +1,5 @@
 mod assets;
 mod fullscreen_effect;
-mod plot;
 mod post_process;
 mod ui;
 
@@ -157,7 +156,7 @@ fn main() {
         .add_plugins(FontMeshPlugin)
         .add_plugins(PostProcessPlugin)
         .add_plugins(PrettyTextPlugin)
-        .add_plugins(plot::PlotSetupPlugin)
+        .add_plugins(flan::PlotPlugin)
         .insert_resource(ClearColor(Color::srgb(0.5, 0.5, 0.5)))
         .insert_resource(ColorState {
             color: Srgba::gray(0.5),

@@ -7,14 +7,15 @@ use shaders::wesl::{Variant, compile};
 const PLOT_WESL: &str = include_str!("../src/shaders/plot.wesl");
 const REFERENCE_WESL: &str = include_str!("../src/shaders/reference.wesl");
 
-// Non-WebGL uniform layout — 36 bytes, no padding.
+// Non-WebGL uniform layout — 40 bytes, no padding.
 //   struct PlotUniform {
 //       min:    vec2<f32>,   // offset  0  (8 bytes)
 //       max:    vec2<f32>,   // offset  8  (8 bytes)
 //       zoom:   vec2<f32>,   // offset 16  (8 bytes)
 //       offset: vec2<f32>,   // offset 24  (8 bytes)
 //       count:  u32,         // offset 32  (4 bytes)
-//   }                        // total: 36 bytes
+//       time:   f32,         // offset 36  (4 bytes)
+//   }                        // total: 40 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PlotUniform {
@@ -23,6 +24,7 @@ struct PlotUniform {
     zoom: [f32; 2],
     offset: [f32; 2],
     count: u32,
+    time: f32,
 }
 
 impl PlotUniform {
@@ -33,19 +35,22 @@ impl PlotUniform {
             zoom: [1.0, 1.0],
             offset: [0.0, 0.0],
             count: 3,
+            time: 0.0,
         }
     }
 }
 
 // WebGL uniform layout — 48 bytes (std140 requires struct size to be a
-// multiple of 16 bytes, so we pad count's trailing 4 bytes up to 12).
+// multiple of 16 bytes; count u32 + time f32 = 8 bytes at offset 32, so we
+// only need 8 bytes of padding to reach 48).
 //   struct PlotUniformWebGl {
 //       min:    vec2<f32>,   // offset  0  (8 bytes)
 //       max:    vec2<f32>,   // offset  8  (8 bytes)
 //       zoom:   vec2<f32>,   // offset 16  (8 bytes)
 //       offset: vec2<f32>,   // offset 24  (8 bytes)
 //       count:  u32,         // offset 32  (4 bytes)
-//       _pad:   [u32; 3],    // offset 36  (12 bytes padding)
+//       time:   f32,         // offset 36  (4 bytes)
+//       _pad:   [u32; 2],    // offset 40  (8 bytes padding)
 //   }                        // total: 48 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -55,7 +60,8 @@ struct PlotUniformWebGl {
     zoom: [f32; 2],
     offset: [f32; 2],
     count: u32,
-    _pad: [u32; 3],
+    time: f32,
+    _pad: [u32; 2],
 }
 
 impl PlotUniformWebGl {
@@ -66,7 +72,8 @@ impl PlotUniformWebGl {
             zoom: [1.0, 1.0],
             offset: [0.0, 0.0],
             count: 3,
-            _pad: [0; 3],
+            time: 0.0,
+            _pad: [0; 2],
         }
     }
 }
