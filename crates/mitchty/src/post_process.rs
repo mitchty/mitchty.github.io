@@ -167,7 +167,7 @@ impl FromWorld for PostProcessPipeline {
                 ShaderStages::FRAGMENT,
                 (
                     BindGroupLayoutEntry {
-                        binding: 0,
+                        binding: u32::MAX,
                         visibility: ShaderStages::FRAGMENT,
                         ty: BindingType::Texture {
                             sample_type: TextureSampleType::Float { filterable: true },
@@ -177,13 +177,13 @@ impl FromWorld for PostProcessPipeline {
                         count: None,
                     },
                     BindGroupLayoutEntry {
-                        binding: 1,
+                        binding: u32::MAX,
                         visibility: ShaderStages::FRAGMENT,
                         ty: BindingType::Sampler(SamplerBindingType::Filtering),
                         count: None,
                     },
                     BindGroupLayoutEntry {
-                        binding: 2,
+                        binding: u32::MAX,
                         visibility: ShaderStages::FRAGMENT,
                         ty: BindingType::Buffer {
                             ty: BufferBindingType::Uniform,

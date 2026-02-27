@@ -1,5 +1,6 @@
 // Fullscreen post-processing effect management
 use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled, PostProcessSettings};
+use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 
 /// Camera orbit data for where the camera is pointing.
@@ -119,6 +120,10 @@ pub fn spawn_camera(
 
     commands.spawn((
         Camera3d::default(),
+        Camera {
+            order: -1, // Render before default (0) - 3D scene renders first
+            ..default()
+        },
         config.transform,
         EnvironmentMapLight {
             diffuse_map: asset_server.load(diffuse_path),
@@ -135,6 +140,9 @@ pub fn spawn_camera(
             #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
             _webgl2_padding: Vec2::ZERO,
         },
+        // Only render layer 0 (main 3D scene)
+        // Layer 1 is for overlays without post-processing
+        RenderLayers::layer(0),
     ));
 
     debug!("camera post-processing {}", effects_enabled.0);

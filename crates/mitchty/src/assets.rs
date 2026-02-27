@@ -7,14 +7,19 @@ use bevy::asset::embedded_asset;
 /// Returns the path based on BEVY_ASSET_PATH env var or a fallback path.
 ///
 /// Here to make testing with and without embedding easier.
-#[allow(dead_code)] // Used only in specific build configurations
+///
+/// Points to workspace root to allow access to assets in other crates
+#[allow(dead_code)]
 pub fn get_asset_base_path(bevy_asset_path_env: Option<String>, manifest_dir: &str) -> String {
     use std::path::PathBuf;
 
+    // Finds workspace root for the asset_base_path
     bevy_asset_path_env.unwrap_or_else(|| {
         PathBuf::from(manifest_dir)
-            .join("src")
-            .join("assets")
+            .parent()
+            .and_then(|p| p.parent())
+            .unwrap()
+            .to_path_buf()
             .to_string_lossy()
             .to_string()
     })
@@ -25,9 +30,10 @@ pub fn get_asset_base_path(bevy_asset_path_env: Option<String>, manifest_dir: &s
 // used in both profiles in the binary..
 
 /// Get asset path for debug builds from fs or http if wasm
+/// Prepends crates/mitchty/src/assets/ since asset base is workspace root now
 #[allow(dead_code)]
 pub fn asset_path_debug(path: &str) -> String {
-    path.to_string()
+    format!("crates/mitchty/src/assets/{}", path)
 }
 
 /// Get asset path for release builds, always embedded assets for release builds
@@ -60,7 +66,7 @@ pub fn asset_path(path: &str) -> String {
 macro_rules! asset_path_raw {
     ($path:expr) => {
         if cfg!(debug_assertions) {
-            $path
+            concat!("crates/mitchty/src/assets/", $path)
         } else {
             concat!("embedded://mitchty/assets/", $path)
         }
@@ -160,28 +166,33 @@ mod tests {
 
     #[test]
     fn test_get_asset_base_path_fallback() {
-        // When BEVY_ASSET_PATH is not set, use CARGO_MANIFEST_DIR/src/assets
+        // When BEVY_ASSET_PATH is not set, walk up ../.. to get to workspace root
         let result = get_asset_base_path(None, "/project/crates/mitchty");
-        assert_eq!(result, "/project/crates/mitchty/src/assets");
+        assert_eq!(result, "/project");
     }
 
     #[test]
     fn test_get_asset_base_path_fallback_relative() {
-        // Test with relative path
+        // Two parents up from this crates path should be cwd/../.. == workspace root.
         let result = get_asset_base_path(None, "crates/mitchty");
-        assert_eq!(result, "crates/mitchty/src/assets");
+        assert_eq!(result, "");
     }
 
     #[test]
     fn test_asset_path_debug() {
-        assert_eq!(asset_path_debug("test.png"), "test.png");
+        // Workspace root is whats used for debug builds to get to the
+        // AssetPlugin base path and so that matches what is in git.
+        assert_eq!(
+            asset_path_debug("test.png"),
+            "crates/mitchty/src/assets/test.png"
+        );
         assert_eq!(
             asset_path_debug("environment_maps/pisa.ktx2"),
-            "environment_maps/pisa.ktx2"
+            "crates/mitchty/src/assets/environment_maps/pisa.ktx2"
         );
         assert_eq!(
             asset_path_debug("foo/bar/baz/asset.ktx2"),
-            "foo/bar/baz/asset.ktx2"
+            "crates/mitchty/src/assets/foo/bar/baz/asset.ktx2"
         );
     }
 

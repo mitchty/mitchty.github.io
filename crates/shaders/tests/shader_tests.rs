@@ -1,0 +1,237 @@
+// TODO: Refactor this to be dynamic mabye?
+use bytemuck::{Pod, Zeroable};
+use shaders::render::{Binding, BindingKind, render_shader};
+use shaders::snapshot::{DEFAULT_SSIM_THRESHOLD, assert_snapshot, frame_to_image};
+use shaders::wesl::{Variant, compile};
+
+const PLOT_WESL: &str = include_str!("../src/shaders/plot.wesl");
+const REFERENCE_WESL: &str = include_str!("../src/shaders/reference.wesl");
+
+// Non-WebGL uniform layout — 36 bytes, no padding.
+//   struct PlotUniform {
+//       min:    vec2<f32>,   // offset  0  (8 bytes)
+//       max:    vec2<f32>,   // offset  8  (8 bytes)
+//       zoom:   vec2<f32>,   // offset 16  (8 bytes)
+//       offset: vec2<f32>,   // offset 24  (8 bytes)
+//       count:  u32,         // offset 32  (4 bytes)
+//   }                        // total: 36 bytes
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct PlotUniform {
+    min: [f32; 2],
+    max: [f32; 2],
+    zoom: [f32; 2],
+    offset: [f32; 2],
+    count: u32,
+}
+
+impl PlotUniform {
+    fn test_default() -> Self {
+        Self {
+            min: [0.0, 0.0],
+            max: [1.0, 1.0],
+            zoom: [1.0, 1.0],
+            offset: [0.0, 0.0],
+            count: 3,
+        }
+    }
+}
+
+// WebGL uniform layout — 48 bytes (std140 requires struct size to be a
+// multiple of 16 bytes, so we pad count's trailing 4 bytes up to 12).
+//   struct PlotUniformWebGl {
+//       min:    vec2<f32>,   // offset  0  (8 bytes)
+//       max:    vec2<f32>,   // offset  8  (8 bytes)
+//       zoom:   vec2<f32>,   // offset 16  (8 bytes)
+//       offset: vec2<f32>,   // offset 24  (8 bytes)
+//       count:  u32,         // offset 32  (4 bytes)
+//       _pad:   [u32; 3],    // offset 36  (12 bytes padding)
+//   }                        // total: 48 bytes
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct PlotUniformWebGl {
+    min: [f32; 2],
+    max: [f32; 2],
+    zoom: [f32; 2],
+    offset: [f32; 2],
+    count: u32,
+    _pad: [u32; 3],
+}
+
+impl PlotUniformWebGl {
+    fn test_default() -> Self {
+        Self {
+            min: [0.0, 0.0],
+            max: [1.0, 1.0],
+            zoom: [1.0, 1.0],
+            offset: [0.0, 0.0],
+            count: 3,
+            _pad: [0; 3],
+        }
+    }
+}
+
+// ── Test point data (binding 1, non-WEBGL) ───────────────────────────────────
+//
+// Three vec2<f32> forming a diagonal line across [0,1]².
+fn test_points_bytes() -> Vec<u8> {
+    let pts: &[[f32; 2]] = &[[0.1, 0.1], [0.5, 0.5], [0.9, 0.9]];
+    bytemuck::cast_slice(pts).to_vec()
+}
+
+// ── Generic render helper ─────────────────────────────────────────────────────
+
+/// Compile `src` (a raw WESL string) for `variant` (must be a WGPU_TEST
+/// variant) and render it with the standard test uniform data.
+///
+/// Uses `Variant::TEST_*` so the WESL produces @group(0) bindings and a
+/// minimal FragmentInput — no group patching required.
+fn render_wesl(stem: &str, src: &str, variant: Variant) -> shaders::render::RenderedFrame {
+    assert!(variant.wgpu_test, "render_wesl requires a TEST_* variant");
+
+    let wgsl = compile(stem, src, variant)
+        .unwrap_or_else(|e| panic!("WESL compile failed for {stem}: {e}"));
+
+    let frame = if variant.webgl {
+        let uniform = PlotUniformWebGl::test_default();
+        let uniform_bytes = bytemuck::bytes_of(&uniform);
+        // WEBGL: binding 1 is a uniform buffer of 512 × vec4<f32>.
+        // Pack our 3 test points into the first 3 vec4 slots (.xy = point, .zw = 0).
+        let mut point_data = vec![0u32; 512 * 4];
+        let pts = [[0.1f32, 0.1], [0.5, 0.5], [0.9, 0.9]];
+        for (i, p) in pts.iter().enumerate() {
+            point_data[i * 4] = p[0].to_bits();
+            point_data[i * 4 + 1] = p[1].to_bits();
+        }
+        let point_bytes: &[u8] = bytemuck::cast_slice(&point_data);
+        render_shader(
+            &wgsl,
+            &[
+                Binding {
+                    slot: 0,
+                    kind: BindingKind::Uniform,
+                    data: uniform_bytes,
+                },
+                Binding {
+                    slot: 1,
+                    kind: BindingKind::Uniform,
+                    data: point_bytes,
+                },
+            ],
+        )
+    } else {
+        // Non-WEBGL: binding 1 is a storage buffer of vec2<f32>.
+        let uniform = PlotUniform::test_default();
+        let uniform_bytes = bytemuck::bytes_of(&uniform);
+        let point_bytes = test_points_bytes();
+        render_shader(
+            &wgsl,
+            &[
+                Binding {
+                    slot: 0,
+                    kind: BindingKind::Uniform,
+                    data: uniform_bytes,
+                },
+                Binding {
+                    slot: 1,
+                    kind: BindingKind::StorageRead,
+                    data: &point_bytes,
+                },
+            ],
+        )
+    };
+
+    frame.unwrap_or_else(|e| panic!("render({stem}, {:?}) failed: {e}", variant.dir_name()))
+}
+
+// ── Convenience wrappers ──────────────────────────────────────────────────────
+
+fn render_plot(variant: Variant) -> shaders::render::RenderedFrame {
+    render_wesl("plot", PLOT_WESL, variant)
+}
+
+fn render_reference(variant: Variant) -> shaders::render::RenderedFrame {
+    render_wesl("reference", REFERENCE_WESL, variant)
+}
+
+// ── plot snapshot tests ───────────────────────────────────────────────────────
+
+/// Reference render for plot — material variant (desktop, non-UI).
+#[test]
+fn snapshot_plot_material() {
+    let frame = render_plot(Variant::TEST_MATERIAL);
+    assert_snapshot("plot_material", &frame, DEFAULT_SSIM_THRESHOLD);
+}
+
+/// Reference render for plot — ui variant (desktop, UiMaterial binding logic).
+#[test]
+fn snapshot_plot_ui() {
+    let frame = render_plot(Variant::TEST_UI);
+    assert_snapshot("plot_ui", &frame, DEFAULT_SSIM_THRESHOLD);
+}
+
+// ── reference snapshot tests ──────────────────────────────────────────────────
+
+/// Reference render for the reference shader — material variant.
+#[test]
+fn snapshot_reference_material() {
+    let frame = render_reference(Variant::TEST_MATERIAL);
+    assert_snapshot("reference_material", &frame, DEFAULT_SSIM_THRESHOLD);
+}
+
+/// Reference render for the reference shader — ui variant.
+#[test]
+fn snapshot_reference_ui() {
+    let frame = render_reference(Variant::TEST_UI);
+    assert_snapshot("reference_ui", &frame, DEFAULT_SSIM_THRESHOLD);
+}
+
+// ── Cross-variant consistency checks ─────────────────────────────────────────
+
+/// Material and UI variants of plot should be visually identical — same shader
+/// logic, only the binding group differs (which WGPU_TEST normalises to
+/// @group(0)).
+#[test]
+fn plot_material_and_ui_are_visually_equivalent() {
+    let mat = frame_to_image(&render_plot(Variant::TEST_MATERIAL));
+    let ui = frame_to_image(&render_plot(Variant::TEST_UI));
+
+    let result = image_compare::rgba_hybrid_compare(&mat, &ui).expect("SSIM comparison failed");
+
+    assert!(
+        result.score >= DEFAULT_SSIM_THRESHOLD,
+        "plot: material and ui variants diverge visually: SSIM = {:.4}",
+        result.score,
+    );
+}
+
+/// Material and UI variants of reference should be visually identical.
+#[test]
+fn reference_material_and_ui_are_visually_equivalent() {
+    let mat = frame_to_image(&render_reference(Variant::TEST_MATERIAL));
+    let ui = frame_to_image(&render_reference(Variant::TEST_UI));
+
+    let result = image_compare::rgba_hybrid_compare(&mat, &ui).expect("SSIM comparison failed");
+
+    assert!(
+        result.score >= DEFAULT_SSIM_THRESHOLD,
+        "reference: material and ui variants diverge visually: SSIM = {:.4}",
+        result.score,
+    );
+}
+
+/// Plot and reference shaders should render visually differently — they have
+/// distinct fragment bodies.  If they become identical something is wrong.
+#[test]
+fn plot_and_reference_are_visually_distinct() {
+    let plot = frame_to_image(&render_plot(Variant::TEST_MATERIAL));
+    let rref = frame_to_image(&render_reference(Variant::TEST_MATERIAL));
+
+    let result = image_compare::rgba_hybrid_compare(&plot, &rref).expect("SSIM comparison failed");
+
+    assert!(
+        result.score < 0.99,
+        "plot and reference shaders are unexpectedly identical: SSIM = {:.4}",
+        result.score,
+    );
+}

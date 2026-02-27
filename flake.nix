@@ -141,6 +141,7 @@
             ./Cargo.lock
             ./Cargo.toml
             (lib.fileset.fileFilter (file: file.hasExt "toml") ./crates)
+            (lib.fileset.fileFilter (file: file.hasExt "wesl") ./crates)
           ];
         };
 
@@ -149,6 +150,7 @@
           root = ./.;
           fileset = lib.fileset.unions [
             (lib.fileset.fileFilter (file: file.hasExt "rs") ./crates)
+            (lib.fileset.fileFilter (file: file.hasExt "wesl") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "toml") ./crates)
             ./Cargo.toml
             ./Cargo.lock
@@ -418,11 +420,13 @@
               ./Cargo.toml
               ./Cargo.lock
               (craneLib.fileset.commonCargoSources crate)
-              (lib.fileset.fileFilter (file: file.hasExt "rs") ./crates/mitchty/src)
-              (lib.fileset.maybeMissing ./crates/${crate}/Cargo.toml)
+              (lib.fileset.fileFilter (file: file.hasExt "rs") ./crates)
+              (lib.fileset.fileFilter (file: file.hasExt "toml") ./crates)
               (lib.fileset.fileFilter (file: file.hasExt "ktx2") ./.)
               (lib.fileset.fileFilter (file: file.hasExt "ttf") ./.)
+              (lib.fileset.fileFilter (file: file.hasExt "otf") ./.)
               (lib.fileset.fileFilter (file: file.hasExt "wgsl") ./.)
+              (lib.fileset.fileFilter (file: file.hasExt "wesl") ./.)
             ];
           };
 
@@ -562,7 +566,7 @@
                 pname = "mitchty-wasm-lto";
                 version = version;
                 cargoArtifacts = cargoArtifactsWasm;
-                cargoExtraArgs = "-p mitchty";
+                cargoExtraArgs = "-p mitchty --features mitchty/webgl";
                 src = fileSetForCrate ./crates/mitchty;
 
                 STUPIDNIXFLAKEHACK = version;
@@ -621,7 +625,7 @@
                 pname = "mitchty-wasm";
                 version = version;
                 cargoArtifacts = cargoArtifactsWasmDebug;
-                cargoExtraArgs = "-p mitchty";
+                cargoExtraArgs = "-p mitchty --features mitchty/webgl";
                 src = fileSetForCrate ./crates/mitchty;
 
                 STUPIDNIXFLAKEHACK = version;

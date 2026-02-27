@@ -1,5 +1,6 @@
 mod assets;
 mod fullscreen_effect;
+mod plot;
 mod post_process;
 mod ui;
 
@@ -24,6 +25,7 @@ use fullscreen_effect::{
     toggle_fullscreen_effect, update_effect_time,
 };
 use post_process::PostProcessPlugin;
+use shaders::ShadersPlugin;
 use ui::SettingsUiPlugin;
 
 /// Absolute rotation speed
@@ -151,9 +153,11 @@ fn main() {
 
     app.add_plugins(assets::create_default_plugins(enable_gamepad))
         .add_plugins(AssetConfigPlugin)
+        .add_plugins(ShadersPlugin)
         .add_plugins(FontMeshPlugin)
         .add_plugins(PostProcessPlugin)
         .add_plugins(PrettyTextPlugin)
+        .add_plugins(plot::PlotSetupPlugin)
         .insert_resource(ClearColor(Color::srgb(0.5, 0.5, 0.5)))
         .insert_resource(ColorState {
             color: Srgba::gray(0.5),
@@ -163,6 +167,8 @@ fn main() {
     // Conditionally add UI-specific plugins
     #[cfg(feature = "egui")]
     {
+        // egui renders via render graph nodes, not cameras, so it automatically
+        // renders on top of both 3D and 2D cameras
         app.add_plugins(bevy_egui::EguiPlugin::default());
     }
 
@@ -328,9 +334,7 @@ fn setup_fps_ui(mut commands: Commands) {
 /// Spawn the initial touch help overlay.
 fn setup_help_text(mut commands: Commands) {
     commands.spawn((
-        Text::new(
-            "Touch and pan to rotate, touch or click to display a menubar to change settings. g key also toggles the menubar.",
-        ),
+        pretty!("[[Touch and pan to rotate](red, scramble(30, always), shake)]\n[[Touch or click to display a menubar](white, shake(20))]\n[[G/g key also toggles the menubar](yellow, shake(20))]"),
         TextFont {
             font_size: 22.0,
             ..default()
@@ -344,7 +348,6 @@ fn setup_help_text(mut commands: Commands) {
             top: Val::Percent(50.0),
             ..default()
         },
-        Shake::default(),
         DisplayInitialHelp,
     ));
 }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/mitchty"]
+members = ["crates/flan", "crates/mitchty", "crates/shaders"]
 
 [workspace.package]
 edition = "2024"
@@ -71,3 +71,4 @@ bevy_derive = { git = "https://github.com/bevyengine/bevy", branch = "release-0.
 bevy_log = { git = "https://github.com/bevyengine/bevy", branch = "release-0.18.1" }
 bevy_picking = { git = "https://github.com/bevyengine/bevy", branch = "release-0.18.1" }
 bevy_platform = { git = "https://github.com/bevyengine/bevy", branch = "release-0.18.1" }
+bevy_macro_utils = { git = "https://github.com/bevyengine/bevy", branch = "release-0.18.1" }
