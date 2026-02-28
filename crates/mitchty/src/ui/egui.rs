@@ -1,4 +1,5 @@
 use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled};
+use crate::ui::scroll_view::{ActivePost, POSTS};
 use crate::{ColorState, CubeRotation, DragState, FpsDisplay, HueAnimation};
 use bevy::input::touch::TouchPhase;
 use bevy::prelude::*;
@@ -110,6 +111,7 @@ fn settings_ui(
     cube_rotation_query: Query<Entity, With<CubeRotation>>,
     hue_animation_query: Query<Entity, With<HueAnimation>>,
     show_egui_query: Query<(), With<ShowEgui>>,
+    mut active_post: ResMut<ActivePost>,
     mut active_shader: ResMut<ActiveShader>,
     available_shaders: Res<AvailableShaders>,
     mut commands: Commands,
@@ -203,6 +205,16 @@ fn settings_ui(
                         commands.spawn(HueAnimation);
                     } else if let Ok(entity) = hue_animation_query.single() {
                         commands.entity(entity).despawn();
+                    }
+                }
+            });
+
+            ui.menu_button("Posts", |ui| {
+                for (idx, post) in POSTS.iter().enumerate() {
+                    let is_active = active_post.0 == Some(idx);
+                    if ui.selectable_label(is_active, post.name).clicked() {
+                        active_post.0 = if is_active { None } else { Some(idx) };
+                        ui.close();
                     }
                 }
             });

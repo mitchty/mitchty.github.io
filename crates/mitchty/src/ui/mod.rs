@@ -8,6 +8,9 @@ mod feathers;
 #[cfg(feature = "feathers")]
 pub use feathers::*;
 
+mod scroll_view;
+pub use scroll_view::*;
+
 #[cfg(not(any(feature = "egui", feature = "feathers")))]
 compile_error!("this is a gooey only app, need feathers or egui");
 

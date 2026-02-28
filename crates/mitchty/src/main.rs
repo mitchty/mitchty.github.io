@@ -25,7 +25,7 @@ use fullscreen_effect::{
 };
 use post_process::PostProcessPlugin;
 use shaders::ShadersPlugin;
-use ui::SettingsUiPlugin;
+use ui::{ScrollViewPlugin, SettingsUiPlugin, send_scroll_events};
 
 /// Absolute rotation speed
 const SPEED: f32 = 2.25;
@@ -178,6 +178,7 @@ fn main() {
     }
 
     app.add_plugins(SettingsUiPlugin)
+        .add_plugins(ScrollViewPlugin)
         .init_resource::<DragState>()
         .add_systems(Startup, (setup, setup_fps_ui, setup_3d_text, spawn_camera))
         .add_systems(
@@ -199,6 +200,7 @@ fn main() {
                 apply_hue_animation,
                 manage_effect_settings,
                 update_effect_time,
+                send_scroll_events,
                 update_fps_display.run_if(bevy::time::common_conditions::on_timer(
                     std::time::Duration::from_secs_f32(0.5),
                 )),
@@ -511,7 +513,8 @@ fn apply_hue_animation(
 #[derive(Component)]
 struct Text3d;
 
-/// Setup 3D text "work in progress" above the cubes... future funsies is making this dynamic... future mitch
+/// Setup 3D text of whatever I compiled in directly above the cubes... future
+/// funsies is making this dynamic... future mitch problem
 fn setup_3d_text(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -532,7 +535,7 @@ fn setup_3d_text(
     commands.spawn((
         TextMeshBundle {
             text_mesh: TextMesh {
-                text: String::from("work in progress"),
+                text: String::from("Nova Aurora"),
                 font: asset_server.load(font_path),
                 style: TextMeshStyle {
                     depth: 0.1,
