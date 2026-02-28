@@ -99,18 +99,29 @@ fn test_points_bytes() -> Vec<u8> {
     bytemuck::cast_slice(&pts).to_vec()
 }
 
-/// Compile `src` (a raw WESL string) for `variant` (must be a WGPU_TEST
-/// variant) and render it with the standard test uniform data.
+/// Is there a render device we can use or not? If not this can be used to skip
+/// ssim tests.
+fn has_no_adapter(err: &str) -> bool {
+    err.contains("no wgpu adapter found")
+}
+
+/// Compile whatever `src` is, should be a raw wesl string for `variant` which
+/// must be a WGPU_TEST variant for now and render it with the standard test
+/// uniform data.
+///
+/// Returns `None` when no gpu adapter is found at test time so that callers can
+/// skip gracefully and not panic() and fail tests needlessly when they couldn't
+/// run at all. Returns `Some(frame)` on success. Panics on any other error type.
 ///
 /// Uses `Variant::TEST_*` so the WESL produces @group(0) bindings and a
 /// minimal FragmentInput — no group patching required.
-fn render_wesl(stem: &str, src: &str, variant: Variant) -> shaders::render::RenderedFrame {
+fn render_wesl(stem: &str, src: &str, variant: Variant) -> Option<shaders::render::RenderedFrame> {
     assert!(variant.wgpu_test, "render_wesl requires a TEST_* variant");
 
     let wgsl = compile(stem, src, variant)
         .unwrap_or_else(|e| panic!("WESL compile failed for {stem}: {e}"));
 
-    let frame = if variant.webgl {
+    let result = if variant.webgl {
         let uniform = PlotUniformWebGl::test_default();
         let uniform_bytes = bytemuck::bytes_of(&uniform);
         // WEBGL: binding 1 is a uniform buffer of 512 × vec4<f32>.
@@ -159,42 +170,60 @@ fn render_wesl(stem: &str, src: &str, variant: Variant) -> shaders::render::Rend
         )
     };
 
-    frame.unwrap_or_else(|e| panic!("render({stem}, {:?}) failed: {e}", variant.dir_name()))
+    match result {
+        Ok(frame) => Some(frame),
+        Err(ref e) if has_no_adapter(e) => {
+            eprintln!(
+                "skipping {stem}/{:?} no gpu found to test with: {e}",
+                variant.dir_name()
+            );
+            None
+        }
+        Err(e) => panic!("render({stem}, {:?}) failed: {e}", variant.dir_name()),
+    }
 }
 
-fn render_plot(variant: Variant) -> shaders::render::RenderedFrame {
+fn render_plot(variant: Variant) -> Option<shaders::render::RenderedFrame> {
     render_wesl("plot", PLOT_WESL, variant)
 }
 
-fn render_reference(variant: Variant) -> shaders::render::RenderedFrame {
+fn render_reference(variant: Variant) -> Option<shaders::render::RenderedFrame> {
     render_wesl("reference", REFERENCE_WESL, variant)
 }
 
 /// Reference render for plot — material variant (desktop, non-UI).
 #[test]
 fn snapshot_plot_material() {
-    let frame = render_plot(Variant::TEST_MATERIAL);
+    let Some(frame) = render_plot(Variant::TEST_MATERIAL) else {
+        return;
+    };
     assert_snapshot("plot_material", &frame, DEFAULT_SSIM_THRESHOLD);
 }
 
 /// Reference render for plot — ui variant (desktop, UiMaterial binding logic).
 #[test]
 fn snapshot_plot_ui() {
-    let frame = render_plot(Variant::TEST_UI);
+    let Some(frame) = render_plot(Variant::TEST_UI) else {
+        return;
+    };
     assert_snapshot("plot_ui", &frame, DEFAULT_SSIM_THRESHOLD);
 }
 
 /// Reference render for the reference shader — material variant.
 #[test]
 fn snapshot_reference_material() {
-    let frame = render_reference(Variant::TEST_MATERIAL);
+    let Some(frame) = render_reference(Variant::TEST_MATERIAL) else {
+        return;
+    };
     assert_snapshot("reference_material", &frame, DEFAULT_SSIM_THRESHOLD);
 }
 
 /// Reference render for the reference shader — ui variant.
 #[test]
 fn snapshot_reference_ui() {
-    let frame = render_reference(Variant::TEST_UI);
+    let Some(frame) = render_reference(Variant::TEST_UI) else {
+        return;
+    };
     assert_snapshot("reference_ui", &frame, DEFAULT_SSIM_THRESHOLD);
 }
 
@@ -203,9 +232,15 @@ fn snapshot_reference_ui() {
 /// @group(0)).
 #[test]
 fn plot_material_and_ui_are_visually_equivalent() {
-    let mat = frame_to_image(&render_plot(Variant::TEST_MATERIAL));
-    let ui = frame_to_image(&render_plot(Variant::TEST_UI));
+    let Some(mat_frame) = render_plot(Variant::TEST_MATERIAL) else {
+        return;
+    };
+    let Some(ui_frame) = render_plot(Variant::TEST_UI) else {
+        return;
+    };
 
+    let mat = frame_to_image(&mat_frame);
+    let ui = frame_to_image(&ui_frame);
     let result = image_compare::rgba_hybrid_compare(&mat, &ui).expect("SSIM comparison failed");
 
     assert!(
@@ -218,9 +253,15 @@ fn plot_material_and_ui_are_visually_equivalent() {
 /// Material and UI variants of reference should be visually identical.
 #[test]
 fn reference_material_and_ui_are_visually_equivalent() {
-    let mat = frame_to_image(&render_reference(Variant::TEST_MATERIAL));
-    let ui = frame_to_image(&render_reference(Variant::TEST_UI));
+    let Some(mat_frame) = render_reference(Variant::TEST_MATERIAL) else {
+        return;
+    };
+    let Some(ui_frame) = render_reference(Variant::TEST_UI) else {
+        return;
+    };
 
+    let mat = frame_to_image(&mat_frame);
+    let ui = frame_to_image(&ui_frame);
     let result = image_compare::rgba_hybrid_compare(&mat, &ui).expect("SSIM comparison failed");
 
     assert!(
