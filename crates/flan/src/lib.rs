@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use bevy::prelude::*;
 use bevy::render::render_resource::*;
 use bevy::shader::ShaderRef;
@@ -14,6 +16,19 @@ pub const MAX_PLOT_POINTS: usize = 512;
 #[derive(Component)]
 pub struct PlotUiNode;
 
+/// Number of data points kept in the scrolling plot buffer (for now....)
+/// Oldest point is at the front idx 0, newest at the limit
+pub const PLOT_BUFFER_SIZE: usize = 200;
+
+/// Circular scrolling buffer for the plot shader. Here so I can add "new" data
+/// every second and it looks like this is plotting... something. The shader
+/// always gets from oldest to newest so it "looks" like its animating rightward
+/// with new data.
+#[derive(Resource)]
+pub struct PlotDataState {
+    pub ys: VecDeque<f32>,
+}
+
 pub struct PlotPlugin;
 
 impl Plugin for PlotPlugin {
@@ -23,7 +38,15 @@ impl Plugin for PlotPlugin {
         app.add_plugins(Material2dPlugin::<PlotMaterial>::default())
             .add_plugins(UiMaterialPlugin::<PlotUiMaterial>::default())
             .add_systems(Startup, setup_plot_ui)
-            .add_systems(Update, animate_plot_time);
+            .add_systems(
+                Update,
+                (
+                    animate_plot_time,
+                    update_plot_data.run_if(bevy::time::common_conditions::on_timer(
+                        std::time::Duration::from_millis(379),
+                    )),
+                ),
+            );
     }
 }
 
@@ -32,13 +55,21 @@ fn setup_plot_ui(
     mut ui_materials: ResMut<Assets<PlotUiMaterial>>,
     #[cfg(not(feature = "webgl"))] mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
 ) {
-    let points: Vec<Vec2> = (0..200)
-        .map(|i| {
-            let x = i as f32 / 199.0;
-            let y = (x * 10.0).sin() * 0.4 + 0.5;
-            Vec2::new(x, y)
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let mut y = rng.random_range(0.0f32..=1.0f32);
+
+    let ys: VecDeque<f32> = (0..PLOT_BUFFER_SIZE)
+        .map(|_| {
+            let step: f32 = rng.random_range(-0.1..=0.1);
+            y = (y + step).clamp(0.0, 1.0);
+            y
         })
         .collect();
+
+    let points = ys_to_points(&ys);
+
+    commands.insert_resource(PlotDataState { ys });
 
     #[cfg(not(feature = "webgl"))]
     let points_binding = buffers.add(ShaderStorageBuffer::from(points.clone()));
@@ -70,7 +101,12 @@ fn setup_plot_ui(
         Node {
             position_type: PositionType::Absolute,
             left: Val::Px(10.0),
-            top: Val::Px(10.0),
+            // Keep this in the middle vertically
+            top: Val::Percent(50.0),
+            margin: UiRect {
+                top: Val::Px(-100.0),
+                ..default()
+            },
             width: Val::Px(200.0),
             height: Val::Px(200.0),
             ..default()
@@ -80,8 +116,64 @@ fn setup_plot_ui(
     ));
 }
 
-/// For now let plot shader "animate" by tacking time to the end of the params
-/// passed into the uniform groups.
+/// Converts the deque yvals into a `Vec<Vec2>` with X in range of [0, 1] for
+/// the shader uv code to be simple.
+fn ys_to_points(ys: &VecDeque<f32>) -> Vec<Vec2> {
+    let n = ys.len();
+    ys.iter()
+        .enumerate()
+        .map(|(i, &y)| Vec2::new(i as f32 / (n - 1) as f32, y))
+        .collect()
+}
+
+/// Updates the circular buffer one step data point to the right and drops the
+/// oldest Y from the deque head, appends one new Y bounded to not too far from
+/// the latest value to the deque tail, then uploads the full buffer to the
+/// shader. Basically every tick of this system we gain a new element to what
+/// the plot shader contains.
+fn update_plot_data(
+    mut state: ResMut<PlotDataState>,
+    node_query: Query<&MaterialNode<PlotUiMaterial>, With<PlotUiNode>>,
+    mut ui_materials: ResMut<Assets<PlotUiMaterial>>,
+    #[cfg(not(feature = "webgl"))] mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
+) {
+    use rand::Rng;
+    let mut rng = rand::rng();
+
+    state.ys.pop_front();
+    let last = *state.ys.back().unwrap_or(&0.5);
+    let step: f32 = rng.random_range(-0.1..=0.1);
+    state.ys.push_back((last + step).clamp(0.0, 1.0));
+
+    let points = ys_to_points(&state.ys);
+
+    for material_node in node_query.iter() {
+        let Some(mat) = ui_materials.get_mut(material_node) else {
+            continue;
+        };
+
+        #[cfg(not(feature = "webgl"))]
+        if let Some(buf) = buffers.get_mut(&mat.points) {
+            *buf = ShaderStorageBuffer::from(points.clone());
+        }
+
+        #[cfg(feature = "webgl")]
+        {
+            let mut data = [Vec4::ZERO; MAX_PLOT_POINTS];
+            for (i, p) in points.iter().enumerate().take(MAX_PLOT_POINTS) {
+                data[i] = Vec4::new(p.x, p.y, 0.0, 0.0);
+            }
+            mat.points = PlotPointsUniform { data };
+            mat.params.count = points.len().min(MAX_PLOT_POINTS) as u32;
+        }
+    }
+}
+
+/// Keep `params.time` ticking so downstream code / future shaders can use it
+/// for time based changes to displaying data.
+///
+/// Here for future work where time might be used for something in the shaders
+/// different from the actual data shown.
 fn animate_plot_time(
     time: Res<Time>,
     node_query: Query<&MaterialNode<PlotUiMaterial>, With<PlotUiNode>>,

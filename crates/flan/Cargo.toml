@@ -19,4 +19,8 @@ bevy = { version = "~0.18.0", default-features = false, features = [
   "bevy_render",
   "bevy_asset",
 ] }
+rand.workspace = true
 shaders = { path = "../shaders" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom.workspace = true

@@ -2689,6 +2689,8 @@ name = "flan"
 version = "0.0.5"
 dependencies = [
  "bevy",
+ "getrandom 0.4.1",
+ "rand",
  "shaders",
 ]
 

@@ -7,6 +7,14 @@ edition = "2024"
 license = "BlueOak-1.0.0"
 version = "0.0.5"
 
+[workspace.dependencies]
+rand = { version = "~0.9.2", default-features = false, features = [
+  "thread_rng",
+] }
+# FUTURE MITCH: this is a dependency OF rand, and without the wasm_js feature
+# crap don't work. Stop uncommenting things dammit trust past mitch.
+getrandom = { version = "~0.4.1", features = ["wasm_js"] }
+
 [workspace.metadata.crane]
 name = "mitchty"
 

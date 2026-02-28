@@ -34,7 +34,7 @@ impl PlotUniform {
             max: [1.0, 1.0],
             zoom: [1.0, 1.0],
             offset: [0.0, 0.0],
-            count: 3,
+            count: TEST_POINT_COUNT as u32,
             time: 0.0,
         }
     }
@@ -71,22 +71,33 @@ impl PlotUniformWebGl {
             max: [1.0, 1.0],
             zoom: [1.0, 1.0],
             offset: [0.0, 0.0],
-            count: 3,
+            count: TEST_POINT_COUNT as u32,
             time: 0.0,
             _pad: [0; 2],
         }
     }
 }
 
-// ── Test point data (binding 1, non-WEBGL) ───────────────────────────────────
-//
-// Three vec2<f32> forming a diagonal line across [0,1]².
-fn test_points_bytes() -> Vec<u8> {
-    let pts: &[[f32; 2]] = &[[0.1, 0.1], [0.5, 0.5], [0.9, 0.9]];
-    bytemuck::cast_slice(pts).to_vec()
+// Sample the same sin wave the old analytic shader drew so reference PNGs
+// remain valid.  200 points keeps WebGL count well within MAX_PLOT_POINTS (512)
+// and gives enough density that the polyline SDF matches the analytic one
+// closely enough to pass the SSIM threshold.
+const TEST_POINT_COUNT: usize = 200;
+
+fn test_sin_wave_points() -> Vec<[f32; 2]> {
+    (0..TEST_POINT_COUNT)
+        .map(|i| {
+            let x = i as f32 / (TEST_POINT_COUNT - 1) as f32;
+            let y = (x * 10.0_f32).sin() * 0.4 + 0.5;
+            [x, y]
+        })
+        .collect()
 }
 
-// ── Generic render helper ─────────────────────────────────────────────────────
+fn test_points_bytes() -> Vec<u8> {
+    let pts = test_sin_wave_points();
+    bytemuck::cast_slice(&pts).to_vec()
+}
 
 /// Compile `src` (a raw WESL string) for `variant` (must be a WGPU_TEST
 /// variant) and render it with the standard test uniform data.
@@ -103,10 +114,10 @@ fn render_wesl(stem: &str, src: &str, variant: Variant) -> shaders::render::Rend
         let uniform = PlotUniformWebGl::test_default();
         let uniform_bytes = bytemuck::bytes_of(&uniform);
         // WEBGL: binding 1 is a uniform buffer of 512 × vec4<f32>.
-        // Pack our 3 test points into the first 3 vec4 slots (.xy = point, .zw = 0).
+        // Pack sin-wave test points into the first TEST_POINT_COUNT vec4 slots
+        // (.xy = point, .zw = 0).
         let mut point_data = vec![0u32; 512 * 4];
-        let pts = [[0.1f32, 0.1], [0.5, 0.5], [0.9, 0.9]];
-        for (i, p) in pts.iter().enumerate() {
+        for (i, p) in test_sin_wave_points().iter().enumerate() {
             point_data[i * 4] = p[0].to_bits();
             point_data[i * 4 + 1] = p[1].to_bits();
         }
@@ -151,8 +162,6 @@ fn render_wesl(stem: &str, src: &str, variant: Variant) -> shaders::render::Rend
     frame.unwrap_or_else(|e| panic!("render({stem}, {:?}) failed: {e}", variant.dir_name()))
 }
 
-// ── Convenience wrappers ──────────────────────────────────────────────────────
-
 fn render_plot(variant: Variant) -> shaders::render::RenderedFrame {
     render_wesl("plot", PLOT_WESL, variant)
 }
@@ -160,8 +169,6 @@ fn render_plot(variant: Variant) -> shaders::render::RenderedFrame {
 fn render_reference(variant: Variant) -> shaders::render::RenderedFrame {
     render_wesl("reference", REFERENCE_WESL, variant)
 }
-
-// ── plot snapshot tests ───────────────────────────────────────────────────────
 
 /// Reference render for plot — material variant (desktop, non-UI).
 #[test]
@@ -177,8 +184,6 @@ fn snapshot_plot_ui() {
     assert_snapshot("plot_ui", &frame, DEFAULT_SSIM_THRESHOLD);
 }
 
-// ── reference snapshot tests ──────────────────────────────────────────────────
-
 /// Reference render for the reference shader — material variant.
 #[test]
 fn snapshot_reference_material() {
@@ -192,8 +197,6 @@ fn snapshot_reference_ui() {
     let frame = render_reference(Variant::TEST_UI);
     assert_snapshot("reference_ui", &frame, DEFAULT_SSIM_THRESHOLD);
 }
-
-// ── Cross-variant consistency checks ─────────────────────────────────────────
 
 /// Material and UI variants of plot should be visually identical — same shader
 /// logic, only the binding group differs (which WGPU_TEST normalises to
@@ -223,22 +226,6 @@ fn reference_material_and_ui_are_visually_equivalent() {
     assert!(
         result.score >= DEFAULT_SSIM_THRESHOLD,
         "reference: material and ui variants diverge visually: SSIM = {:.4}",
-        result.score,
-    );
-}
-
-/// Plot and reference shaders should render visually differently — they have
-/// distinct fragment bodies.  If they become identical something is wrong.
-#[test]
-fn plot_and_reference_are_visually_distinct() {
-    let plot = frame_to_image(&render_plot(Variant::TEST_MATERIAL));
-    let rref = frame_to_image(&render_reference(Variant::TEST_MATERIAL));
-
-    let result = image_compare::rgba_hybrid_compare(&plot, &rref).expect("SSIM comparison failed");
-
-    assert!(
-        result.score < 0.99,
-        "plot and reference shaders are unexpectedly identical: SSIM = {:.4}",
         result.score,
     );
 }

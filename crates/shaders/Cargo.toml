@@ -21,16 +21,11 @@ version.workspace = true
 #   shaders::BEVY_WEBGL_MATERIAL_<STEM>   (cfg(feature = "webgl"))
 #   shaders::BEVY_WEBGL_UI_<STEM>         (cfg(feature = "webgl"))
 #
-# Optional `render` feature
-# ─────────────────────────
-# Enables headless wgpu rendering, WESL→WGSL compilation at runtime, and
-# perceptual snapshot comparison.  Useful for:
-#   • snapshot tests in this crate (cargo test -p shaders --features render)
-#   • other crates that want to render a shader to an image for their own tests
-#
-# Gated so normal Bevy consumers don't pull in wgpu twice or link pollster.
+# `render` feature is mostly for testing but I might find a use for it to be off
+# in lib code.
 
 [features]
+default = ["render"]
 webgl = []
 render = [
   "dep:wgpu",
@@ -45,37 +40,27 @@ render = [
 # The crate is already a transitive dep so there's no extra compile cost.
 bevy = "~0.18.0"
 
-# ── render feature deps (optional) ───────────────────────────────────────────
-# wgpu is already a transitive dep of bevy; pinning to the same major avoids
-# a duplicate in the dep graph.
+# TODO: Really need to setup cargo deny to help with keeping this inline with
+# bevy version.
 wgpu = { version = "27", optional = true, features = [
   "metal",
   "vulkan",
   "dx12",
 ] }
-# PNG encode/decode for reference snapshot I/O.
 image = { version = "0.25", optional = true, default-features = false, features = [
   "png",
 ] }
-# SSIM-based perceptual comparison between rendered and reference images.
 image-compare = { version = "0.5", optional = true }
-# Block the thread on async wgpu init inside synchronous #[test] functions.
 pollster = { version = "0.4", optional = true }
-# WESL conditional-compilation for runtime shader compilation.
-# Also present in build-dependencies for build.rs — Cargo allows both.
 wesl = { version = "~0.3.2", optional = true }
 
-# ── test-only deps ────────────────────────────────────────────────────────────
 [dev-dependencies]
-# Pod/Zeroable derive for casting uniform structs to &[u8] in tests.
 bytemuck = { version = "1", features = ["derive"] }
 
 [build-dependencies]
 uuid = { version = "1", features = ["v5"] }
 wesl = "~0.3.2"
 
-# Snapshot tests require GPU + PNG infrastructure; skip them in default `cargo
-# test` runs so they don't fail in environments without the render feature.
 [[test]]
 name = "shader_tests"
 required-features = ["render"]
