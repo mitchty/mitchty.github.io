@@ -213,6 +213,7 @@
               language = "system";
               pass_filenames = false;
               stages = [ "pre-push" ];
+              verbose = true;
             };
             # Make sure code is formatted in pre-commit
             # Note: We use the formatter check separately, so we disable this
