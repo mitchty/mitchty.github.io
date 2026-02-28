@@ -22,5 +22,11 @@ bevy = { version = "~0.18.0", default-features = false, features = [
 rand.workspace = true
 shaders = { path = "../shaders" }
 
+# Lazy feature pulls in tokio which pulls in mio which has a failure when
+# building in wasm32. So web version of this is slower. OH WELL.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+polars = { version = "~0.53", default-features = false, features = ["lazy"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom.workspace = true
+polars = { version = "~0.53", default-features = false }

@@ -15,6 +15,7 @@ pub struct ColorState {
 }
 
 // use bevy_old_tv_shader::prelude::*;
+use polars::prelude::*;
 use rand::Rng;
 
 use assets::{AssetConfigPlugin, asset_path};
@@ -157,6 +158,9 @@ fn main() {
         .add_plugins(PostProcessPlugin)
         .add_plugins(PrettyTextPlugin)
         .add_plugins(flan::PlotPlugin)
+        .insert_resource(flan::PlotDataFrame {
+            df: initial_plot_df(),
+        })
         .insert_resource(ClearColor(Color::srgb(0.5, 0.5, 0.5)))
         .insert_resource(ColorState {
             color: Srgba::gray(0.5),
@@ -181,6 +185,12 @@ fn main() {
         .add_plugins(ScrollViewPlugin)
         .init_resource::<DragState>()
         .add_systems(Startup, (setup, setup_fps_ui, setup_3d_text, spawn_camera))
+        .add_systems(
+            Update,
+            tick_plot_data.run_if(bevy::time::common_conditions::on_timer(
+                std::time::Duration::from_millis(379),
+            )),
+        )
         .add_systems(
             Update,
             (
@@ -668,7 +678,6 @@ fn free_look_camera(
     if mouse.pressed(MouseButton::Left) {
         for event in mouse_motion.read() {
             if let Some(delta) = event.delta {
-                // Block the rotation system from being a jerk whilst free looks on
                 commands
                     .entity(entity)
                     .insert(FreeLookActive(time.elapsed_secs_f64()));
@@ -748,4 +757,62 @@ fn sync_color_state_to_clear_color(
     if color_state.is_changed() {
         clear_color.0 = color_state.color.into();
     }
+}
+
+/// Builds out the initial polars dataframe used for the plot graph shader data.
+///
+/// Initial len is the same as `flan::PLOT_WINDOW_SIZE` and the y values are
+/// clamped between `[0,1]` so the shader code is trivial.
+// x is for now ignored as the shader just clamps the max plot points into a
+// plot stupidly as an initial implementation.
+fn initial_plot_df() -> DataFrame {
+    let mut rng = rand::rng();
+    let mut y = rng.random_range(0.0f32..=1.0f32);
+
+    let ys: Vec<f32> = (0..flan::PLOT_WINDOW_SIZE)
+        .map(|_| {
+            let step: f32 = rng.random_range(-0.1..=0.1);
+            y = (y + step).clamp(0.0, 1.0);
+            y
+        })
+        .collect();
+
+    let height = flan::PLOT_WINDOW_SIZE;
+    DataFrame::new(height, vec![Column::new("y".into(), ys)])
+        .expect("initial plot DataFrame construction failed")
+}
+
+/// Append a new random-walk row to the underlying plot DataFrame. Then notify
+/// `flan` vi a message event to resync the shader data.
+///
+/// Only at most `flan::PLOT_WINDOW_SIZE` pieces of data are ever yeeted to the
+/// plot shader.
+fn tick_plot_data(
+    mut plot_df: ResMut<flan::PlotDataFrame>,
+    mut events: bevy::ecs::message::MessageWriter<flan::PlotDataUpdated>,
+) {
+    let mut rng = rand::rng();
+
+    // Grab the most recent Y so the random walk doesn't spike weirdly for now.
+    // TODO: Maybe have this be exponentially weighted against the edges of the plot?
+    let last_y = plot_df
+        .df
+        .column("y")
+        .ok()
+        .and_then(|s| s.f32().ok().map(|ca| ca.get(ca.len().saturating_sub(1))))
+        .flatten()
+        .unwrap_or(0.5);
+
+    let step: f32 = rng.random_range(-0.1..=0.1);
+    let next_y = (last_y + step).clamp(0.0, 1.0);
+
+    let new_row = DataFrame::new(1, vec![Column::new("y".into(), vec![next_y])])
+        .expect("new plot row construction failed");
+
+    plot_df.df = plot_df
+        .df
+        .vstack(&new_row)
+        .expect("plot DataFrame vstack append failed");
+
+    events.write(flan::PlotDataUpdated);
 }

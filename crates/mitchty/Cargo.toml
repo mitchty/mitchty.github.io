@@ -40,11 +40,17 @@ shaders = { path = "../shaders" }
 
 # console_error_panic_hook is here so that the web console for js? or whatever
 # dumps out backtraces.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+polars = { version = "~0.53", default-features = false, features = ["lazy"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "~0.1.7"
 # FUTURE MITCH: this is a dependency OF rand, and without the wasm_js feature
 # crap don't work. Stop uncommenting things dammit trust past mitch.
 getrandom.workspace = true
+# Note: polars on wasm is.... not fun, feature gates need to constrain it so it
+# runs wicked slower than native
+polars = { version = "~0.53", default-features = false }
 # TODO: browser detection needed at some point? I actually caught a
 # bevy_feathers bug and wasn't sure if it was safari or not. Here for future me
 # to remember to use this if needed.

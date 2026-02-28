@@ -1,9 +1,8 @@
-use std::collections::VecDeque;
-
 use bevy::prelude::*;
 use bevy::render::render_resource::*;
 use bevy::shader::ShaderRef;
 use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dPlugin};
+use polars::prelude::*;
 
 #[cfg(not(feature = "webgl"))]
 use bevy::render::storage::ShaderStorageBuffer;
@@ -16,35 +15,58 @@ pub const MAX_PLOT_POINTS: usize = 512;
 #[derive(Component)]
 pub struct PlotUiNode;
 
-/// Number of data points kept in the scrolling plot buffer (for now....)
-/// Oldest point is at the front idx 0, newest at the limit
-pub const PLOT_BUFFER_SIZE: usize = 200;
+/// How many of the most-recent DataFrame rows are windowed and uploaded to the
+/// shader each sync.  The DataFrame itself can be arbitrarily large; only the
+/// tail `PLOT_WINDOW_SIZE` rows are ever sent to the GPU.
+pub const PLOT_WINDOW_SIZE: usize = 200;
 
-/// Circular scrolling buffer for the plot shader. Here so I can add "new" data
-/// every second and it looks like this is plotting... something. The shader
-/// always gets from oldest to newest so it "looks" like its animating rightward
-/// with new data.
+/// The backing polars DataFrame that owns all plot data.
+///
+/// Callers (e.g. `mitchty`) own this resource and mutate it directly.  After
+/// mutating, fire a [`PlotDataUpdated`] event and `flan` will sync the newest
+/// [`PLOT_WINDOW_SIZE`] rows to the shader automatically.
+///
+/// Schema: must contain at least a column named `"y"` of dtype `Float32`.
+/// X coordinates are derived by `flan` from the row's position within the
+/// window — callers never need to store or update them.
 #[derive(Resource)]
-pub struct PlotDataState {
-    pub ys: VecDeque<f32>,
+pub struct PlotDataFrame {
+    pub df: DataFrame,
 }
+
+/// Send this message after mutating [`PlotDataFrame`] to tell `flan` to
+/// re-sync the shader buffer.  `flan`s `sync_plot_data` system fires on this
+/// message and uploads the last [`PLOT_WINDOW_SIZE`] rows from the `"y"` column.
+// TODO: make the column selectable at some point so I can make this more
+// dynamic or whatever. This is a classic "FUTURE MITCH" problem past mitch is
+// punting on. Suck it future me.
+pub struct PlotDataUpdated;
+impl bevy::ecs::message::Message for PlotDataUpdated {}
 
 pub struct PlotPlugin;
 
 impl Plugin for PlotPlugin {
     fn build(&self, app: &mut App) {
-        // ShadersPlugin must already have been added by the consuming app
+        // ShadersPlugin must already have been added by the consuming app.
         // mitchty adds it in main before PlotPlugin for now.
+        //
+        // PlotDataFrame is NOT inserted here callers are
+        // responsible for inserting that data before Startup runs so that
+        // setup_plot_ui can do the initial upload.  If no PlotDataFrame exists
+        // at startup an empty shader buffer is used so no plot for you sucker.
         app.add_plugins(Material2dPlugin::<PlotMaterial>::default())
             .add_plugins(UiMaterialPlugin::<PlotUiMaterial>::default())
+            .add_message::<PlotDataUpdated>()
             .add_systems(Startup, setup_plot_ui)
             .add_systems(
                 Update,
                 (
                     animate_plot_time,
-                    update_plot_data.run_if(bevy::time::common_conditions::on_timer(
-                        std::time::Duration::from_millis(379),
-                    )),
+                    // Sync whenever the caller sends PlotDataUpdated to
+                    // whatever is in the underlying dataframe.
+                    sync_plot_data.run_if(
+                        bevy::ecs::schedule::common_conditions::on_message::<PlotDataUpdated>,
+                    ),
                 ),
             );
     }
@@ -53,23 +75,15 @@ impl Plugin for PlotPlugin {
 fn setup_plot_ui(
     mut commands: Commands,
     mut ui_materials: ResMut<Assets<PlotUiMaterial>>,
+    plot_df: Option<Res<PlotDataFrame>>,
     #[cfg(not(feature = "webgl"))] mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
 ) {
-    use rand::Rng;
-    let mut rng = rand::rng();
-    let mut y = rng.random_range(0.0f32..=1.0f32);
-
-    let ys: VecDeque<f32> = (0..PLOT_BUFFER_SIZE)
-        .map(|_| {
-            let step: f32 = rng.random_range(-0.1..=0.1);
-            y = (y + step).clamp(0.0, 1.0);
-            y
-        })
-        .collect();
-
-    let points = ys_to_points(&ys);
-
-    commands.insert_resource(PlotDataState { ys });
+    // Iff the dataframes empty, the points are too (all 0's basically, good
+    // luck plotting nothing)
+    let points = plot_df
+        .as_ref()
+        .map(|r| df_tail_to_points(&r.df))
+        .unwrap_or_default();
 
     #[cfg(not(feature = "webgl"))]
     let points_binding = buffers.add(ShaderStorageBuffer::from(points.clone()));
@@ -101,7 +115,7 @@ fn setup_plot_ui(
         Node {
             position_type: PositionType::Absolute,
             left: Val::Px(10.0),
-            // Keep this in the middle vertically
+            // Keep this vertically centred: top 50% minus half the widget height.
             top: Val::Percent(50.0),
             margin: UiRect {
                 top: Val::Px(-100.0),
@@ -116,36 +130,52 @@ fn setup_plot_ui(
     ));
 }
 
-/// Converts the deque yvals into a `Vec<Vec2>` with X in range of [0, 1] for
-/// the shader uv code to be simple.
-fn ys_to_points(ys: &VecDeque<f32>) -> Vec<Vec2> {
-    let n = ys.len();
-    ys.iter()
+/// Slice the tail [`PLOT_WINDOW_SIZE`] rows of the `"y"` column from a
+/// DataFrame and convert them to `Vec<Vec2>` with X ∈ [0, 1].
+///
+/// Rows are mapped oldest→newest left→right so the shader sees the expected
+/// scrolling-timeline layout.  Returns an empty Vec if the column is missing
+/// or the DataFrame is empty.
+fn df_tail_to_points(df: &DataFrame) -> Vec<Vec2> {
+    let Ok(series) = df.column("y") else {
+        return Vec::new();
+    };
+    let ca = series.cast(&DataType::Float32).ok();
+    let ca = ca.as_ref().and_then(|s| s.f32().ok());
+    let Some(ca) = ca else {
+        return Vec::new();
+    };
+
+    // Window to the last PLOT_WINDOW_SIZE values.
+    let total = ca.len();
+    let start = total.saturating_sub(PLOT_WINDOW_SIZE);
+    let slice = ca.slice(start as i64, PLOT_WINDOW_SIZE);
+
+    let n = slice.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let denom = (n - 1).max(1) as f32;
+    slice
+        .into_iter()
         .enumerate()
-        .map(|(i, &y)| Vec2::new(i as f32 / (n - 1) as f32, y))
+        .map(|(i, y)| Vec2::new(i as f32 / denom, y.unwrap_or(0.0)))
         .collect()
 }
 
-/// Updates the circular buffer one step data point to the right and drops the
-/// oldest Y from the deque head, appends one new Y bounded to not too far from
-/// the latest value to the deque tail, then uploads the full buffer to the
-/// shader. Basically every tick of this system we gain a new element to what
-/// the plot shader contains.
-fn update_plot_data(
-    mut state: ResMut<PlotDataState>,
+/// Triggered by [`PlotDataUpdated`] events fired by the caller.
+///
+/// Reads the tail [`PLOT_WINDOW_SIZE`] rows from the `"y"` column of
+/// [`PlotDataFrame`] and uploads them to every spawned plot UI node's shader
+/// buffer.  If `PlotDataFrame` has not been inserted this system is a no-op.
+fn sync_plot_data(
+    plot_df: Option<Res<PlotDataFrame>>,
     node_query: Query<&MaterialNode<PlotUiMaterial>, With<PlotUiNode>>,
     mut ui_materials: ResMut<Assets<PlotUiMaterial>>,
     #[cfg(not(feature = "webgl"))] mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
 ) {
-    use rand::Rng;
-    let mut rng = rand::rng();
-
-    state.ys.pop_front();
-    let last = *state.ys.back().unwrap_or(&0.5);
-    let step: f32 = rng.random_range(-0.1..=0.1);
-    state.ys.push_back((last + step).clamp(0.0, 1.0));
-
-    let points = ys_to_points(&state.ys);
+    let Some(plot_df) = plot_df else { return };
+    let points = df_tail_to_points(&plot_df.df);
 
     for material_node in node_query.iter() {
         let Some(mat) = ui_materials.get_mut(material_node) else {
