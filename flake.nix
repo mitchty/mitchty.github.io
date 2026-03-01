@@ -152,6 +152,7 @@
             (lib.fileset.fileFilter (file: file.hasExt "rs") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "wesl") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "toml") ./crates)
+            ./deny.toml
             ./Cargo.toml
             ./Cargo.lock
           ];
@@ -374,14 +375,16 @@
         );
 
         # Cargo artifacts for WASM builds (debug)
-        cargoArtifactsWasmDebug = craneLibWasm.buildDepsOnly (
-          commonArgsWasm
-          // nixEnvArgs
-          // devArgs
-          // {
-            src = srcDeps;
-          }
-        );
+        # Apparently yes, there is a limit and I've now hit it
+        # Error loading app: CompileError: WebAssembly.instantiateStreaming(): size > maximum module size (1073741824): 1084424530 @+0
+        # cargoArtifactsWasmDebug = craneLibWasm.buildDepsOnly (
+        #   commonArgsWasm
+        #   // nixEnvArgs
+        #   // devArgs
+        #   // {
+        #     src = srcDeps;
+        #   }
+        # );
 
         # Cargo artifacts for Darwin builds (release)
         cargoArtifactsDarwin =
@@ -617,57 +620,57 @@
               mv $out/wasm/mitchty_bg_optimized.wasm $out/wasm/mitchty_bg.wasm
             '';
 
-        mitchty-wasm =
-          let
-            wasmBuild = craneLibWasm.buildPackage (
-              commonArgsWasm
-              // nixEnvArgs
-              // devArgs
-              // {
-                pname = "mitchty-wasm";
-                version = version;
-                cargoArtifacts = cargoArtifactsWasmDebug;
-                cargoExtraArgs = "-p mitchty --features mitchty/webgl";
-                src = fileSetForCrate ./crates/mitchty;
+        # mitchty-wasm =
+        #   let
+        #     wasmBuild = craneLibWasm.buildPackage (
+        #       commonArgsWasm
+        #       // nixEnvArgs
+        #       // devArgs
+        #       // {
+        #         pname = "mitchty-wasm";
+        #         version = version;
+        #         cargoArtifacts = cargoArtifactsWasmDebug;
+        #         cargoExtraArgs = "-p mitchty --features mitchty/webgl";
+        #         src = fileSetForCrate ./crates/mitchty;
 
-                STUPIDNIXFLAKEHACK = version;
+        #         STUPIDNIXFLAKEHACK = version;
 
-                # Don't run checks for WASM builds
-                doCheck = false;
+        #         # Don't run checks for WASM builds
+        #         doCheck = false;
 
-                # Don't install binaries - we'll handle WASM files specially
-                doInstallCargoArtifacts = false;
-                installPhase = ''
-                  runHook preInstall
-                  mkdir -p $out
-                  cp -r target/wasm32-unknown-unknown/debug $out/
-                  runHook postInstall
-                '';
-              }
-            );
-          in
-          pkgsWasm.runCommand "mitchty-wasm-bindgen"
-            {
-              nativeBuildInputs = [
-                wasmBindgenCli
-                pkgsWasm.binaryen
-              ];
-            }
-            ''
-              mkdir -p $out/wasm
+        #         # Don't install binaries - we'll handle WASM files specially
+        #         doInstallCargoArtifacts = false;
+        #         installPhase = ''
+        #           runHook preInstall
+        #           mkdir -p $out
+        #           cp -r target/wasm32-unknown-unknown/debug $out/
+        #           runHook postInstall
+        #         '';
+        #       }
+        #     );
+        #   in
+        #   pkgsWasm.runCommand "mitchty-wasm-bindgen"
+        #     {
+        #       nativeBuildInputs = [
+        #         wasmBindgenCli
+        #         pkgsWasm.binaryen
+        #       ];
+        #     }
+        #     ''
+        #       mkdir -p $out/wasm
 
-              # Run wasm-bindgen on the built WASM file
-              ${wasmBindgenCli}/bin/wasm-bindgen \
-                --out-dir $out/wasm \
-                --target web \
-                --no-typescript \
-                --debug \
-                --keep-debug \
-                ${wasmBuild}/debug/mitchty.wasm
+        #       # Run wasm-bindgen on the built WASM file
+        #       ${wasmBindgenCli}/bin/wasm-bindgen \
+        #         --out-dir $out/wasm \
+        #         --target web \
+        #         --no-typescript \
+        #         --debug \
+        #         --keep-debug \
+        #         ${wasmBuild}/debug/mitchty.wasm
 
-              # Skip wasm-opt for debug builds to preserve debug info
-              # The WASM file is already usable from wasm-bindgen
-            '';
+        #       # Skip wasm-opt for debug builds to preserve debug info
+        #       # The WASM file is already usable from wasm-bindgen
+        #     '';
 
         # Darwin release build (system libraries only, portable)
         mitchty-release-darwin =
@@ -716,6 +719,11 @@
             meta = metaCommon "release windows x86_64 build";
           }
         );
+
+        deny = craneLib.cargoDeny {
+          inherit src;
+          inherit (inputs) advisory-db;
+        };
 
         cargo-deny-0_19_0 = pkgs.rustPlatform.buildRustPackage rec {
           pname = "cargo-deny";
@@ -772,6 +780,7 @@
       in
       {
         checks = {
+          inherit deny;
           formatter = treefmtEval.config.build.check self;
           git-hooks = git-hooks-check;
 
@@ -803,13 +812,6 @@
             }
           );
 
-          # Audit dependencies
-          # 2025-12-16 commented out cause deps of deps are inactive and not sure how I want to handle that right now
-          # mitchty-audit = craneLib.cargoAudit {
-          #   inherit src;
-          #   inherit (inputs) advisory-db;
-          # };
-
           # Run tests with cargo-nextest
           # Consider setting `doCheck = false` on other crate derivations
           # if you do not want the tests to run twice
@@ -835,7 +837,7 @@
           inherit
             mitchty
             mitchty-lto
-            mitchty-wasm
+            # mitchty-wasm
             mitchty-wasm-lto
             pugio
             ;
@@ -844,6 +846,7 @@
           clippy = self.checks.${system}.mitchty-clippy;
           doc = self.checks.${system}.mitchty-doc;
           nextest = self.checks.${system}.mitchty-nextest;
+          deny = self.checks.${system}.deny;
         }
         // lib.optionalAttrs pkgs.stdenv.isLinux {
           inherit mitchty-release-windows;
@@ -876,7 +879,7 @@
                     buildInputs = [
                       mitchty
                       mitchty-lto
-                      mitchty-wasm
+                      # mitchty-wasm
                       mitchty-wasm-lto
                     ]
                     ++ lib.optionals pkgs.stdenv.isLinux [
@@ -926,14 +929,14 @@
           };
           # Serve WASM build locally for testing
           # nix run .#web
-          web = {
-            type = "app";
-            program = "${mkWebServerApp "web" mitchty-wasm true}/bin/web";
-            meta = {
-              description = "Serve WASM build locally for testing";
-              mainProgram = "web";
-            };
-          };
+          # web = {
+          #   type = "app";
+          #   program = "${mkWebServerApp "web" mitchty-wasm true}/bin/web";
+          #   meta = {
+          #     description = "Serve WASM build locally for testing";
+          #     mainProgram = "web";
+          #   };
+          # };
           # Serve WASM LTO build locally for testing
           # nix run .#web-lto
           web-lto = {
