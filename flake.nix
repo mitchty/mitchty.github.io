@@ -835,9 +835,11 @@
           );
 
           inherit mitchty-lto mitchty-wasm-lto;
-        }
-        // lib.optionalAttrs pkgs.stdenv.isLinux {
-          inherit mitchty-release-windows;
+          # Disabled for now cause github ci is SLOOOOOW and this pushes
+          # parallel checks over time limits.
+          # }
+          # // lib.optionalAttrs pkgs.stdenv.isLinux {
+          #   inherit mitchty-release-windows;
         };
 
         packages = {
