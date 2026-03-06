@@ -42,3 +42,21 @@ fn min_dist_to_polyline(p: vec2<f32>) -> f32 {
     }
     return d;
 }
+
+// sdf line render with antialias via smoothstep over a background color
+// `p`          = UV coordinate of the current fragment
+// `half_width` = half line thickness, uv space
+// `aa`         = anti-alias smoothstep transition width
+// `line_color` = line RGBA color
+// `bg_color`   = background RGBA color
+fn draw_line_sdf(
+    p:          vec2<f32>,
+    half_width: f32,
+    aa:         f32,
+    line_color: vec4<f32>,
+    bg_color:   vec4<f32>,
+) -> vec4<f32> {
+    let d     = min_dist_to_polyline(p);
+    let alpha = smoothstep(half_width + aa, half_width - aa, d);
+    return mix(bg_color, line_color, alpha);
+}

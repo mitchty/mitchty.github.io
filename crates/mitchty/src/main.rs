@@ -188,7 +188,7 @@ fn main() {
         .add_systems(
             Update,
             tick_plot_data.run_if(bevy::time::common_conditions::on_timer(
-                std::time::Duration::from_millis(379),
+                std::time::Duration::from_millis(100),
             )),
         )
         .add_systems(

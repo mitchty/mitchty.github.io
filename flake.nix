@@ -131,17 +131,12 @@
 
         # Constrained src fileset to ensure that cargo deps aren't rebuilt every
         # change to crates.
-        #
-        # Mostly just here to be sure that build.rs using tonic notices proto
-        # files and anything that affects dependencies for cargo directly.
-        # Also includes assets for bevy_embedded_assets build script.
         srcDeps = lib.fileset.toSource {
           root = ./.;
           fileset = lib.fileset.unions [
             ./Cargo.lock
             ./Cargo.toml
             (lib.fileset.fileFilter (file: file.hasExt "toml") ./crates)
-            (lib.fileset.fileFilter (file: file.hasExt "wesl") ./crates)
           ];
         };
 
@@ -223,6 +218,18 @@
           };
         };
 
+        commonXinputs = with pkgs; [
+          vulkan-loader
+          libx11
+          libxcursor
+          libxi
+          libxrandr
+          libxkbcommon
+          wayland
+          alsa-lib
+          udev
+        ];
+
         # Common arguments can be set here to avoid repeating them later
         commonArgs = {
           inherit src;
@@ -239,18 +246,12 @@
             with pkgs;
             [ ]
             ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
-              udev
-              alsa-lib
               vulkan-loader
-              xorg.libX11
-              xorg.libXcursor
-              xorg.libXi
-              xorg.libXrandr
-              libxkbcommon
               wayland
               pkgs.mold
               pkgs.lld
             ]
+            ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux commonXinputs
             ++ lib.optionals pkgs.stdenv.isDarwin [
               apple-sdk
               rustPlatform.bindgenHook
@@ -258,22 +259,7 @@
             ];
 
           # Additional environment variables can be set directly
-          LD_LIBRARY_PATH = lib.optionalString pkgs.stdenv.isLinux (
-            lib.makeLibraryPath (
-              with pkgs;
-              [
-                vulkan-loader
-                xorg.libX11
-                xorg.libXcursor
-                xorg.libXi
-                xorg.libXrandr
-                libxkbcommon
-                wayland
-                alsa-lib
-                udev
-              ]
-            )
-          );
+          LD_LIBRARY_PATH = lib.optionalString pkgs.stdenv.isLinux (lib.makeLibraryPath (commonXinputs));
         };
 
         commonArgsWasm = {
@@ -536,7 +522,7 @@
         # cargo won't be able to find the sources for all members.
 
         # Default build: dev profile with debug symbols to match cargo parlance
-        mitchty = craneLib.buildPackage (
+        mitchty-unwrapped = craneLib.buildPackage (
           individualCrateArgs
           // nixEnvArgs
           // devArgs
@@ -546,6 +532,27 @@
             src = fileSetForCrate ./crates/mitchty;
           }
         );
+
+        # "fake" asset root based off of the current source for the debug
+        # version of mitchty. I figure that I can just use cargo run outside of
+        # nix to use dynamic loading of things. The nix version doesn't need to
+        # deal with this. Maybe I just ditch the debug derivation.
+        mitchty-dev-asset-root = pkgs.runCommand "mitchty-dev-asset-root" { } ''
+          mkdir -p $out/crates/mitchty/src/assets
+          cp -r ${./crates/mitchty/src/assets}/. $out/crates/mitchty/src/assets/
+        '';
+
+        # Wrap the debug binary so BEVY_ASSET_PATH points at the fake workspace
+        # root saved above.
+        mitchty = pkgs.symlinkJoin {
+          name = "mitchty";
+          paths = [ mitchty-unwrapped ];
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          postBuild = ''
+            wrapProgram $out/bin/mitchty \
+              --set BEVY_ASSET_PATH ${mitchty-dev-asset-root}
+          '';
+        };
 
         # Optimized LTO build with release profile
         mitchty-lto = craneLib.buildPackage (
@@ -841,6 +848,7 @@
             mitchty-wasm-lto
             pugio
             ;
+          wasm-bindgen-cli = wasmBindgenCli;
           default = mitchty;
           # Expose checks as packages for individual running with shorter names
           clippy = self.checks.${system}.mitchty-clippy;
