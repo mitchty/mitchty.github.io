@@ -13,7 +13,7 @@ webgl = ["shaders/webgl"]
 webgpu = ["bevy/webgpu"]
 
 [dependencies]
-bevy = { version = "~0.18.0", default-features = false, features = [
+bevy = { version = "~0.18.1", default-features = false, features = [
   "bevy_ui",
   "bevy_sprite",
   "bevy_render",

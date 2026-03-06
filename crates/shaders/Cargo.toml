@@ -38,7 +38,7 @@ render = [
 [dependencies]
 # Default features give us bevy::render, bevy::asset, bevy::app re-exports.
 # The crate is already a transitive dep so there's no extra compile cost.
-bevy = "~0.18.0"
+bevy = "~0.18.1"
 
 # TODO: Really need to setup cargo deny to help with keeping this inline with
 # bevy version.

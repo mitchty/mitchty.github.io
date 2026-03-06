@@ -63,17 +63,17 @@
 
         inherit (pkgs) lib;
 
-        # Build wasm-bindgen-cli at the version used by Bevy
+        # Build wasm-bindgen-cli at the version used by Bevy for wasm builds
         wasmBindgenCli = pkgsWasm.rustPlatform.buildRustPackage rec {
           pname = "wasm-bindgen-cli";
-          version = "0.2.108";
+          version = "0.2.114";
 
           src = pkgsWasm.fetchCrate {
             inherit pname version;
-            hash = "sha256-UsuxILm1G6PkmVw0I/JF12CRltAfCJQFOaT4hFwvR8E=";
+            hash = "sha256-xrCym+rFY6EUQFWyWl6OPA+LtftpUAE5pIaElAIVqW0=";
           };
 
-          cargoHash = "sha256-iqQiWbsKlLBiJFeqIYiXo3cqxGLSjNM8SOWXGM9u43E=";
+          cargoHash = "sha256-Z8+dUXPQq7S+Q7DWNr2Y9d8GMuEdSnq00quUR0wDNPM=";
 
           nativeBuildInputs = [ pkgsWasm.pkg-config ];
 
@@ -732,6 +732,30 @@
           inherit (inputs) advisory-db;
         };
 
+        # Hacky way to abuse crane's deny setup to generate graphviz dot files
+        # and then build pngs from it for any duplicate dependencies.
+        dotdeps = craneLib.cargoDeny {
+          inherit src;
+          pname = "dotdeps";
+
+          nativeBuildInputs = [ pkgs.graphviz ];
+
+          buildPhaseCargoCommand = ''
+            cargo --offline deny check -g "$out" bans || true
+          '';
+
+          installPhaseCommand = ''
+            mkdir -p "$out"
+          '';
+
+          postInstall = ''
+            for f in "$out"/graph_output/*.dot; do
+              [ -e "$f" ] || continue
+              dot -Tpng "$f" -o "$out/$(basename "''${f%.dot}").png"
+            done
+          '';
+        };
+
         cargo-deny-0_19_0 = pkgs.rustPlatform.buildRustPackage rec {
           pname = "cargo-deny";
           version = "0.19.0";
@@ -849,6 +873,7 @@
             # mitchty-wasm
             mitchty-wasm-lto
             pugio
+            dotdeps
             ;
           wasm-bindgen-cli = wasmBindgenCli;
           default = mitchty;
@@ -913,6 +938,34 @@
                 mainProgram = "mitchty-build-all";
               };
             };
+
+          # Hacky flake app to open the graph_output dir if its not empty
+          dotdeps =
+            let
+              graphDir = "${dotdeps}/graph_output";
+              opener = if pkgs.stdenv.isDarwin then "open" else "xdg-open";
+            in
+            {
+              type = "app";
+              program = "${
+                pkgs.writeShellApplication {
+                  name = "dotdeps";
+                  text = ''
+                    dir="${graphDir}"
+                    if [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+                      echo "no duplicate cargo deps found $dir, nothing to do."
+                    else
+                      ${opener} "$dir"
+                    fi
+                  '';
+                }
+              }/bin/dotdeps";
+              meta = {
+                description = "Open cargo-deny duplicate-dep graphs in a browser if any";
+                mainProgram = "dotdeps";
+              };
+            };
+
           # Makes updating everything at once a bit easier.
           # nix run .#update
           update = {

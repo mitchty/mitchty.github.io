@@ -114,6 +114,7 @@ skip = [
   "getrandom",
   "rustc-hash",
   "ttf-parser",
+  "r-efi",
 ]
 skip-tree = []
 

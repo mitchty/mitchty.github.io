@@ -23,15 +23,15 @@ egui = ["dep:bevy_egui"]
 feathers = []
 
 [dependencies]
-bevy = { version = "0.18.0", default-features = false, features = [
+bevy = { version = "0.18.1", default-features = false, features = [
   "ui",
   "3d",
   "experimental_bevy_feathers",
 ] }
 
 rand.workspace = true
-clap = { version = "~4.5.58", features = ["derive"] }
-bevy_fontmesh = "~0.2.0"
+clap = { version = "~4.5.60", features = ["derive"] }
+bevy_fontmesh = "~0.2.2"
 bevy_egui = { version = "~0.39.1", optional = true }
 bevy_pretty_text = "~0.4"
 markdown = "1.0.0"
