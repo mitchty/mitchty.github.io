@@ -953,7 +953,7 @@
                   text = ''
                     dir="${graphDir}"
                     if [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
-                      echo "no duplicate cargo deps found $dir, nothing to do."
+                      echo "no duplicate cargo deps found in $dir, nothing to do."
                     else
                       ${opener} "$dir"
                     fi
