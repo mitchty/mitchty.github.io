@@ -43,7 +43,6 @@ jobs:
   build-wasm-lto:
     name: Build WASM (LTO)
     runs-on: ubuntu-latest
-    needs: [check]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -83,7 +82,6 @@ jobs:
   build-windows:
     name: Build Windows (MinGW cross-compile)
     runs-on: ubuntu-latest
-    needs: [check]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -113,7 +111,6 @@ jobs:
   build-macos:
     name: Build macOS
     runs-on: macos-latest
-    needs: [check]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -142,7 +139,7 @@ jobs:
 
   deploy-pages:
     name: Deploy to GitHub Pages
-    needs: [build-wasm-lto, build-windows, build-macos]
+    needs: [check, build-wasm-lto, build-windows, build-macos]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -154,7 +151,7 @@ jobs:
 
   create-prerelease:
     name: Create Pre-Release
-    needs: [build-wasm-lto, build-windows, build-macos]
+    needs: [check, build-wasm-lto, build-windows, build-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
