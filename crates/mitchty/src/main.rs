@@ -154,7 +154,7 @@ fn main() {
     app.add_plugins(assets::create_default_plugins(enable_gamepad))
         .add_plugins(AssetConfigPlugin)
         .add_plugins(ShadersPlugin)
-        .add_plugins(FontMeshPlugin)
+        .add_plugins(FontMeshPlugin::<StandardMaterial>::default())
         .add_plugins(PostProcessPlugin)
         .add_plugins(PrettyTextPlugin)
         .add_plugins(flan::PlotPlugin)

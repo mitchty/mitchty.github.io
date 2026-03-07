@@ -115,6 +115,8 @@ skip = [
   "rustc-hash",
   "ttf-parser",
   "r-efi",
+  "toml_edit",
+  "toml_datetime",
 ]
 skip-tree = []
 

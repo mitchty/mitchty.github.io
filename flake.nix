@@ -734,24 +734,30 @@
 
         # Hacky way to abuse crane's deny setup to generate graphviz dot files
         # and then build pngs from it for any duplicate dependencies.
-        dotdeps = craneLib.cargoDeny {
+        dotdeps = craneLib.mkCargoDerivation {
           inherit src;
           pname = "dotdeps";
 
-          nativeBuildInputs = [ pkgs.graphviz ];
+          nativeBuildInputs = [
+            pkgs.graphviz
+            cargo-deny-0_19_0
+          ];
 
+          # crane requires artifacts but like cargoDeny set this to null
+          cargoArtifacts = null;
+          doInstallCargoArtifacts = false;
+
+          # Note: if there are any bans/dups etc... we let things go this is
+          # intended to generate graphviz dot files.
           buildPhaseCargoCommand = ''
+            mkdir -p "$out"
             cargo --offline deny check -g "$out" bans || true
           '';
 
           installPhaseCommand = ''
-            mkdir -p "$out"
-          '';
-
-          postInstall = ''
             for f in "$out"/graph_output/*.dot; do
               [ -e "$f" ] || continue
-              dot -Tpng "$f" -o "$out/$(basename "''${f%.dot}").png"
+              dot -Tpng "$f" -o "$out/graph_output/$(basename "''${f%.dot}").png"
             done
           '';
         };
@@ -858,8 +864,8 @@
             }
           );
 
-          inherit mitchty-lto mitchty-wasm-lto;
           # Disabled for now cause github ci is SLOOOOOW and this pushes
+          # inherit mitchty-lto mitchty-wasm-lto;
           # parallel checks over time limits.
           # }
           # // lib.optionalAttrs pkgs.stdenv.isLinux {
