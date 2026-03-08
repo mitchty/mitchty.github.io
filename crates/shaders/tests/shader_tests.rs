@@ -4,8 +4,8 @@ use shaders::render::{Binding, BindingKind, render_shader};
 use shaders::snapshot::{DEFAULT_SSIM_THRESHOLD, assert_snapshot, frame_to_image};
 use shaders::wesl::{Variant, compile};
 
-const PLOT_WESL: &str = include_str!("../src/shaders/plot.wesl");
-const REFERENCE_WESL: &str = include_str!("../src/shaders/reference.wesl");
+const PLOT_WESL: &str = include_str!("../src/shaders/2d/plot.wesl");
+const REFERENCE_WESL: &str = include_str!("../src/shaders/2d/reference.wesl");
 
 // Non-WebGL uniform layout — 40 bytes, no padding.
 //   struct PlotUniform {

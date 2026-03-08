@@ -273,11 +273,11 @@ impl Material2d for PlotMaterial {
     fn fragment_shader() -> ShaderRef {
         #[cfg(not(feature = "webgl"))]
         {
-            shaders::BEVY_DEFAULT_MATERIAL_PLOT.clone().into()
+            shaders::BEVY_DEFAULT_MATERIAL_2D_PLOT.clone().into()
         }
         #[cfg(feature = "webgl")]
         {
-            shaders::BEVY_WEBGL_MATERIAL_PLOT.clone().into()
+            shaders::BEVY_WEBGL_MATERIAL_2D_PLOT.clone().into()
         }
     }
 
@@ -310,11 +310,11 @@ impl UiMaterial for PlotUiMaterial {
     fn fragment_shader() -> ShaderRef {
         #[cfg(not(feature = "webgl"))]
         {
-            shaders::BEVY_DEFAULT_UI_PLOT.clone().into()
+            shaders::BEVY_DEFAULT_UI_2D_PLOT.clone().into()
         }
         #[cfg(feature = "webgl")]
         {
-            shaders::BEVY_WEBGL_UI_PLOT.clone().into()
+            shaders::BEVY_WEBGL_UI_2D_PLOT.clone().into()
         }
     }
 }
