@@ -6,6 +6,8 @@ use shaders::wesl::{Variant, compile};
 
 const PLOT_WESL: &str = include_str!("../src/shaders/2d/plot.wesl");
 const REFERENCE_WESL: &str = include_str!("../src/shaders/2d/reference.wesl");
+const CHROMATIC_ABERRATION_WESL: &str =
+    include_str!("../src/shaders/fullscreen/chromatic-aberration.wesl");
 
 // Non-WebGL uniform layout — 40 bytes, no padding.
 //   struct PlotUniform {
@@ -267,6 +269,148 @@ fn reference_material_and_ui_are_visually_equivalent() {
     assert!(
         result.score >= DEFAULT_SSIM_THRESHOLD,
         "reference: material and ui variants diverge visually: SSIM = {:.4}",
+        result.score,
+    );
+}
+
+// WGPU_TEST variant: only a single uniform buffer, no texture/sampler.
+//
+// Non-WebGL layout 8 bytes
+//   struct ChromaticAberrationSettings {
+//       intensity: f32,   // offset 0 (4 bytes)
+//       time:      f32,   // offset 4 (4 bytes)
+//   }                     // total: 8 bytes
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ChromaticAberrationUniform {
+    intensity: f32,
+    time: f32,
+}
+
+impl ChromaticAberrationUniform {
+    fn test_default() -> Self {
+        // intensity=5.0 → clamp(5.0/10.0)=0.5 → medium grey in WGPU_TEST mode
+        Self {
+            intensity: 5.0,
+            time: 0.0,
+        }
+    }
+}
+
+// WebGL layout 16 byte aligned
+//   struct ChromaticAberrationSettingsWebGl {
+//       intensity:       f32,         // offset  0 (4 bytes)
+//       time:            f32,         // offset  4 (4 bytes)
+//       _webgl2_padding: vec2<f32>,   // offset  8 (8 bytes padding)
+//   }                                 // total: 16 bytes
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ChromaticAberrationUniformWebGl {
+    intensity: f32,
+    time: f32,
+    _pad: [f32; 2],
+}
+
+impl ChromaticAberrationUniformWebGl {
+    fn test_default() -> Self {
+        Self {
+            intensity: 5.0,
+            time: 0.0,
+            _pad: [0.0; 2],
+        }
+    }
+}
+
+/// Compile and render the chromatic-aberration shader for a given `variant`.
+/// The WGPU_TEST variant only needs the settings uniform at @group(0) @binding(0).
+fn render_chromatic_aberration(variant: Variant) -> Option<shaders::render::RenderedFrame> {
+    assert!(
+        variant.wgpu_test,
+        "render_chromatic_aberration requires a TEST_* variant"
+    );
+
+    let wgsl = compile("chromatic-aberration", CHROMATIC_ABERRATION_WESL, variant)
+        .unwrap_or_else(|e| panic!("WESL compile failed for chromatic-aberration: {e}"));
+
+    let result = if variant.webgl {
+        let uniform = ChromaticAberrationUniformWebGl::test_default();
+        render_shader(
+            &wgsl,
+            &[Binding {
+                slot: 0,
+                kind: BindingKind::Uniform,
+                data: bytemuck::bytes_of(&uniform),
+            }],
+        )
+    } else {
+        let uniform = ChromaticAberrationUniform::test_default();
+        render_shader(
+            &wgsl,
+            &[Binding {
+                slot: 0,
+                kind: BindingKind::Uniform,
+                data: bytemuck::bytes_of(&uniform),
+            }],
+        )
+    };
+
+    match result {
+        Ok(frame) => Some(frame),
+        Err(ref e) if has_no_adapter(e) => {
+            eprintln!(
+                "skipping chromatic-aberration/{:?} — no gpu found: {e}",
+                variant.dir_name()
+            );
+            None
+        }
+        Err(e) => panic!(
+            "render(chromatic-aberration, {:?}) failed: {e}",
+            variant.dir_name()
+        ),
+    }
+}
+
+/// Reference render for chromatic-aberration — material variant.
+#[test]
+fn snapshot_chromatic_aberration_material() {
+    let Some(frame) = render_chromatic_aberration(Variant::TEST_MATERIAL) else {
+        return;
+    };
+    assert_snapshot(
+        "chromatic_aberration_material",
+        &frame,
+        DEFAULT_SSIM_THRESHOLD,
+    );
+}
+
+/// Reference render for chromatic-aberration — ui variant.
+#[test]
+fn snapshot_chromatic_aberration_ui() {
+    let Some(frame) = render_chromatic_aberration(Variant::TEST_UI) else {
+        return;
+    };
+    assert_snapshot("chromatic_aberration_ui", &frame, DEFAULT_SSIM_THRESHOLD);
+}
+
+/// Material and UI variants of chromatic-aberration should be visually
+/// identical — same shader logic, binding group differences normalised by
+/// WGPU_TEST.
+#[test]
+fn chromatic_aberration_material_and_ui_are_visually_equivalent() {
+    let Some(mat_frame) = render_chromatic_aberration(Variant::TEST_MATERIAL) else {
+        return;
+    };
+    let Some(ui_frame) = render_chromatic_aberration(Variant::TEST_UI) else {
+        return;
+    };
+
+    let mat = frame_to_image(&mat_frame);
+    let ui = frame_to_image(&ui_frame);
+    let result = image_compare::rgba_hybrid_compare(&mat, &ui).expect("SSIM comparison failed");
+
+    assert!(
+        result.score >= DEFAULT_SSIM_THRESHOLD,
+        "chromatic-aberration: material and ui variants diverge visually: SSIM = {:.4}",
         result.score,
     );
 }

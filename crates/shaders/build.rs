@@ -61,9 +61,10 @@ const SHADER_NS_STR: &str = "123e4567-e89b-12d3-a456-426614174000";
 // lib is shared across all kinds of shaders.
 const LIB_CATEGORIES: &[&str] = &["bindings", "helpers", "input", "types"];
 
-// Shader kinds in src/shaders/. For now its mostly 2d fragment shaders. Compute
-// will happen at some point.
-const SHADER_KINDS: &[&str] = &["2d", "3d"];
+// Shader kinds in src/shaders/. 2d for flat/ui shaders, 3d for mesh-space
+// shaders, fullscreen for post-process effects that run over the entire
+// rendered framebuffer. Compute will happen at some point. "when its done"
+const SHADER_KINDS: &[&str] = &["2d", "3d", "fullscreen"];
 
 /// Scan src/shaders/lib/<category>/*.wesl and return a list of
 /// (module_path_key, source) pairs, where module_path_key is the string

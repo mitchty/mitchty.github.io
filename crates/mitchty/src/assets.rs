@@ -97,7 +97,9 @@ impl Plugin for AssetConfigPlugin {
             // Note, these are in fullscreen to make the dropdown in egui a bit
             // easier to be dynamic.
             embedded_asset!(_app, "assets/shaders/fullscreen/em-interference.wgsl");
-            embedded_asset!(_app, "assets/shaders/fullscreen/chromatic-aberration.wgsl");
+            // chromatic-aberration is now compiled from WESL by the `shaders`
+            // crate and loaded via shaders::BEVY_DEFAULT_MATERIAL_3D_CHROMATIC_ABERRATION;
+            // the embedded .wgsl asset is no longer needed.
             embedded_asset!(_app, "assets/shaders/fullscreen/vhs-effect.wgsl");
         }
     }

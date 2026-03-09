@@ -204,7 +204,11 @@ impl FromWorld for PostProcessPipeline {
         // Get available shaders from main world
         let available_shaders = AvailableShaders::default();
 
-        // Load shader handles first
+        // Load shader handles first.
+        // Shaders that have been compiled from WESL via the `shaders` crate
+        // use their pre-registered Handle<Shader> constant directly instead of
+        // going through asset_server.load() — this avoids a dependency on the
+        // asset path and works in both debug and release (embedded) builds.
         let mut shader_handles = Vec::new();
         {
             let asset_server = world.resource::<AssetServer>();
@@ -212,8 +216,14 @@ impl FromWorld for PostProcessPipeline {
                 .load("embedded://bevy_core_pipeline/fullscreen_vertex_shader/fullscreen.wgsl");
 
             for shader_info in &available_shaders.shaders {
-                let shader_path = crate::asset_path(&shader_info.path);
-                let shader_handle: Handle<Shader> = asset_server.load(shader_path);
+                // chromatic-aberration is compiled from WESL by the `shaders`
+                // crate; use its deterministic Handle instead of a path load.
+                let shader_handle: Handle<Shader> = if shader_info.name == "chromatic-aberration" {
+                    shaders::BEVY_DEFAULT_MATERIAL_FULLSCREEN_CHROMATIC_ABERRATION.clone()
+                } else {
+                    let shader_path = crate::asset_path(&shader_info.path);
+                    asset_server.load(shader_path)
+                };
                 shader_handles.push((
                     shader_info.name.clone(),
                     shader_handle,

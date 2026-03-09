@@ -22,6 +22,13 @@ const PLOT_BINDINGS_WESL: &str = include_str!("shaders/lib/bindings/plot.wesl");
 const PLOT_INPUT_WESL: &str = include_str!("shaders/lib/input/plot.wesl");
 const PLOT_HELPERS_WESL: &str = include_str!("shaders/lib/helpers/plot.wesl");
 
+const CHROMATIC_ABERRATION_TYPES_WESL: &str =
+    include_str!("shaders/lib/types/chromatic_aberration.wesl");
+const CHROMATIC_ABERRATION_BINDINGS_WESL: &str =
+    include_str!("shaders/lib/bindings/chromatic_aberration.wesl");
+const CHROMATIC_ABERRATION_INPUT_WESL: &str =
+    include_str!("shaders/lib/input/chromatic_aberration.wesl");
+
 /// wesl variant to build, also has `wgpu_test` for a "simple" non bevy variant
 /// that isn't built at compile time, only used for testing. The wgpu variant
 /// just throws everything into @group(0). I got sick of trying to render whate
@@ -137,6 +144,18 @@ const HELPERS: &[(&str, &str)] = &[
     ("lib::bindings::plot", PLOT_BINDINGS_WESL),
     ("lib::input::plot", PLOT_INPUT_WESL),
     ("lib::helpers::plot", PLOT_HELPERS_WESL),
+    (
+        "lib::types::chromatic_aberration",
+        CHROMATIC_ABERRATION_TYPES_WESL,
+    ),
+    (
+        "lib::bindings::chromatic_aberration",
+        CHROMATIC_ABERRATION_BINDINGS_WESL,
+    ),
+    (
+        "lib::input::chromatic_aberration",
+        CHROMATIC_ABERRATION_INPUT_WESL,
+    ),
 ];
 
 /// "compiles" wesl with all the library resolver stuff setup to a wgsl file
