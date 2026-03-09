@@ -124,6 +124,14 @@ fn settings_ui(
 
     egui::TopBottomPanel::top("menu_bar").show(contexts.ctx_mut()?, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
+            // File menu, for now its just for a quit menu item on non wasm targets
+            #[cfg(not(target_arch = "wasm32"))]
+            ui.menu_button("File", |ui| {
+                if ui.button("Quit").clicked() {
+                    std::process::exit(0);
+                }
+            });
+
             // Clear color swatch pickerupper basically
             ui.menu_button("Background", |ui| {
                 let mut color32 = egui::Color32::from_rgb(
