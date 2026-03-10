@@ -219,7 +219,15 @@ impl FromWorld for PostProcessPipeline {
                 // chromatic-aberration is compiled from WESL by the `shaders`
                 // crate; use its deterministic Handle instead of a path load.
                 let shader_handle: Handle<Shader> = if shader_info.name == "chromatic-aberration" {
-                    shaders::BEVY_DEFAULT_MATERIAL_FULLSCREEN_CHROMATIC_ABERRATION.clone()
+                    #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
+                    let h = shaders::BEVY_WEBGL_MATERIAL_FULLSCREEN_CHROMATIC_ABERRATION.clone();
+                    #[cfg(not(all(
+                        feature = "webgl",
+                        target_arch = "wasm32",
+                        not(feature = "webgpu")
+                    )))]
+                    let h = shaders::BEVY_DEFAULT_MATERIAL_FULLSCREEN_CHROMATIC_ABERRATION.clone();
+                    h
                 } else {
                     let shader_path = crate::asset_path(&shader_info.path);
                     asset_server.load(shader_path)
