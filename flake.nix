@@ -184,12 +184,10 @@
             taplo
             nixfmt
             rustfmt
-            # Build tools needed by nix flake check
             git
-            # Nix itself for running checks
             nix
-            # treefmt itself
             treefmt
+            convco
             ;
         };
 
@@ -210,6 +208,13 @@
               pass_filenames = false;
               stages = [ "pre-push" ];
               verbose = true;
+            };
+            commit-msg = {
+              enable = true;
+              name = "convco";
+              entry = "${pkgs.lib.getExe pkgs.bash} -c '${pkgs.convco}/bin/convco check --from-stdin < \"$1\"' --";
+              language = "system";
+              stages = [ "commit-msg" ];
             };
             # Make sure code is formatted in pre-commit
             # Note: We use the formatter check separately, so we disable this
