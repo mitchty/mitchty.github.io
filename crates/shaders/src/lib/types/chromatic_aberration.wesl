@@ -6,7 +6,6 @@ struct ChromaticAberrationSettings {
     time:            f32,
     _webgl2_padding: vec2<f32>,
 }
-
 @else
 struct ChromaticAberrationSettings {
     intensity: f32,

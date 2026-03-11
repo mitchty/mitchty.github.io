@@ -1,86 +1,49 @@
-// wesl -> wgsl compile crap.
+// Unit testing for wesl in wgpu, only meant for backend testing shader output
+// via ssim.
 //
-// Here to start making unit testing of stuff easier.
-//
-// This is "kinda" build.rs but only for runtime testing of shaders.
-//
-// I don't know what should be DRY, so its WET. I might not need to add much
-// more to this stuff anyway. Famous last words of not knowing whats needed.
-// WESL → WGSL compilation helpers.
-//
-// I might consider refactoring build.rs off/out of this too.
-//
-// Note abusing VirtualResolvers so wesl shaders can "just" import stuff from
-// `src/shaders/lib/...` directly.
+// Its kinda jank af but it sorta works well enough.
+use wesl::syntax::ModulePath;
 
-// For now WET, not sure its worth the effort to make this cute/dynamic and want
-// to commit this nonsense and get cracking on building plotting shaders so I
-// can feed em from polars dataframes directly. Thats the real reason for this
-// whole side quest.
-const PLOT_TYPES_WESL: &str = include_str!("shaders/lib/types/plot.wesl");
-const PLOT_BINDINGS_WESL: &str = include_str!("shaders/lib/bindings/plot.wesl");
-const PLOT_INPUT_WESL: &str = include_str!("shaders/lib/input/plot.wesl");
-const PLOT_HELPERS_WESL: &str = include_str!("shaders/lib/helpers/plot.wesl");
+const PLOT_TYPES_WESL: &str = include_str!("lib/types/plot.wesl");
+const PLOT_BINDINGS_WESL: &str = include_str!("lib/bindings/plot.wesl");
+const PLOT_INPUT_WESL: &str = include_str!("lib/input/plot.wesl");
+const PLOT_HELPERS_WESL: &str = include_str!("lib/helpers/plot.wesl");
 
-const CHROMATIC_ABERRATION_TYPES_WESL: &str =
-    include_str!("shaders/lib/types/chromatic_aberration.wesl");
-const CHROMATIC_ABERRATION_BINDINGS_WESL: &str =
-    include_str!("shaders/lib/bindings/chromatic_aberration.wesl");
-const CHROMATIC_ABERRATION_INPUT_WESL: &str =
-    include_str!("shaders/lib/input/chromatic_aberration.wesl");
+const FULLSCREEN_EFFECT_TYPES_WESL: &str = include_str!("lib/types/fullscreen_effect.wesl");
+const FULLSCREEN_EFFECT_BINDINGS_WESL: &str = include_str!("lib/bindings/fullscreen_effect.wesl");
+const FULLSCREEN_EFFECT_INPUT_WESL: &str = include_str!("lib/input/fullscreen_effect.wesl");
 
-/// wesl variant to build, also has `wgpu_test` for a "simple" non bevy variant
-/// that isn't built at compile time, only used for testing. The wgpu variant
-/// just throws everything into @group(0). I got sick of trying to render whate
-/// bevy considers a material of any sort in wgpu in the layout differences.
-///
-/// Did this more so I don't need a custom vertex stage in wgpu. Winter mitch
-/// thing to tackle.
-///
-/// Should probably become an Enum of Material, UIMaterial, Webgl, Wgpu or whatever.
-/// TODO: That is a future sucker mitch problem.
+/// Shader variant used in wgpu to separate out webgl shaders and not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Variant {
     pub ui_material: bool,
     pub webgl: bool,
-    /// Shaders that opt in to this flag (via `@if(WGPU_TEST)`) can provide
-    /// a simplified layout that the headless test harness always knows how to
-    /// drive — e.g. forcing all bindings to @group(0) and using a minimal
-    /// FragmentInput.
-    ///
-    /// Only unit tests use this simple variant.
+    /// Set WGPU_TEST=true
     pub wgpu_test: bool,
 }
 
 impl Variant {
-    /// `@group(2)` params, storage-buffer points e.g. bevy `Material`
     pub const MATERIAL: Self = Self {
         ui_material: false,
         webgl: false,
         wgpu_test: false,
     };
-    // Corresponds to bevy UIMaterial
-    /// `@group(1)` params, storage-buffer points e.g. bevy `UiMaterial`
     pub const UI: Self = Self {
         ui_material: true,
         webgl: false,
         wgpu_test: false,
     };
-    // These really are the same as ^^^ but just with padding for webgl to work.
-    /// `@group(2)` params, uniform-buffer points e.g. bevy `Material` padded to 16byte alignment
     pub const WEBGL: Self = Self {
         ui_material: false,
         webgl: true,
         wgpu_test: false,
     };
-    /// `@group(1)` params, uniform-buffer points e.g. bevy `UIMaterial` padded to 16byte alignment
     pub const WEBGL_UI: Self = Self {
         ui_material: true,
         webgl: true,
         wgpu_test: false,
     };
 
-    /// Unit test variant for something like bevy `Material`, used in `build.rs`
     pub const TEST_MATERIAL: Self = Self {
         ui_material: false,
         webgl: false,
@@ -91,8 +54,6 @@ impl Variant {
         webgl: false,
         wgpu_test: true,
     };
-    // Note webgl2 needs inputs as uniform buffers, no storagebuffers possible
-    // here. Webgpu is ok with storage buffers but its slow.
     pub const TEST_WEBGL: Self = Self {
         ui_material: false,
         webgl: true,
@@ -104,8 +65,6 @@ impl Variant {
         wgpu_test: true,
     };
 
-    /// Output dir for `build.rs` to abuse to store things into. Note wgpu
-    /// doesn't have reference images, build.rs doesn't emit anything there.
     pub fn dir_name(self) -> &'static str {
         match (self.ui_material, self.webgl) {
             (false, false) => "material",
@@ -116,61 +75,71 @@ impl Variant {
     }
 }
 
-/// Builds a wesl `VirtualResolver` with all the lib crap registered under the
-/// right names so input shaders are simple af/easy to brain.
+/// Convert a path string from a shader to a `ModulePath`
 ///
-/// THAT MEANS import of `package::lib::bindings::blah` resolves to the right
-/// wesl::ModulePath and the wesl compiler does the right thing.
+/// Leading "/" -> PathOrigin::Absolute, mimics Bevy from_wesl
+/// No leading "/" -> PathOrigin::Package(first_segment) kinda relative import
+fn mp(path: &str) -> ModulePath {
+    ModulePath::from_path(std::path::Path::new(path))
+}
+
+/// Build a `VirtualResolver` with all lib wesl helpers registered under their
+/// absolute Bevy asset paths so things seem sane from a wesl shader pov.
 ///
-/// Aka import of `package::lib::bindings::plot` as package `stem` becomes:
-///  `ModulePath { origin: Package(stem), components: ["lib","bindings","plot"]
-///  }`
+/// The keys use `from_path("/shaders/lib/...")` which yields:
+///   PathOrigin::Absolute, components: ["shaders", "lib", ...]
 ///
-/// Each helper is equivalent to `"<stem>::lib::<category>::<name>"` so the wesl
-/// `VirtualResolver` lookup works.
-fn make_resolver(stem: &str) -> wesl::VirtualResolver<'_> {
+/// This matches what the WESL grammar produces for:
+///   import package::shaders::lib::...::{...}
+fn make_resolver<'a>(top_level_stem: &str, top_level_src: &'a str) -> wesl::VirtualResolver<'a> {
     let mut r = wesl::VirtualResolver::new();
-    for (suffix, src) in HELPERS {
-        let key = format!("{stem}::{suffix}");
-        r.add_module(key.parse().unwrap(), (*src).to_owned().into());
+
+    for (path_str, src) in HELPERS {
+        r.add_module(mp(path_str), (*src).to_owned().into());
     }
+
+    // Register the top-level shader
+    // underneath "fullscreen/chromatic-aberration" -> path "/shaders/fullscreen/chromatic-aberration"
+    let top_path = format!("/shaders/{top_level_stem}");
+    r.add_module(mp(&top_path), top_level_src.to_owned().into());
+
     r
 }
 
-// TODO: This could probably do with making things dynamic when I add more
-// things than plotting.
+/// Lib helpers to make the unit tests work close enough to how the bevy wesl stuff does.
+/// TODO: ALL THIS JUNK NEEDS TO BE DYNAMIC at some point. Future mitch problem.
 const HELPERS: &[(&str, &str)] = &[
-    ("lib::types::plot", PLOT_TYPES_WESL),
-    ("lib::bindings::plot", PLOT_BINDINGS_WESL),
-    ("lib::input::plot", PLOT_INPUT_WESL),
-    ("lib::helpers::plot", PLOT_HELPERS_WESL),
+    ("/shaders/lib/types/plot", PLOT_TYPES_WESL),
+    ("/shaders/lib/bindings/plot", PLOT_BINDINGS_WESL),
+    ("/shaders/lib/input/plot", PLOT_INPUT_WESL),
+    ("/shaders/lib/helpers/plot", PLOT_HELPERS_WESL),
     (
-        "lib::types::chromatic_aberration",
-        CHROMATIC_ABERRATION_TYPES_WESL,
+        "/shaders/lib/types/fullscreen_effect",
+        FULLSCREEN_EFFECT_TYPES_WESL,
     ),
     (
-        "lib::bindings::chromatic_aberration",
-        CHROMATIC_ABERRATION_BINDINGS_WESL,
+        "/shaders/lib/bindings/fullscreen_effect",
+        FULLSCREEN_EFFECT_BINDINGS_WESL,
     ),
     (
-        "lib::input::chromatic_aberration",
-        CHROMATIC_ABERRATION_INPUT_WESL,
+        "/shaders/lib/input/fullscreen_effect",
+        FULLSCREEN_EFFECT_INPUT_WESL,
     ),
 ];
 
-/// "compiles" wesl with all the library resolver stuff setup to a wgsl file
+/// Compile a WESL shader to a WGSL string using the in-memory VirtualResolver.
 ///
-/// `stem` must be a valid wesl module path e.g. `plot`
-/// `src` is that raw wesl file data
+/// `stem` is the path relative to the shaders crate `src/` dir. That is:
+/// `"fullscreen/chromatic-aberration"` , `"2d/plot"`. `src` is the raw WESL
+/// bytes for the specific shader after "compiling".
 ///
-/// Returns the wgsl shader or string of whatever failed. Not the best interface...
+/// Returns the compiled WGSL string or an error description if things go sideways.
 pub fn compile(stem: &str, src: &str, variant: Variant) -> Result<String, String> {
-    let module_path: wesl::ModulePath = stem
-        .parse()
-        .map_err(|e| format!("invalid module path {stem:?}: {e}"))?;
+    // The entry point is setup to look like what bevy apps use aka: "/shaders/<stem>"
+    let entry_path = format!("/shaders/{stem}");
+    let module_path = mp(&entry_path);
 
-    let mut resolver = make_resolver(stem);
-    resolver.add_module(module_path.clone(), src.to_owned().into());
+    let resolver = make_resolver(stem, src);
 
     let mut compiler = wesl::Wesl::new_barebones();
     compiler.use_condcomp(true);
@@ -193,11 +162,9 @@ pub fn compile(stem: &str, src: &str, variant: Variant) -> Result<String, String
         })
 }
 
-/// Patches `@group(from)` to `@group(to)` in a wgsl string source. Only useful
-/// to hack changing a group input to something else. Nobody but me should need
-/// this.
-///
-/// Here mostly to yeet stuff to `@group(0)` for unit tests
+/// Patch `@group(from)` → `@group(to)` in a WGSL string. Kept for any future
+/// test that needs group remapping, not sure this will be needed again but who
+/// knows.
 pub fn patch_group(wgsl: &str, from: u8, to: u8) -> String {
     wgsl.replace(&format!("@group({from})"), &format!("@group({to})"))
 }

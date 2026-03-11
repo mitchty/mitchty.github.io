@@ -17,6 +17,7 @@ use bevy::{
         renderer::{RenderContext, RenderDevice},
         view::ViewTarget,
     },
+    shader::ShaderDefVal,
 };
 use std::collections::HashMap;
 
@@ -82,28 +83,22 @@ pub struct AvailableShaders {
 pub struct ShaderInfo {
     pub name: String,
     pub display_name: String,
-    pub path: String,
 }
 
 impl Default for AvailableShaders {
     fn default() -> Self {
-        // Hardcode the list of available shaders for now
-        // In the future, we could auto-discover these at startup
         let shaders = vec![
             ShaderInfo {
                 name: "chromatic-aberration".to_string(),
                 display_name: "Chromatic Aberration".to_string(),
-                path: "shaders/fullscreen/chromatic-aberration.wgsl".to_string(),
             },
             ShaderInfo {
                 name: "vhs-effect".to_string(),
                 display_name: "VHS Effect".to_string(),
-                path: "shaders/fullscreen/vhs-effect.wgsl".to_string(),
             },
             ShaderInfo {
                 name: "em-interference".to_string(),
                 display_name: "EM Interference".to_string(),
-                path: "shaders/fullscreen/em-interference.wgsl".to_string(),
             },
         ];
 
@@ -118,10 +113,6 @@ pub struct ActiveShader {
 }
 
 impl ActiveShader {
-    // pub fn name<'a>(&self, available: &'a AvailableShaders) -> &'a str {
-    //     &available.shaders[self.index].name
-    // }
-
     pub fn display_name<'a>(&self, available: &'a AvailableShaders) -> &'a str {
         &available.shaders[self.index].display_name
     }
@@ -137,19 +128,13 @@ impl ActiveShader {
             self.index -= 1;
         }
     }
-
-    // pub fn set_by_name(&mut self, name: &str, available: &AvailableShaders) {
-    //     if let Some(index) = available.shaders.iter().position(|s| s.name == name) {
-    //         self.index = index;
-    //     }
-    // }
 }
 
 /// Resource to track whether effects should be enabled
 #[derive(Resource, Default)]
 pub struct EffectsEnabled(pub bool);
 
-/// Render-world resource holding the post-processing pipeline
+/// Render-world resource holding the post-processing pipeline.
 #[derive(Resource)]
 struct PostProcessPipeline {
     layout: BindGroupLayout,
@@ -198,17 +183,16 @@ impl FromWorld for PostProcessPipeline {
 
         let sampler = render_device.create_sampler(&SamplerDescriptor::default());
 
-        // Compile all available shaders
         let mut pipelines = HashMap::new();
 
-        // Get available shaders from main world
         let available_shaders = AvailableShaders::default();
 
-        // Load shader handles first.
-        // Shaders that have been compiled from WESL via the `shaders` crate
-        // use their pre-registered Handle<Shader> constant directly instead of
-        // going through asset_server.load() — this avoids a dependency on the
-        // asset path and works in both debug and release (embedded) builds.
+        let webgl_active = cfg!(all(
+            feature = "webgl",
+            target_arch = "wasm32",
+            not(feature = "webgpu")
+        ));
+
         let mut shader_handles = Vec::new();
         {
             let asset_server = world.resource::<AssetServer>();
@@ -216,22 +200,9 @@ impl FromWorld for PostProcessPipeline {
                 .load("embedded://bevy_core_pipeline/fullscreen_vertex_shader/fullscreen.wgsl");
 
             for shader_info in &available_shaders.shaders {
-                // chromatic-aberration is compiled from WESL by the `shaders`
-                // crate; use its deterministic Handle instead of a path load.
-                let shader_handle: Handle<Shader> = if shader_info.name == "chromatic-aberration" {
-                    #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
-                    let h = shaders::BEVY_WEBGL_MATERIAL_FULLSCREEN_CHROMATIC_ABERRATION.clone();
-                    #[cfg(not(all(
-                        feature = "webgl",
-                        target_arch = "wasm32",
-                        not(feature = "webgpu")
-                    )))]
-                    let h = shaders::BEVY_DEFAULT_MATERIAL_FULLSCREEN_CHROMATIC_ABERRATION.clone();
-                    h
-                } else {
-                    let shader_path = crate::asset_path(&shader_info.path);
-                    asset_server.load(shader_path)
-                };
+                let embedded_path =
+                    format!("embedded://shaders/fullscreen/{}.wesl", shader_info.name);
+                let shader_handle: Handle<Shader> = asset_server.load(embedded_path);
                 shader_handles.push((
                     shader_info.name.clone(),
                     shader_handle,
@@ -240,7 +211,6 @@ impl FromWorld for PostProcessPipeline {
             }
         }
 
-        // Now queue pipelines
         let pipeline_cache = world.resource_mut::<PipelineCache>();
         for (name, shader_handle, fullscreen_shader) in shader_handles {
             let pipeline_id = pipeline_cache.queue_render_pipeline(RenderPipelineDescriptor {
@@ -284,7 +254,7 @@ impl FromWorld for PostProcessPipeline {
                 },
                 fragment: Some(FragmentState {
                     shader: shader_handle,
-                    shader_defs: vec![],
+                    shader_defs: vec![ShaderDefVal::Bool("WEBGL".into(), webgl_active)],
                     entry_point: Some("fragment".into()),
                     targets: vec![Some(ColorTargetState {
                         format: TextureFormat::bevy_default(),

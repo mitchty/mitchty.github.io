@@ -1,14 +1,17 @@
+use bevy::prelude::UiMaterialKey;
 use bevy::prelude::*;
+use bevy::render::render_resource::SpecializedMeshPipelineError;
 use bevy::render::render_resource::*;
+use bevy::shader::ShaderDefVal;
 use bevy::shader::ShaderRef;
-use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dPlugin};
+use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dKey, Material2dPlugin};
 use polars::prelude::*;
 
 #[cfg(not(feature = "webgl"))]
 use bevy::render::storage::ShaderStorageBuffer;
 
 /// Maximum number of plot points stored in the WebGL2 uniform buffer.
-/// Must match the array size in the WESL shader source (`array<vec4<f32>, 512>`).
+/// Must match the array size in the WESL shader source `array<vec4<f32>, 512>`.
 pub const MAX_PLOT_POINTS: usize = 512;
 
 /// Marker component so the animation system can find the spawned plot UI node.
@@ -16,27 +19,27 @@ pub const MAX_PLOT_POINTS: usize = 512;
 pub struct PlotUiNode;
 
 /// How many of the most-recent DataFrame rows are windowed and uploaded to the
-/// shader each sync.  The DataFrame itself can be arbitrarily large; only the
+/// shader each sync. The DataFrame itself can be arbitrarily large; only the
 /// tail `PLOT_WINDOW_SIZE` rows are ever sent to the GPU.
 pub const PLOT_WINDOW_SIZE: usize = 200;
 
 /// The backing polars DataFrame that owns all plot data.
 ///
-/// Callers (e.g. `mitchty`) own this resource and mutate it directly.  After
-/// mutating, fire a [`PlotDataUpdated`] event and `flan` will sync the newest
-/// [`PLOT_WINDOW_SIZE`] rows to the shader automatically.
+/// Callers own this resource and mutate it directly.  After
+/// mutating, fire a `PlotDataUpdated` event and `flan` will sync the newest
+/// `PLOT_WINDOW_SIZE` rows to the shader automatically.
 ///
 /// Schema: must contain at least a column named `"y"` of dtype `Float32`.
 /// X coordinates are derived by `flan` from the row's position within the
-/// window — callers never need to store or update them.
+/// window. Callers never need to store or update them.
 #[derive(Resource)]
 pub struct PlotDataFrame {
     pub df: DataFrame,
 }
 
-/// Send this message after mutating [`PlotDataFrame`] to tell `flan` to
-/// re-sync the shader buffer.  `flan`s `sync_plot_data` system fires on this
-/// message and uploads the last [`PLOT_WINDOW_SIZE`] rows from the `"y"` column.
+/// Send this message after mutating `PlotDataFrame` to tell `flan` to
+/// re-sync the shader buffer. `flan`s `sync_plot_data` system fires on this
+/// message and uploads the last `PLOT_WINDOW_SIZE` rows from the `"y"` column.
 // TODO: make the column selectable at some point so I can make this more
 // dynamic or whatever. This is a classic "FUTURE MITCH" problem past mitch is
 // punting on. Suck it future me.
@@ -130,10 +133,10 @@ fn setup_plot_ui(
     ));
 }
 
-/// Slice the tail [`PLOT_WINDOW_SIZE`] rows of the `"y"` column from a
+/// Slice the tail `PLOT_WINDOW_SIZE` rows of the `"y"` column from a
 /// DataFrame and convert them to `Vec<Vec2>` with X ∈ [0, 1].
 ///
-/// Rows are mapped oldest→newest left→right so the shader sees the expected
+/// Rows are mapped oldest to newest left to right so the shader sees the expected
 /// scrolling-timeline layout.  Returns an empty Vec if the column is missing
 /// or the DataFrame is empty.
 fn df_tail_to_points(df: &DataFrame) -> Vec<Vec2> {
@@ -163,10 +166,10 @@ fn df_tail_to_points(df: &DataFrame) -> Vec<Vec2> {
         .collect()
 }
 
-/// Triggered by [`PlotDataUpdated`] events fired by the caller.
+/// Triggered by `PlotDataUpdated` events fired by the caller.
 ///
-/// Reads the tail [`PLOT_WINDOW_SIZE`] rows from the `"y"` column of
-/// [`PlotDataFrame`] and uploads them to every spawned plot UI node's shader
+/// Reads the last `PLOT_WINDOW_SIZE` rows from the `"y"` column of
+/// `PlotDataFrame` and uploads them to every spawned plot UI node's shader
 /// buffer.  If `PlotDataFrame` has not been inserted this system is a no-op.
 fn sync_plot_data(
     plot_df: Option<Res<PlotDataFrame>>,
@@ -222,7 +225,7 @@ fn animate_plot_time(
 /// `arrayLength` instead), but it is always present so the WGSL struct layout
 /// is identical across all variants.
 ///
-/// `time` is elapsed seconds — increment it every frame to drive shader
+/// `time` is elapsed seconds; increment it every frame to drive shader
 /// animation (e.g. a travelling sin-wave phase offset).
 #[derive(Clone, Copy, ShaderType)]
 pub struct PlotUniform {
@@ -243,7 +246,7 @@ pub struct PlotUniform {
 /// Points buffer used in WebGL2 builds (uniform buffer, WEBGL feature).
 ///
 /// Uses `Vec4` so that the Rust layout and the WGSL `array<vec4<f32>, 512>`
-/// layout agree exactly under std140 (WebGL2 GLSL uniform block rules).
+/// layout agree exactly under std140 WebGL2 GLSL uniform block rules.
 /// The `.xy` components hold the actual `(x, y)` data; `.zw` are unused.
 ///
 /// Must match `MAX_PLOT_POINTS` and the WESL shader constant.
@@ -271,22 +274,34 @@ pub struct PlotMaterial {
 
 impl Material2d for PlotMaterial {
     fn fragment_shader() -> ShaderRef {
-        #[cfg(not(feature = "webgl"))]
-        {
-            shaders::BEVY_DEFAULT_MATERIAL_2D_PLOT.clone().into()
-        }
-        #[cfg(feature = "webgl")]
-        {
-            shaders::BEVY_WEBGL_MATERIAL_2D_PLOT.clone().into()
-        }
+        "embedded://shaders/2d/plot.wesl".into()
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
         AlphaMode2d::Blend
     }
+
+    fn specialize(
+        descriptor: &mut RenderPipelineDescriptor,
+        layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        _key: Material2dKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        let webgl = cfg!(all(
+            feature = "webgl",
+            target_arch = "wasm32",
+            not(feature = "webgpu")
+        ));
+        if let Some(ref mut fragment) = descriptor.fragment {
+            fragment
+                .shader_defs
+                .push(ShaderDefVal::Bool("WEBGL".into(), webgl));
+        }
+        let _ = layout;
+        Ok(())
+    }
 }
 
-/// UI Material version of the plot shader — rendered as a Bevy UI node.
+/// UI Material version of the plot shader rendered as a Bevy UI node.
 ///
 /// Binding layout mirrors [`PlotMaterial`] but targets `@group(1)` which is
 /// what Bevy's `UiMaterial` pipeline uses.
@@ -308,13 +323,23 @@ pub struct PlotUiMaterial {
 
 impl UiMaterial for PlotUiMaterial {
     fn fragment_shader() -> ShaderRef {
-        #[cfg(not(feature = "webgl"))]
-        {
-            shaders::BEVY_DEFAULT_UI_2D_PLOT.clone().into()
-        }
-        #[cfg(feature = "webgl")]
-        {
-            shaders::BEVY_WEBGL_UI_2D_PLOT.clone().into()
+        "embedded://shaders/2d/plot.wesl".into()
+    }
+
+    fn specialize(descriptor: &mut RenderPipelineDescriptor, _key: UiMaterialKey<Self>) {
+        let webgl = cfg!(all(
+            feature = "webgl",
+            target_arch = "wasm32",
+            not(feature = "webgpu")
+        ));
+        if let Some(ref mut fragment) = descriptor.fragment {
+            fragment
+                .shader_defs
+                .push(ShaderDefVal::Bool("WEBGL".into(), webgl));
+            // Ensure the shader uses @group(1) bindings
+            fragment
+                .shader_defs
+                .push(ShaderDefVal::Bool("UI_MATERIAL".into(), true));
         }
     }
 }
@@ -340,7 +365,6 @@ mod tests {
     #[cfg(feature = "webgl")]
     fn plot_points_uniform_webgl_alignment() {
         use std::mem::size_of;
-        // WebGL requires uniform buffer structs to be multiples of 16 bytes
         assert_eq!(
             size_of::<PlotPointsUniform>() % 16,
             0,
@@ -350,9 +374,11 @@ mod tests {
     }
 
     #[test]
+    // TODO:         LEAK [   0.229s] ( 7/22) flan tests::max_plot_points_constant
+    // future me can figure out what the hell could possibly leak here
     fn max_plot_points_constant() {
         // MAX_PLOT_POINTS must match the array size in the WESL shader
-        // (array<vec4<f32>, 512>). If you change this, update the shader too!
+        // array<vec4<f32>, 512>. If you change this, update the shader too dumdum!
         assert_eq!(MAX_PLOT_POINTS, 512);
     }
 }

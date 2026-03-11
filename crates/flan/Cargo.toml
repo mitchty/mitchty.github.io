@@ -5,7 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [features]
-# Mirrors mitchty's webgl feature — enables the uniform-buffer points path
+# Mirrors mitchty's webgl feature enables the uniform-buffer points path
 # that works on WebGL2 (storage buffers require VERTEX_STORAGE which WebGL2
 # does not support).
 webgl = ["shaders/webgl"]

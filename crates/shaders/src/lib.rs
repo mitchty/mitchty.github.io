@@ -1,30 +1,6 @@
-// Note, most all of this library code is centered around testing and building
-// wesl shaders into wgsl and abusing wgpu to render a shader to an image for
-// unit testing purposes. This is mostly here for me to work out how to unit
-// test shaders be they fragment/vertex/compute etc... and to get a better idea
-// of if a platform differs visually.
-//
-// FOR NOW thats not happening (I'm just rendering the image first round then
-// testing against that on every platform.)
-//
-// BUTTTTTTT... its something that could happen in the future if I get a bug up
-// my butt to do it.
-//
-// `shaders` crate — centralised WESL shader compilation and registration.
-//
-// build.rs scans src/shaders/*.wesl, compiles every variant into
-// $OUT_DIR/bevy/{default,webgl}/{material,ui}/<name>.wgsl, then generates
-// shader_registry.rs which is include!()-ed below.
-//
-// Public api is mostly `shaders::BEVY_{DEFAULT|WEBGL}_{UI|MATERIAL}_THING`
-//
-// And the `ShadersPLugin` to make it easy to add to any bevy app so the asset
-// server can hand over the shaders at runtime.
-
-// Future mitch note, `render` feature is for unit testing with wgpu.
-//   * `shaders::wesl`     — "compile" wesl->wgsl crap
-//   * `shaders::render`   — "render" wgsl to a bucket of bits via wgpu
-//   * `shaders::snapshot` — "snapshot" compare rendered crap to reference png images
+// For now this is its own crate separate from flan, but when I get things well
+// enough along it'll be smashed into flan. Actually now that I think about it
+// it might be easier to yeet this in there sooner rather than later.
 use bevy::app::{App, Plugin};
 use bevy::shader::Shader;
 
@@ -35,21 +11,70 @@ pub mod snapshot;
 #[cfg(feature = "render")]
 pub mod wesl;
 
-// build.rs generates this crap based off the input wesl shaders to make a
-// plugin I can abuse that sets up embedded assets for bevy usage.
-//
-// Note bevy exists not cause I think its the best, but because outside of unit
-// tests I'm not using wgpu directly to render crap. I might in future but until
-// then, bevy is assumed.
-include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
-
-// This will probably eventually become the flan crate once that becomes its own
-// thing. But while I figure that crap out for now its here, cause I've got
-// nowhere better to yeet all this crap.
 pub struct ShadersPlugin;
 
 impl Plugin for ShadersPlugin {
     fn build(&self, app: &mut App) {
-        _register_shaders(app);
+        // Library wesl shaders are added into the assetserver so that
+        // `ModulePath` works with `ShaderCashe::set_shader` output is
+        // registered in a way the wesl imports expect in bevy.
+        //
+        // e.g. package::shaders::lib::input::fullscreen_effect ->
+        // Absolute["shaders","lib","input","fullscreen_effect"]
+        //
+        // TODO: see if there is way to use `load_internal_asset!` which can
+        // prefix shaders to the `ModulePath`
+        //
+        // Library shaders are loaded by the wesl compiler by import path alone
+        // not uuid handles so uuidv4 handles is ok nothing should use the
+        // handles uuid directly.
+        {
+            let mut shaders = app
+                .world_mut()
+                .resource_mut::<bevy::asset::Assets<Shader>>();
+            for (source, path) in [
+                (
+                    include_str!("lib/types/fullscreen_effect.wesl"),
+                    "shaders/lib/types/fullscreen_effect.wesl",
+                ),
+                (
+                    include_str!("lib/bindings/fullscreen_effect.wesl"),
+                    "shaders/lib/bindings/fullscreen_effect.wesl",
+                ),
+                (
+                    include_str!("lib/input/fullscreen_effect.wesl"),
+                    "shaders/lib/input/fullscreen_effect.wesl",
+                ),
+                (
+                    include_str!("lib/types/plot.wesl"),
+                    "shaders/lib/types/plot.wesl",
+                ),
+                (
+                    include_str!("lib/bindings/plot.wesl"),
+                    "shaders/lib/bindings/plot.wesl",
+                ),
+                (
+                    include_str!("lib/input/plot.wesl"),
+                    "shaders/lib/input/plot.wesl",
+                ),
+                (
+                    include_str!("lib/helpers/plot.wesl"),
+                    "shaders/lib/helpers/plot.wesl",
+                ),
+            ] {
+                let id = bevy::asset::AssetId::Uuid {
+                    uuid: bevy::asset::uuid::Uuid::new_v4(),
+                };
+                let _ = shaders.insert(id, Shader::from_wesl(source, path));
+            }
+        }
+
+        // Entry shaders are treated as embedded assets still, the handles are
+        // for runtime lookup.
+        bevy::asset::embedded_asset!(app, "2d/plot.wesl");
+        bevy::asset::embedded_asset!(app, "2d/reference.wesl");
+        bevy::asset::embedded_asset!(app, "fullscreen/chromatic-aberration.wesl");
+        bevy::asset::embedded_asset!(app, "fullscreen/vhs-effect.wesl");
+        bevy::asset::embedded_asset!(app, "fullscreen/em-interference.wesl");
     }
 }

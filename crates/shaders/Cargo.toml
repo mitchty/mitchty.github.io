@@ -4,25 +4,8 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
-# Build-time: scan src/shaders/*.wesl, compile every variant, generate handle
-# constants + a ShadersPlugin that registers them all via load_internal_asset!.
-#
-# Compiled variants (always):
-#   $OUT_DIR/bevy/default/material/<name>.wgsl   (no flags)
-#   $OUT_DIR/bevy/default/ui/<name>.wgsl         (UI_MATERIAL=true)
-#
-# Compiled variants (webgl feature only):
-#   $OUT_DIR/bevy/webgl/material/<name>.wgsl     (WEBGL=true)
-#   $OUT_DIR/bevy/webgl/ui/<name>.wgsl           (UI_MATERIAL=true, WEBGL=true)
-#
-# Exported handle constants (from the generated shader_registry.rs):
-#   shaders::BEVY_DEFAULT_MATERIAL_<STEM>
-#   shaders::BEVY_DEFAULT_UI_<STEM>
-#   shaders::BEVY_WEBGL_MATERIAL_<STEM>   (cfg(feature = "webgl"))
-#   shaders::BEVY_WEBGL_UI_<STEM>         (cfg(feature = "webgl"))
-#
-# `render` feature is mostly for testing but I might find a use for it to be off
-# in lib code.
+# `render` feature enables the headless wgpu test harness used for unit testing
+# render output so I at least know if I broke what I expect stuff to look like.
 
 [features]
 default = ["render"]
@@ -36,12 +19,7 @@ render = [
 ]
 
 [dependencies]
-# Default features give us bevy::render, bevy::asset, bevy::app re-exports.
-# The crate is already a transitive dep so there's no extra compile cost.
-bevy = "~0.18.1"
-
-# TODO: Really need to setup cargo deny to help with keeping this inline with
-# bevy version.
+bevy = { version = "~0.18.1", features = ["shader_format_wesl"] }
 wgpu = { version = "27", optional = true, features = [
   "metal",
   "vulkan",
@@ -57,10 +35,10 @@ wesl = { version = "~0.3.2", optional = true }
 [dev-dependencies]
 bytemuck = { version = "1", features = ["derive"] }
 
-[build-dependencies]
-uuid = { version = "1", features = ["v5"] }
-wesl = "~0.3.2"
+[[test]]
+name = "shader_2d"
+required-features = ["render"]
 
 [[test]]
-name = "shader_tests"
+name = "shader_fullscreen"
 required-features = ["render"]

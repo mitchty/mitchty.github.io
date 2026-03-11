@@ -31,7 +31,7 @@ pub const DEFAULT_SSIM_THRESHOLD: f64 = 0.95;
 /// snapshots survive `cargo clean`).
 fn fixtures_dir() -> PathBuf {
     let manifest = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR not set — run under `cargo test`");
+        .expect("CARGO_MANIFEST_DIR not set run under `cargo test`");
     PathBuf::from(manifest).join("tests").join("fixtures")
 }
 

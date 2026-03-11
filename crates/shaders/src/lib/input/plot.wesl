@@ -1,4 +1,3 @@
-// Fragment shader inputs for bevy ui/material setups and testing setups.
 @if(WGPU_TEST)
 struct FragmentInput {
     @builtin(position) position: vec4<f32>,

@@ -245,14 +245,12 @@ fn parse_markdown_sections(src: &str) -> Vec<(String, String)> {
                 }
                 current_heading = Some(h.children.iter().map(inline_text).collect::<String>());
             }
-            MdNode::Paragraph(para) => {
-                if current_heading.is_some() {
-                    if !current_body.is_empty() {
-                        current_body.push(' ');
-                    }
-                    let text: String = para.children.iter().map(inline_text).collect();
-                    current_body.push_str(&text);
+            MdNode::Paragraph(para) if current_heading.is_some() => {
+                if !current_body.is_empty() {
+                    current_body.push(' ');
                 }
+                let text: String = para.children.iter().map(inline_text).collect();
+                current_body.push_str(&text);
             }
             // every other markdown ast type can eff off this is all I need for now
             _ => {}

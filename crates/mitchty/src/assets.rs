@@ -93,14 +93,6 @@ impl Plugin for AssetConfigPlugin {
 
             // Fonts for the 3d text thingy. I should make a 3d console/shell.... maybe?
             embedded_asset!(_app, "assets/fonts/FiraMono-Medium.ttf");
-
-            // Note, these are in fullscreen to make the dropdown in egui a bit
-            // easier to be dynamic.
-            embedded_asset!(_app, "assets/shaders/fullscreen/em-interference.wgsl");
-            // chromatic-aberration is now compiled from WESL by the `shaders`
-            // crate and loaded via shaders::BEVY_DEFAULT_MATERIAL_3D_CHROMATIC_ABERRATION;
-            // the embedded .wgsl asset is no longer needed.
-            embedded_asset!(_app, "assets/shaders/fullscreen/vhs-effect.wgsl");
         }
     }
 }

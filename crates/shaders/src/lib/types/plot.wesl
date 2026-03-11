@@ -18,13 +18,12 @@ struct PlotUniform {
     offset: vec2<f32>,
     // Number of valid points to render
     count:  u32,
-    // Elapsed time in seconds — used to animate the shader.
+    // Elapsed time in seconds used to animate the shader.
     time:   f32,
 }
 
 // webgl uniform padded to 16 bytes, vec4 is intentional cause std140 pads
-// array<vec2> to 16 bytes anyway, so // making it explicit keeps Rust and WGSL
-// in sync without padding nonsense.
+// array<vec2> to 16 bytes anyway, so non webgl should be a storage buffer
 @if(WEBGL)
 struct PlotPointsUniform {
     // Must match MAX_PLOT_POINTS in flan/src/lib.rs dumdum!
