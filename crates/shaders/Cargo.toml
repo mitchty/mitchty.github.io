@@ -20,7 +20,10 @@ render = [
 
 [dependencies]
 bevy = { version = "~0.18.1", features = ["shader_format_wesl"] }
-wgpu = { version = "27", optional = true, features = [
+# Force naga/termcolor on here or we can't compile tests.
+naga.workspace = true
+# wgpu forced to v26 to match bevy wgpu
+wgpu = { version = "26", optional = true, features = [
   "metal",
   "vulkan",
   "dx12",

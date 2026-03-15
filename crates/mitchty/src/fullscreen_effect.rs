@@ -52,7 +52,12 @@ pub fn toggle_fullscreen_effect(
     mut effects_enabled: ResMut<EffectsEnabled>,
     available_shaders: Res<AvailableShaders>,
     active_shader: Res<ActiveShader>,
+    #[cfg(feature = "egui")] egui_wants_input: Res<crate::ui::EguiWantsInput>,
 ) {
+    #[cfg(feature = "egui")]
+    if egui_wants_input.wants_keyboard {
+        return;
+    }
     if keyboard.just_pressed(KeyCode::KeyE) {
         effects_enabled.0 = !effects_enabled.0;
         let status = if effects_enabled.0 {
@@ -75,7 +80,12 @@ pub fn next_effect(
     mut active_shader: ResMut<ActiveShader>,
     available_shaders: Res<AvailableShaders>,
     effects_enabled: Res<EffectsEnabled>,
+    #[cfg(feature = "egui")] egui_wants_input: Res<crate::ui::EguiWantsInput>,
 ) {
+    #[cfg(feature = "egui")]
+    if egui_wants_input.wants_keyboard {
+        return;
+    }
     if keyboard.just_pressed(KeyCode::Period) {
         active_shader.next(&available_shaders);
         if effects_enabled.0 {
@@ -94,7 +104,12 @@ pub fn previous_effect(
     mut active_shader: ResMut<ActiveShader>,
     available_shaders: Res<AvailableShaders>,
     effects_enabled: Res<EffectsEnabled>,
+    #[cfg(feature = "egui")] egui_wants_input: Res<crate::ui::EguiWantsInput>,
 ) {
+    #[cfg(feature = "egui")]
+    if egui_wants_input.wants_keyboard {
+        return;
+    }
     if keyboard.just_pressed(KeyCode::Comma) {
         active_shader.previous(&available_shaders);
         if effects_enabled.0 {

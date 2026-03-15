@@ -1,3 +1,4 @@
+mod ai;
 mod assets;
 mod fullscreen_effect;
 mod post_process;
@@ -129,6 +130,17 @@ struct Cli {
     /// Disable gamepad support, default
     #[arg(long = "no-gamepad", overrides_with = "with_gamepad")]
     no_gamepad: bool,
+
+    /// Open one or more UI windows at startup. Comma separated or repeated args
+    /// allowed.
+    #[arg(long, value_delimiter = ',', value_name = "WINDOW", action = clap::ArgAction::Append)]
+    show: Vec<String>,
+
+    /// Open a specific post by name at startup. Note the post text is matched
+    /// case insensitively to make the wasm uri case symmetric with the command
+    /// line ars.
+    #[arg(long, value_name = "POST")]
+    post: Option<String>,
 }
 
 /// TODO: This files getting obscenely too long time to start splitting stuff up.
@@ -139,15 +151,73 @@ fn main() {
     #[cfg(target_arch = "wasm32")]
     console_error_panic_hook::set_once();
 
-    // wasm arg passing is TBD
+    // Native: parse CLI args and build a UiConfig from them.
     #[cfg(not(target_arch = "wasm32"))]
-    let enable_gamepad = {
+    let (enable_gamepad, ui_config) = {
         use clap::Parser;
         let cli = Cli::parse();
-        cli.with_gamepad
+
+        let mut cfg = ui::UiConfig::default();
+        for slug in &cli.show {
+            match ui::UiWindow::from_slug(slug) {
+                Some(w) => cfg.enable_window(w),
+                None => bevy::log::warn!("--show: unknown window {:?} (ignored)", slug),
+            }
+        }
+
+        if let Some(name) = &cli.post {
+            match ui::post_index_for_name(name) {
+                Some(idx) => cfg.initial_post = Some(idx),
+                None => bevy::log::warn!("--post: unknown post {:?} (ignored)", name),
+            }
+        }
+
+        (cli.with_gamepad, cfg)
     };
+
+    // WASM: no CLI, use the URL query string as a pseudo cli command arg.
     #[cfg(target_arch = "wasm32")]
     let enable_gamepad = false;
+
+    // WASM: parse ?show=recognizer or ?show=recognizer,data-viewer from the
+    // browser URL. web_sys gives us location.search() which returns the raw
+    // query string including the leading '?'.
+    #[cfg(target_arch = "wasm32")]
+    let ui_config = {
+        let mut cfg = ui::UiConfig::default();
+
+        let query = web_sys::window()
+            .and_then(|w| w.location().search().ok())
+            .unwrap_or_default();
+
+        for pair in query.trim_start_matches('?').split('&') {
+            let mut parts = pair.splitn(2, '=');
+            let key = parts.next().unwrap_or("").trim();
+            let value = parts.next().unwrap_or("").trim();
+
+            if key.eq_ignore_ascii_case("show") {
+                // Value may itself be comma-separated just like in the cli. Symmetry is nice.
+                for slug in value.split(',') {
+                    let slug = slug.trim();
+                    if slug.is_empty() {
+                        continue;
+                    }
+                    match ui::UiWindow::from_slug(slug) {
+                        Some(w) => cfg.enable_window(w),
+                        None => bevy::log::warn!("?show=: unknown window {:?} (ignored)", slug),
+                    }
+                }
+            } else if key.eq_ignore_ascii_case("post") {
+                // Single post name; only one post can be active at a time, last one wins.
+                match ui::post_index_for_name(value) {
+                    Some(idx) => cfg.initial_post = Some(idx),
+                    None => bevy::log::warn!("?post=: unknown post {:?} (ignored)", value),
+                }
+            }
+        }
+
+        cfg
+    };
 
     let mut app = App::new();
 
@@ -165,6 +235,7 @@ fn main() {
         .insert_resource(ColorState {
             color: Srgba::gray(0.5),
         })
+        .insert_resource(ui_config)
         .init_resource::<CameraConfig>();
 
     // Conditionally add UI-specific plugins
@@ -387,7 +458,12 @@ fn toggle_fps_display(
     keyboard: Res<ButtonInput<KeyCode>>,
     fps_query: Query<Entity, With<FpsDisplay>>,
     mut commands: Commands,
+    #[cfg(feature = "egui")] egui_wants_input: Res<ui::EguiWantsInput>,
 ) {
+    #[cfg(feature = "egui")]
+    if egui_wants_input.wants_keyboard {
+        return;
+    }
     if keyboard.just_pressed(KeyCode::KeyF) {
         if let Ok(entity) = fps_query.single() {
             commands.entity(entity).despawn();
@@ -460,7 +536,12 @@ fn toggle_cube_rotation(
     keyboard: Res<ButtonInput<KeyCode>>,
     rotation_query: Query<Entity, With<CubeRotation>>,
     mut commands: Commands,
+    #[cfg(feature = "egui")] egui_wants_input: Res<ui::EguiWantsInput>,
 ) {
+    #[cfg(feature = "egui")]
+    if egui_wants_input.wants_keyboard {
+        return;
+    }
     if keyboard.just_pressed(KeyCode::KeyC) {
         if let Ok(entity) = rotation_query.single() {
             commands.entity(entity).despawn();
@@ -492,7 +573,12 @@ fn toggle_hue_animation(
     keyboard: Res<ButtonInput<KeyCode>>,
     hue_query: Query<Entity, With<HueAnimation>>,
     mut commands: Commands,
+    #[cfg(feature = "egui")] egui_wants_input: Res<ui::EguiWantsInput>,
 ) {
+    #[cfg(feature = "egui")]
+    if egui_wants_input.wants_keyboard {
+        return;
+    }
     if keyboard.just_pressed(KeyCode::KeyH) {
         if let Ok(entity) = hue_query.single() {
             commands.entity(entity).despawn();

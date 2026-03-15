@@ -37,6 +37,18 @@ pub const POSTS: &[PostEntry] = &[
 #[derive(Resource, Default)]
 pub struct ActivePost(pub Option<usize>);
 
+/// Resolve a post name to its index in `POSTS`
+///
+/// This is the single source of truth used by both the native CLI (`--post`)
+/// and the WASM URL query param (`?post=`) paths so that both spellings go
+/// through identical lookup logic.
+///
+// TODO: Future me, this whole things should probably become a Struct of some
+// sort with a lookup() fn.
+pub fn post_index_for_name(name: &str) -> Option<usize> {
+    POSTS.iter().position(|p| p.name.eq_ignore_ascii_case(name))
+}
+
 /// Use a Component for the post "index"
 #[derive(Component)]
 pub struct LoremScrollView {

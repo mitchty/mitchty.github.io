@@ -3,6 +3,7 @@ name = "mitchty"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+default-run = "mitchty"
 
 [[bin]]
 name = "mitchty"
@@ -30,6 +31,9 @@ bevy = { version = "0.18.1", default-features = false, features = [
 ] }
 
 rand.workspace = true
+burn.workspace = true
+serde_json = "~1"
+zip = { version = "~2", default-features = false, features = ["deflate"] }
 clap = { version = "~4.5.60", features = ["derive"] }
 bevy_fontmesh = "~0.3"
 bevy_egui = { version = "~0.39.1", optional = true }
@@ -37,11 +41,17 @@ bevy_pretty_text = "~0.4"
 markdown = "1.0.0"
 flan = { path = "../flan" }
 shaders = { path = "../shaders" }
-
 # console_error_panic_hook is here so that the web console for js? or whatever
 # dumps out backtraces.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 polars = { version = "~0.53", default-features = false, features = ["lazy"] }
+egui-file-dialog = { version = "~0.12" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Need to set this for paste to work in wayland.
+arboard = { version = "~3.6", default-features = false, features = [
+  "wayland-data-control",
+] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "~0.1.7"
@@ -51,7 +61,6 @@ getrandom.workspace = true
 # Note: polars on wasm is.... not fun, feature gates need to constrain it so it
 # runs wicked slower than native
 polars = { version = "~0.53", default-features = false }
-# TODO: browser detection needed at some point? I actually caught a
-# bevy_feathers bug and wasn't sure if it was safari or not. Here for future me
-# to remember to use this if needed.
-#web-sys = { version = "~0.3", features = ["Navigator", "Window"] }
+# Used for reading window.location.search() to parse ?show= URL query params
+# at startup (WASM equivalent of --show CLI flag).
+web-sys = { version = "~0.3", features = ["Navigator", "Window", "Location"] }

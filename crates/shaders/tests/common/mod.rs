@@ -94,7 +94,7 @@ pub struct FullscreenEffectUniform {
 
 impl FullscreenEffectUniform {
     pub fn test_default() -> Self {
-        // intensity=5.0 → clamp(5.0/10.0)=0.5 → medium grey in WGPU_TEST mode
+        // intensity=5.0 -> clamp(5.0/10.0)=0.5 -> medium grey in WGPU_TEST mode
         Self {
             intensity: 5.0,
             time: 0.0,
@@ -126,7 +126,7 @@ impl FullscreenEffectUniformWebGl {
     }
 }
 
-// 200 points keeps WebGL count well within MAX_PLOT_POINTS (512) and gives
+// 200 points keeps WebGL count well within MAX_PLOT_POINTS 512 and gives
 // enough density that the polyline SDF matches the analytic curve closely
 // enough to pass the SSIM threshold for now in the unit tests.
 pub const TEST_POINT_COUNT: usize = 200;
@@ -168,7 +168,7 @@ pub fn render_wesl(
 
     let result = if variant.webgl {
         let uniform = PlotUniformWebGl::test_default();
-        // WEBGL: binding 1 is a uniform buffer of 512 × vec4<f32>.
+        // WEBGL: binding 1 is a uniform buffer of 512 x vec4<f32>.
         let mut point_data = vec![0u32; 512 * 4];
         for (i, p) in test_sin_wave_points().iter().enumerate() {
             point_data[i * 4] = p[0].to_bits();

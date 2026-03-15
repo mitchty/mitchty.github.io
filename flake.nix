@@ -147,6 +147,10 @@
             (lib.fileset.fileFilter (file: file.hasExt "rs") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "wesl") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "toml") ./crates)
+            # This is stuff thats embedded beyond the bevy asset server
+            (lib.fileset.fileFilter (file: file.hasExt "ttf") ./crates)
+            (lib.fileset.fileFilter (file: file.hasExt "mpk") ./crates)
+            (lib.fileset.fileFilter (file: file.hasExt "json") ./crates)
             ./deny.toml
             ./Cargo.toml
             ./Cargo.lock
@@ -355,13 +359,17 @@
           }
         );
 
-        # Cargo artifacts for WASM builds (release)
+        # Cargo artifacts for WASM release builds. Note the `ma` crate is used
+        # for burn inference and has a butt ton of stuff that doesn't build in a
+        # wasm environment. I could probably get it to work without the tui
+        # feature but this is a future sucker mitch task.
         cargoArtifactsWasm = craneLibWasm.buildDepsOnly (
           commonArgsWasm
           // nixEnvArgs
           // releaseArgs
           // {
             src = srcDeps;
+            cargoExtraArgs = "-p mitchty --features mitchty/webgl";
           }
         );
 
@@ -422,6 +430,8 @@
               (lib.fileset.fileFilter (file: file.hasExt "otf") ./.)
               (lib.fileset.fileFilter (file: file.hasExt "wgsl") ./.)
               (lib.fileset.fileFilter (file: file.hasExt "wesl") ./.)
+              (lib.fileset.fileFilter (file: file.hasExt "mpk") ./crates)
+              (lib.fileset.fileFilter (file: file.hasExt "json") ./crates)
             ];
           };
 
@@ -433,8 +443,10 @@
 
         # sh fragment to open a url on macos/linux, used in the web/web-release
         # apps for dev testing of wasm builds.
+        #
+        # Expects $URL to already be set by the caller including any query
+        # string if given for the wasm test version.
         openBrowserScript = ''
-          URL="http://localhost:8000"
           if command -v open >/dev/null 2>&1; then
             echo "open $URL"
             open "$URL" || :
@@ -449,6 +461,18 @@
 
         # Function to cover building local testing web app scripts for
         # debug/release builds in web/web-release apps.
+        #
+        # Any arguments passed after -- are treated as URL query parameters and
+        # appended to the browser URL verbatim joined with &. Here to make this
+        # a bit of a 1:1 mapping to the clap arg parsing. Not entirely sure I
+        # like this approach but eh been working on this for over a week and
+        # dgaf atm.
+        #
+        # Examples:
+        #   nix run .#web-lto
+        #   nix run .#web-lto -- show=recognizer
+        #   nix run .#web-lto -- show=recognizer show=data-viewer
+        #   nix run .#web-lto -- show=recognizer,data-viewer
         mkWebServerApp =
           name: wasmPackage: includeAssets:
           let
@@ -470,36 +494,48 @@
             inherit name;
             runtimeInputs = webServerRuntimeInputs;
             text = ''
-              set -e
               # Create temporary directory for serving
-              TMPDIR=$(mktemp -d)
-              trap 'rm -rf "$TMPDIR"' EXIT TERM INT QUIT
+              WORK=$(mktemp -d)
+              trap 'rm -rf "$WORK"' EXIT TERM INT QUIT
 
               echo "building wasm files for${buildType}"
-              mkdir -p "$TMPDIR/wasm"
-              cp -rv ${wasmPackage}/wasm/* "$TMPDIR/wasm/"
-              cp ${./index.html} "$TMPDIR/index.html"
+              mkdir -p "$WORK/wasm"
+              cp -rv ${wasmPackage}/wasm/* "$WORK/wasm/"
+              cp ${./index.html} "$WORK/index.html"
 
               ${assetCopyScript}
 
-              echo "starting local webserver at http://localhost:8000"
+              # Build the query string from any extra args passed after --.
+              # ex: show=recognizer show=data-viewer  ->  ?show=recognizer&show=data-viewer
+              QUERY=""
+              for arg in "$@"; do
+                if [ -z "$QUERY" ]; then
+                  QUERY="?''${arg}"
+                else
+                  QUERY="''${QUERY}&''${arg}"
+                fi
+              done
+
+              URL="http://localhost:8000''${QUERY}"
+
+              echo "starting local webserver at ''${URL}"
               echo "press Ctrl+C to stop"
 
-              cd "$TMPDIR"
+              cd "$WORK"
 
               # Start server in background
               python3 -m http.server 8000 &
               SERVER_PID=$!
-              trap 'kill $SERVER_PID 2>/dev/null || true; rm -rf "$TMPDIR"' EXIT
+              trap 'kill "''${SERVER_PID}" 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
               # Give the server a bit to start before trying to open a browser
-              # to it.
+              # to it for it to just fail.
               sleep 1
 
               ${openBrowserScript}
 
-              # Block on the python webserver.
-              wait $SERVER_PID
+              # Block on the python webserver so we can be ctrl-c'd on a whim.
+              wait "''${SERVER_PID}"
             '';
           };
 

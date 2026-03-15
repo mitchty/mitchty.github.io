@@ -1,4 +1,9 @@
+use crate::ai::infer::InferenceEngine;
 use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled};
+use crate::ui::config::UiConfig;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::ui::data_viewer::{DataViewerState, ShowDataViewer, data_viewer_window};
+use crate::ui::recognizer::{InferenceResult, RecognizerState};
 use crate::ui::scroll_view::{ActivePost, POSTS};
 use crate::{ColorState, CubeRotation, DragState, FpsDisplay, HueAnimation};
 use bevy::input::touch::TouchPhase;
@@ -17,54 +22,146 @@ pub struct EguiWantsInput {
 #[derive(Component)]
 pub struct ShowEgui;
 
+/// Marker component to track whether the Recognizer window is open
+#[derive(Component)]
+pub struct ShowRecognizer;
+
 /// Plugin for egui UI
 pub struct SettingsUiPlugin;
 
 impl Plugin for SettingsUiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<EguiWantsInput>()
-            .add_systems(Startup, setup_egui)
-            .add_systems(
-                EguiPrimaryContextPass,
-                (
-                    configure_egui_style,
-                    settings_ui,
-                    update_egui_input_state,
-                    toggle_egui,
-                )
-                    .chain(),
-            );
+        // Try loading the default model from embedded bytes first. This
+        // always works on WASM and guarantees a model is available on native
+        // even if running outside the repo tree.
+        //
+        // TODO: Not sure if I want to continue this approach but its for
+        // simplicity right now.
+        let engine = InferenceEngine::from_embedded(DEFAULT_MODEL_CONFIG, DEFAULT_MODEL_WEIGHTS);
+
+        // On native builds, fall back to the on-disk artifact directories so
+        // that a freshly-trained model in recognizer/ still overrides the
+        // compiled-in default during development. We do this for debug builds.
+        #[cfg(any(debug_assertions, not(target_arch = "wasm32")))]
+        let engine = engine.or_else(|| {
+            ["recognizer", "../../recognizer", "../recognizer"]
+                .iter()
+                .find_map(|dir| InferenceEngine::load(dir))
+        });
+
+        if engine.is_none() {
+            bevy::log::warn!("InferenceEngine: no model loaded; inference will be disabled");
+        }
+
+        let app = app
+            .init_resource::<EguiWantsInput>()
+            .init_resource::<RecognizerState>()
+            .init_resource::<InferenceResult>()
+            .insert_non_send_resource(engine)
+            .add_systems(Startup, setup_egui);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let app = app.init_resource::<DataViewerState>();
+
+        app.add_systems(
+            EguiPrimaryContextPass,
+            (
+                configure_egui_style,
+                settings_ui,
+                #[cfg(not(target_arch = "wasm32"))]
+                (recognizer_window, data_viewer_window).chain(),
+                #[cfg(target_arch = "wasm32")]
+                recognizer_window,
+                update_egui_input_state,
+                toggle_egui,
+            )
+                .chain(),
+        );
     }
 }
 
-/// Bump up egui text by 2 points or so.
+/// Here for the recognizer, I need a CJK font to display kanji/hiragana/katakana
+static NOTO_SANS_JP: &[u8] = include_bytes!("../assets/fonts/NotoSansJP-Regular.ttf");
+
+/// Default model config JSON for the default model for now, future will be to
+/// be able to pick different models.
+static DEFAULT_MODEL_CONFIG: &[u8] = include_bytes!("../assets/models/default/config.json");
+
+/// Default model weights for ^^^
+static DEFAULT_MODEL_WEIGHTS: &[u8] = include_bytes!("../assets/models/default/model.mpk");
+
+/// Bump up egui text and register NotoSansJP as a CJK fallback.
+///
+/// Oneshot system, after insertion noto sans jp is inserted to the end of every
+/// fontfamily so that latin/ascii uses default font and other codepoints
+/// hopefully get hit with noto sans jp for kanji et al.
 fn configure_egui_style(mut contexts: EguiContexts, mut done: Local<bool>) -> Result {
     if *done {
         return Ok(());
     }
     *done = true;
 
-    contexts.ctx_mut()?.style_mut(|style| {
+    let ctx = contexts.ctx_mut()?;
+
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "NotoSansJP".to_owned(),
+        egui::FontData::from_static(NOTO_SANS_JP).into(),
+    );
+
+    // Only use noto sans jp for anything that fails to render in a latin subset
+    for family_data in fonts.families.values_mut() {
+        family_data.push("NotoSansJP".to_owned());
+    }
+    ctx.set_fonts(fonts);
+
+    ctx.style_mut(|style| {
         for font_id in style.text_styles.values_mut() {
-            font_id.size += 2.0;
+            font_id.size += 4.0;
         }
     });
 
     Ok(())
 }
 
-/// Spawn marker entities for egui state
-fn setup_egui(mut commands: Commands, mut effects_enabled: ResMut<EffectsEnabled>) {
+/// Spawn marker entities for egui state. This is what maps from cli/clap args
+/// or wasm query params to setup the bevy ecs so we can provide "links" to
+/// certain features/posts etc...
+///
+/// This just provides a way for the ECS to start from. Once up the ecs is used
+/// as normal nothing from here is reused at runtime.
+fn setup_egui(
+    mut commands: Commands,
+    mut effects_enabled: ResMut<EffectsEnabled>,
+    mut active_post: ResMut<ActivePost>,
+    ui_config: Res<UiConfig>,
+) {
     // Start with effects enabled by default
     effects_enabled.0 = true;
 
-    // Spawn other markers
+    // Always-on markers
     commands.spawn(CubeRotation);
     commands.spawn(HueAnimation);
     commands.spawn(FpsDisplay);
 
-    // Show the menu bar by default... should I make this wasm only?
-    commands.spawn(ShowEgui);
+    // Menu bar: on by default, but UiConfig lets callers suppress it... for
+    // now.
+    if ui_config.show_menu_bar {
+        commands.spawn(ShowEgui);
+    }
+
+    if ui_config.show_recognizer {
+        commands.spawn(ShowRecognizer);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    if ui_config.show_data_viewer {
+        commands.spawn(ShowDataViewer);
+    }
+
+    if let Some(idx) = ui_config.initial_post {
+        *active_post = ActivePost(Some(idx));
+    }
 }
 
 /// System to control the egui menu bar visibility.
@@ -78,7 +175,7 @@ fn toggle_egui(
     drag_state: Res<DragState>,
     mut commands: Commands,
 ) {
-    let keyboard_toggle = keyboard.just_pressed(KeyCode::KeyG);
+    let keyboard_toggle = keyboard.just_pressed(KeyCode::KeyG) && !egui_wants_input.wants_keyboard;
 
     // A click or tap only counts if egui isn't consuming the pointer and the
     // pointer didn't travel far enough to be considered a drag/pan.
@@ -111,6 +208,8 @@ fn settings_ui(
     cube_rotation_query: Query<Entity, With<CubeRotation>>,
     hue_animation_query: Query<Entity, With<HueAnimation>>,
     show_egui_query: Query<(), With<ShowEgui>>,
+    recognizer_query: Query<Entity, With<ShowRecognizer>>,
+    #[cfg(not(target_arch = "wasm32"))] data_viewer_query: Query<Entity, With<ShowDataViewer>>,
     mut active_post: ResMut<ActivePost>,
     mut active_shader: ResMut<ActiveShader>,
     available_shaders: Res<AvailableShaders>,
@@ -226,9 +325,223 @@ fn settings_ui(
                     }
                 }
             });
+
+            ui.menu_button("Abominable Intelligence", |ui| {
+                if ui.button("Recognizer").clicked() {
+                    if recognizer_query.is_empty() {
+                        commands.spawn(ShowRecognizer);
+                    } else if let Ok(entity) = recognizer_query.single() {
+                        commands.entity(entity).despawn();
+                    }
+                    ui.close();
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if ui.button("Data Viewer").clicked() {
+                    if data_viewer_query.is_empty() {
+                        commands.spawn(ShowDataViewer);
+                    } else if let Ok(entity) = data_viewer_query.single() {
+                        commands.entity(entity).despawn();
+                    }
+                    ui.close();
+                }
+            });
         });
     });
     Ok(())
+}
+
+/// System to render the Recognizer egui window when ShowRecognizer is present.
+fn recognizer_window(
+    mut contexts: EguiContexts,
+    recognizer_query: Query<Entity, With<ShowRecognizer>>,
+    mut state: ResMut<RecognizerState>,
+    engine: NonSend<Option<InferenceEngine>>,
+    mut inference_result: ResMut<InferenceResult>,
+    mut commands: Commands,
+) -> Result {
+    if recognizer_query.is_empty() {
+        return Ok(());
+    }
+
+    let mut open = true;
+    egui::Window::new("Recognizer")
+        .open(&mut open)
+        .default_size([540.0, 380.0])
+        .resizable(true)
+        .show(contexts.ctx_mut()?, |ui| {
+            // ── Toolbar row ──────────────────────────────────────────────
+            ui.horizontal(|ui| {
+                let can_undo = !state.strokes.is_empty() || state.current_stroke.is_some();
+                let can_redo = !state.redo_stack.is_empty();
+                let can_clear = can_undo;
+
+                if ui
+                    .add_enabled(can_undo, egui::Button::new("Undo"))
+                    .clicked()
+                {
+                    state.undo();
+                    // Re-run inference after undo so the sidebar stays current.
+                    run_inference(&state, &engine, &mut inference_result);
+                }
+                if ui
+                    .add_enabled(can_redo, egui::Button::new("Redo"))
+                    .clicked()
+                {
+                    state.redo();
+                    run_inference(&state, &engine, &mut inference_result);
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(can_clear, egui::Button::new("Clear"))
+                    .clicked()
+                {
+                    state.clear();
+                    // Clear inference result alongside the canvas.
+                    *inference_result = InferenceResult::default();
+                }
+            });
+
+            ui.separator();
+
+            const CANVAS_W: f32 = 360.0;
+            const CANVAS_H: f32 = 300.0;
+            const SIDEBAR_W: f32 = 148.0;
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                let canvas_size = egui::vec2(CANVAS_W, CANVAS_H);
+                let (response, painter) =
+                    ui.allocate_painter(canvas_size, egui::Sense::click_and_drag());
+
+                painter.rect_filled(response.rect, 4.0, egui::Color32::WHITE);
+
+                // Origin is the top-left of the canvas in screen space.
+                // All stroke points are stored relative to this origin so that
+                // moving the window doesn't shift previously drawn strokes.
+                let origin = response.rect.min;
+
+                let pointer_pos = response.interact_pointer_pos();
+
+                // Track whether a stroke was just committed this frame so we
+                // can trigger inference exactly once per lift.
+                let had_stroke_before = state.current_stroke.is_some();
+
+                if response.is_pointer_button_down_on() {
+                    if let Some(pos) = pointer_pos {
+                        // Clamp to canvas bounds then convert to local coords.
+                        let clamped = egui::pos2(
+                            pos.x.clamp(response.rect.min.x, response.rect.max.x),
+                            pos.y.clamp(response.rect.min.y, response.rect.max.y),
+                        );
+                        let local = clamped - origin;
+                        state
+                            .current_stroke
+                            .get_or_insert_with(Vec::new)
+                            .push(egui::pos2(local.x, local.y));
+                    }
+                } else if state.current_stroke.is_some() {
+                    state.commit_stroke();
+                }
+
+                let stroke_committed = had_stroke_before && state.current_stroke.is_none();
+                if stroke_committed {
+                    run_inference(&state, &engine, &mut inference_result);
+                }
+
+                let stroke = egui::Stroke::new(2.0, egui::Color32::BLACK);
+
+                let to_screen = |p: egui::Pos2| p + origin.to_vec2();
+
+                for segment in &state.strokes {
+                    for pair in segment.windows(2) {
+                        painter.line_segment([to_screen(pair[0]), to_screen(pair[1])], stroke);
+                    }
+                }
+
+                if let Some(current) = &state.current_stroke {
+                    for pair in current.windows(2) {
+                        painter.line_segment([to_screen(pair[0]), to_screen(pair[1])], stroke);
+                    }
+                }
+
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    ui.set_width(SIDEBAR_W);
+                    draw_inference_sidebar(ui, &inference_result, engine.as_ref().as_ref());
+                });
+            });
+        });
+
+    if !open && let Ok(entity) = recognizer_query.single() {
+        commands.entity(entity).despawn();
+    }
+
+    Ok(())
+}
+
+/// Run inference on the current canvas state and store the result.
+fn run_inference(
+    state: &RecognizerState,
+    engine: &Option<InferenceEngine>,
+    result: &mut InferenceResult,
+) {
+    let Some(engine) = engine.as_ref() else {
+        return;
+    };
+
+    let canvas = InferenceEngine::rasterize(state);
+    let matches = engine.run(&canvas);
+    *result = InferenceResult {
+        canvas: Some(canvas),
+        matches,
+    };
+}
+
+/// Render the inference results into the sidebar.
+fn draw_inference_sidebar(
+    ui: &mut egui::Ui,
+    result: &InferenceResult,
+    engine: Option<&InferenceEngine>,
+) {
+    if engine.is_none() {
+        ui.label(egui::RichText::new("No model loaded.").weak().italics());
+        return;
+    }
+
+    if result.matches.is_empty() {
+        ui.label(
+            egui::RichText::new("Draw something\nto see results.")
+                .weak()
+                .italics(),
+        );
+        return;
+    }
+
+    let engine = engine.unwrap();
+
+    ui.label(egui::RichText::new("Top matches:").strong());
+    ui.add_space(4.0);
+
+    // Show the top 5 results.
+    for (class_idx, confidence) in result.matches.iter().take(5) {
+        let pct = confidence * 100.0;
+        let label = match engine.char_for_class(*class_idx) {
+            Some(ch) => format!("{}  {:.1}%", ch, pct),
+            None => format!("[{}]  {:.1}%", class_idx, pct),
+        };
+        ui.horizontal(|ui| {
+            ui.label(&label);
+        });
+        // Small confidence bar.
+        let bar_w = 140.0 * confidence;
+        let (bar_rect, _) = ui.allocate_exact_size(egui::vec2(140.0, 6.0), egui::Sense::hover());
+        if ui.is_rect_visible(bar_rect) {
+            let fill = egui::Color32::from_rgb(80, 140, 220);
+            let filled = egui::Rect::from_min_size(bar_rect.min, egui::vec2(bar_w, 6.0));
+            ui.painter()
+                .rect_filled(bar_rect, 2.0, egui::Color32::from_gray(200));
+            ui.painter().rect_filled(filled, 2.0, fill);
+        }
+        ui.add_space(2.0);
+    }
 }
 
 /// System to update the EguiWantsInput resource based on egui's input state,

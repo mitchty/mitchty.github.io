@@ -93,6 +93,8 @@ impl Plugin for AssetConfigPlugin {
 
             // Fonts for the 3d text thingy. I should make a 3d console/shell.... maybe?
             embedded_asset!(_app, "assets/fonts/FiraMono-Medium.ttf");
+            // Japanese font used by the egui Recognizer sidebar.
+            embedded_asset!(_app, "assets/fonts/NotoSansJP-Regular.ttf");
         }
     }
 }

@@ -1,0 +1,62 @@
+* 魔 neural network/abominable intelligence nonsense
+
+I'm not translating the specific meaning I'm intending for this crate from Japanese but it fits the use case of neural networks en général, je pense... I should pick a crate name like kappa instead or another angy spirit name.
+
+For now I'm trying to train against the 崩し字 (くずし字/kuzushiji) mnist dataset here https://www.kaggle.com/datasets/anokas/kuzushiji/data
+
+TODO: future mitch get latex citations working somehow? I doubt anyone cares I'm abusing this for funsies but want to respect the authors.
+ref: Deep Learning for Classical Japanese Literature. Tarin Clanuwat et al. arXiv:1812.01718
+
+Only tested against the ^^^ imbalanced 49 char set not the full thing... yet... Will do a run against the full 3k dataset at some point but training thats gonna be an overnight task.
+
+https://github.com/rois-codh/kmnist
+
+Future me, add training/inference for https://www.kaggle.com/code/daisypond/japanese-kanji-number-mnist-by-cnn at some point.
+
+Note I'm *NOT* using anything fancy for this, regular ye olde resnet style networks should be "good enough for government work". Least no need in trying to be cute with this crap.
+
+Note also I've not attempted to care about learning rate, batch size, and epochs when training. Given the small dataset size epochs over 30 is kinda pointless. For now I'm just reusing the defaults burn has cause it trains "fast enough" and gets decent enough accuracy for my simple "for funsies" use case.
+
+** Training (for now at least)
+
+Yeet the entire dataset zip and extract it somewhere. Example is `kmnist-data`
+
+#+begin_src sh
+time ma train --train-imgs kmnist-data/k49-train-imgs.npz --train-labels kmnist-data/k49-train-labels.npz --test-imgs kmnist-data/k49-test-imgs.npz --test-labels kmnist-data/k49-test-labels.npz --output kmnist
+#+end_src
+
+Rough times on a 4090 with all defaults. Accuracy is ass but I'll fix it in post.
+#+begin_src
+Model: Model {
+  conv1: Conv2d {ch_in: 1, ch_out: 8, stride: [1, 1], kernel_size: [3, 3], dilation: [1, 1], groups: 1, padding: Valid, params: 80}
+  conv2: Conv2d {ch_in: 8, ch_out: 16, stride: [1, 1], kernel_size: [3, 3], dilation: [1, 1], groups: 1, padding: Valid, params: 1168}
+  pool: AdaptiveAvgPool2d {output_size: [8, 8]}
+  dropout: Dropout {prob: 0.5}
+  linear1: Linear {d_input: 1024, d_output: 512, bias: true, params: 524800}
+  linear2: Linear {d_input: 512, d_output: 49, bias: true, params: 25137}
+  activation: Relu
+  params: 551185
+}
+Total Epochs: 10
+
+
+| Split | Metric   | Min.     | Epoch    | Max.     | Epoch    |
+|-------|----------|----------|----------|----------|----------|
+| Train | Accuracy | 64.332   | 1        | 88.735   | 10       |
+| Train | Loss     | 0.401    | 10       | 1.384    | 1        |
+| Valid | Accuracy | 70.830   | 1        | 87.646   | 10       |
+| Valid | Loss     | 0.462    | 10       | 1.130    | 1        |
+
+cargo run --release --bin ma -- train --train-imgs  --train-labels         414.69s user 68.04s system 150% cpu 5:21.42 total
+#+end_src
+
+And just like the example I abused too much code from run this basically to validate inference at a minimal level:
+
+#+begin_src sh
+ma infer --imgs kmnist-data/k49-test-imgs.npz --labels kmnist-data/k49-test-labels.npz --index 4 --output kmnist
+2026-03-15T16:59:21.397670Z  INFO ma::inference: inference result predicted=26 label=26
+#+end_src
+
+** これで終わりです
+
+おわり。

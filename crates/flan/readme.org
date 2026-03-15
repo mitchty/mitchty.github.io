@@ -1,0 +1,5 @@
+* Flan shader experiments
+
+I was hungry when I named this before you ask about the name.
+
+But this will eventually? be a shader crate for all my bevy/wgpu plot drawrings. For now this is all very how you doin.

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/flan", "crates/mitchty", "crates/shaders"]
+members = ["crates/ma", "crates/flan", "crates/mitchty", "crates/shaders"]
 
 [workspace.package]
 edition = "2024"
@@ -11,14 +11,25 @@ version = "0.0.6"
 bevy = { version = "~0.18.1", default-features = false }
 rand = { version = "~0.9.2", default-features = false, features = [
   "thread_rng",
+  "small_rng",
 ] }
+# Needed for now for use of burn with wgpu with tui feature in `ma`
+naga = { version = "26", features = ["termcolor"] }
 # FUTURE MITCH: this is a dependency OF rand, and without the wasm_js feature
 # crap don't work. Stop uncommenting things dammit trust past mitch.
 getrandom = { version = "~0.4.2", features = ["wasm_js"] }
+# For now ndarray until I can figure out a way to get a shared wgpu instance and
+# version between burn and bevy. They are like ships in the night though.
+burn = { version = "~0.20", default-features = false, features = [
+  "std",
+  "ndarray",
+] }
 # polars is setup at workspace level mostly to pin versions. Features are chosen
 # per crate with features that make sense for whatever platform/cfg() attribute
 # is pertinent.
 polars = { version = "~0.53", default-features = false }
+tracing = "~0.1"
+tracing-subscriber = { version = "~0.3", features = ["env-filter"] }
 
 [workspace.metadata.crane]
 name = "mitchty"

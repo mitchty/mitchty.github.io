@@ -79,7 +79,7 @@ pub fn assert_snapshot(name: &str, frame: &RenderedFrame, threshold: f64) {
     assert_eq!(
         (rendered.width(), rendered.height()),
         (reference.width(), reference.height()),
-        "snapshot reference {name}: rendered {}×{} != reference {}×{}",
+        "snapshot reference {name}: rendered {}x{} != reference {}x{}",
         rendered.width(),
         rendered.height(),
         reference.width(),

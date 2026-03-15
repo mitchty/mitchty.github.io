@@ -162,7 +162,7 @@ pub fn compile(stem: &str, src: &str, variant: Variant) -> Result<String, String
         })
 }
 
-/// Patch `@group(from)` → `@group(to)` in a WGSL string. Kept for any future
+/// Patch `@group(from)` -> `@group(to)` in a WGSL string. Kept for any future
 /// test that needs group remapping, not sure this will be needed again but who
 /// knows.
 pub fn patch_group(wgsl: &str, from: u8, to: u8) -> String {

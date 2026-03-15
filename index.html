@@ -40,27 +40,75 @@
       transform: translate(-50%, -50%);
       z-index: 10;
     }
+
+    #error {
+      display: none;
+      color: #f0f0f0;
+      background: #111;
+      font-family: monospace;
+      font-size: 16px;
+      text-align: center;
+      padding: 2em;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 20;
+      border: 1px solid #444;
+      border-radius: 6px;
+      max-width: 480px;
+      line-height: 1.6;
+    }
+
+    #error strong {
+      display: block;
+      font-size: 1.2em;
+      margin-bottom: 0.6em;
+      color: #ff6b6b;
+    }
   </style>
 </head>
 <body>
   <div id="bevy-container">
     <div id="loading">Loading mitchty...</div>
+    <div id="error">
+      <strong>⚠ Unable to run app! ⚠</strong>
+      If you see this message you need to enable WebGL and WebAssembly/WASM
+      support in your browser to run this application. Or tell Mitch he broke
+      things... again. Check the console in that case.
+    </div>
   </div>
 
   <script type="module">
-    import init from './wasm/mitchty.js';
-
-    async function run() {
-      try {
-        await init();
-        document.getElementById('loading').style.display = 'none';
-      } catch (e) {
-        document.getElementById('loading').innerText = 'Error loading app: ' + e;
-        console.error(e);
-      }
+    function showError(detail) {
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('error').style.display = 'block';
+      if (detail) console.error('wasm load failure:', detail);
     }
 
-    run();
+    function hasWasmSupport() {
+      try {
+        return typeof WebAssembly === 'object' &&
+               typeof WebAssembly.instantiate === 'function';
+      } catch (_) { return false; }
+    }
+
+    function hasWebGLSupport() {
+      try {
+        const canvas = document.createElement('canvas');
+        return !!(canvas.getContext('webgl2') || canvas.getContext('webgl'));
+      } catch (_) { return false; }
+    }
+
+    if (!hasWasmSupport() || !hasWebGLSupport()) {
+      showError('WebAssembly or WebGL not available in this browser');
+    } else {
+      import('./wasm/mitchty.js').then(({ default: init }) => {
+        return init();
+      }).then(() => {
+        document.getElementById('loading').style.display = 'none';
+      }).catch(e => showError(e));
+    }
   </script>
 </body>
 </html>

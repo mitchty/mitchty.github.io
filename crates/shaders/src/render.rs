@@ -5,6 +5,10 @@
 
 use wgpu::util::DeviceExt;
 
+// On Linux headless, concurrent wgpu device instances compete for the same
+// driver resources and deadlock. Serialize all render_shader calls globally.
+static RENDER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 // Output size, 256x256 makes small png files and is faster to test.
 pub const RENDER_SIZE: u32 = 256;
 
@@ -42,6 +46,7 @@ pub enum BindingKind {
 ///
 /// Iff wgpu fails returns an error string from the Error from wgpu
 pub fn render_shader(wgsl_source: &str, bindings: &[Binding<'_>]) -> Result<RenderedFrame, String> {
+    let _guard = RENDER_LOCK.lock().unwrap();
     pollster::block_on(render_async(wgsl_source, bindings))
 }
 
@@ -291,13 +296,28 @@ async fn render_async(
         tx.send(r).unwrap();
     });
 
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .map_err(|e| format!("poll failed: {e}"))?;
+    // Actively pump the device until the map callback fires. A single
+    // blocking poll() hangs on Linux headless/CI (Vulkan/GL need the device
+    // driven in a loop; Metal on macOS drives itself). Poll::wait_for_map_async
+    // is not yet stable across backends so we spin with a short timeout instead.
+    loop {
+        device
+            .poll(wgpu::PollType::Poll)
+            .map_err(|e| format!("poll failed: {e}"))?;
 
-    rx.recv()
-        .unwrap()
-        .map_err(|e| format!("buffer map failed: {e}"))?;
+        match rx.try_recv() {
+            Ok(result) => {
+                result.map_err(|e| format!("buffer map failed: {e}"))?;
+                break;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Err("map_async sender dropped unexpectedly".into());
+            }
+        }
+    }
 
     let mapped = buf_slice.get_mapped_range();
     let mut pixels = Vec::with_capacity((w * h * bytes_per_pixel) as usize);
