@@ -145,7 +145,6 @@ skip = [
   { name = "ndk-sys", version = "=0.5.0+25.2.9519653" },
   { name = "ndk-sys", version = "=0.6.0+11769913" },
   { name = "jni", version = "=0.21.1" },
-  { name = "jni", version = "=0.22.3" },
   { name = "jni-sys", version = "=0.3.0" },
   { name = "jni-sys", version = "=0.4.1" },
   # Absolute crazy dep chains that I can't be bothered to try to minimize, half of
@@ -171,6 +170,8 @@ skip = [
   # From bevy-pretty-text
   { name = "convert_case", version = "=0.8.0" },
   { name = "convert_case", version = "=0.10.0" },
+  { name = "winnow", version = "=0.7.15" },
+  { name = "winnow", version = "=1.0.0" },
   # Kinda from wesl in flan, sometimes polars contributes too
   { name = "foldhash", version = "=0.1.5" },
   { name = "foldhash", version = "=0.2.0" },
@@ -196,9 +197,7 @@ skip = [
   { name = "r-efi", version = "=5.3.0" },
   { name = "r-efi", version = "=6.0.0" },
   { name = "toml_edit", version = "=0.23.10+spec-1.0.0" },
-  { name = "toml_edit", version = "=0.25.4+spec-1.1.0" },
   { name = "toml_datetime", version = "=0.7.5+spec-1.1.0" },
-  { name = "toml_datetime", version = "=1.0.0+spec-1.1.0" },
   # From burn it cannot be made to share the same wgpu/naga version as bevy 0.18
   # without a future burn release. Allow the v26/v27 split.
   { name = "embedded-hal", version = "=0.2.7" },

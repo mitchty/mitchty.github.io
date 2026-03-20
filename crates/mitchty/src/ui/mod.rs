@@ -26,6 +26,12 @@ pub use feathers::*;
 mod scroll_view;
 pub use scroll_view::*;
 
+#[cfg(feature = "egui")]
+pub mod world_clock;
+#[cfg(feature = "egui")]
+#[allow(unused_imports)]
+pub use world_clock::*;
+
 #[cfg(not(any(feature = "egui", feature = "feathers")))]
 compile_error!("this is a gooey only app, need feathers or egui");
 

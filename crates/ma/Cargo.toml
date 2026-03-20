@@ -16,7 +16,7 @@ burn = { workspace = true, features = [
   "wgpu",
   "fusion",
 ] }
-clap = { version = "~4.5.60", features = ["derive"] }
+clap = { version = "~4.5.61", features = ["derive"] }
 rand.workspace = true
 csv = "~1.3"
 # EUC-JP decoding for JIS 0208 in ETL conversion testing

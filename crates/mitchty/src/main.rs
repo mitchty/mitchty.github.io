@@ -131,10 +131,10 @@ struct Cli {
     #[arg(long = "no-gamepad", overrides_with = "with_gamepad")]
     no_gamepad: bool,
 
-    /// Open one or more UI windows at startup. Comma separated or repeated args
-    /// allowed.
-    #[arg(long, value_delimiter = ',', value_name = "WINDOW", action = clap::ArgAction::Append)]
-    show: Vec<String>,
+    /// Open one or more app windows at startup. Comma separated or repeated
+    /// args allowed. Known values: world-clock, recognizer, data-viewer.
+    #[arg(long, value_delimiter = ',', value_name = "APP", action = clap::ArgAction::Append)]
+    app: Vec<String>,
 
     /// Open a specific post by name at startup. Note the post text is matched
     /// case insensitively to make the wasm uri case symmetric with the command
@@ -158,10 +158,10 @@ fn main() {
         let cli = Cli::parse();
 
         let mut cfg = ui::UiConfig::default();
-        for slug in &cli.show {
+        for slug in &cli.app {
             match ui::UiWindow::from_slug(slug) {
                 Some(w) => cfg.enable_window(w),
-                None => bevy::log::warn!("--show: unknown window {:?} (ignored)", slug),
+                None => bevy::log::warn!("--app: unknown app {:?} (ignored)", slug),
             }
         }
 
@@ -179,7 +179,7 @@ fn main() {
     #[cfg(target_arch = "wasm32")]
     let enable_gamepad = false;
 
-    // WASM: parse ?show=recognizer or ?show=recognizer,data-viewer from the
+    // WASM: parse ?app=recognizer or ?app=world-clock,recognizer from the
     // browser URL. web_sys gives us location.search() which returns the raw
     // query string including the leading '?'.
     #[cfg(target_arch = "wasm32")]
@@ -195,7 +195,7 @@ fn main() {
             let key = parts.next().unwrap_or("").trim();
             let value = parts.next().unwrap_or("").trim();
 
-            if key.eq_ignore_ascii_case("show") {
+            if key.eq_ignore_ascii_case("app") {
                 // Value may itself be comma-separated just like in the cli. Symmetry is nice.
                 for slug in value.split(',') {
                     let slug = slug.trim();
@@ -204,7 +204,7 @@ fn main() {
                     }
                     match ui::UiWindow::from_slug(slug) {
                         Some(w) => cfg.enable_window(w),
-                        None => bevy::log::warn!("?show=: unknown window {:?} (ignored)", slug),
+                        None => bevy::log::warn!("?app=: unknown app {:?} (ignored)", slug),
                     }
                 }
             } else if key.eq_ignore_ascii_case("post") {
@@ -287,8 +287,7 @@ fn main() {
                     std::time::Duration::from_secs_f32(0.5),
                 )),
                 sync_text3d_to_active_post,
-                respawn_text3d_on_content_change
-                    .after(sync_text3d_to_active_post),
+                respawn_text3d_on_content_change.after(sync_text3d_to_active_post),
             ),
         );
 
@@ -689,7 +688,12 @@ fn setup_3d_text(
     mut materials: ResMut<Assets<StandardMaterial>>,
     text_content: Res<Text3dContent>,
 ) {
-    spawn_text3d(&mut commands, &asset_server, &mut materials, &text_content.0);
+    spawn_text3d(
+        &mut commands,
+        &asset_server,
+        &mut materials,
+        &text_content.0,
+    );
 }
 
 /// Despawns the old 3d text mesh and respawns with the new Resources string value
@@ -709,7 +713,12 @@ fn respawn_text3d_on_content_change(
     for entity in existing.iter() {
         commands.entity(entity).despawn();
     }
-    spawn_text3d(&mut commands, &asset_server, &mut materials, &text_content.0);
+    spawn_text3d(
+        &mut commands,
+        &asset_server,
+        &mut materials,
+        &text_content.0,
+    );
 }
 
 /// Track mouse and touch drag state for distinguishing clicks from drags
