@@ -4498,7 +4498,7 @@ checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
 name = "flan"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "bevy",
  "getrandom 0.4.2",
@@ -6295,7 +6295,7 @@ dependencies = [
 
 [[package]]
 name = "ma"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "burn",
  "clap",
@@ -6465,7 +6465,7 @@ dependencies = [
 
 [[package]]
 name = "mitchty"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "arboard",
  "bevy",
@@ -8946,7 +8946,7 @@ dependencies = [
 
 [[package]]
 name = "shaders"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "bevy",
  "bytemuck",
