@@ -64,6 +64,24 @@ codegen-units = 1
 opt-level = "z"
 strip = "debuginfo"
 
+# release-fast is release without codegen-units and lto for faster iteration on
+# release build testing. The default release profile is kept slow but optimized
+# intentionally.
+[profile.release-fast]
+inherits = "release"
+codegen-units = 16
+lto = false
+
+[profile.release-fast.build-override]
+codegen-units = 16
+opt-level = "z"
+strip = "debuginfo"
+
+[profile.release-fast.package."*"]
+codegen-units = 16
+opt-level = "z"
+strip = "debuginfo"
+
 # Note, all the bevy_* lines are here so if/when I test bugfixes in bevy I can more quickly get that working
 #[patch.crates-io]
 # bevy = { git = "https://github.com/bevyengine/bevy", branch = "release-0.18.1" }

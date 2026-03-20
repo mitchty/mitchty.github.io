@@ -373,6 +373,17 @@
           }
         );
 
+        # Cargo artifacts for WASM release-fast builds no lto or codegen unit restrictions
+        cargoArtifactsWasmFast = craneLibWasm.buildDepsOnly (
+          commonArgsWasm
+          // nixEnvArgs
+          // releaseFastArgs
+          // {
+            src = srcDeps;
+            cargoExtraArgs = "-p mitchty --features mitchty/webgl";
+          }
+        );
+
         # Cargo artifacts for WASM builds (debug)
         # Apparently yes, there is a limit and I've now hit it
         # Error loading app: CompileError: WebAssembly.instantiateStreaming(): size > maximum module size (1073741824): 1084424530 @+0
@@ -553,6 +564,12 @@
           RUSTFLAGS = "-D warnings";
         };
 
+        # Like releaseArgs but uses the release-fast profile for quicker iteration
+        releaseFastArgs = {
+          CARGO_PROFILE = "release-fast";
+          RUSTFLAGS = "-D warnings";
+        };
+
         # Build the top-level crates of the workspace as individual derivations.
         # This allows consumers to only depend on (and build) only what they need.
         # Though it is possible to build the entire workspace as a single derivation,
@@ -666,6 +683,51 @@
                 $out/wasm/mitchty_bg.wasm
 
               mv $out/wasm/mitchty_bg_optimized.wasm $out/wasm/mitchty_bg.wasm
+            '';
+
+        # release-fast wasm build: same pipeline as mitchty-wasm-lto but uses
+        # the release-fast profile, wasm-opt is skipped here as well under the
+        # same rationale.
+        mitchty-wasm =
+          let
+            wasmBuild = craneLibWasm.buildPackage (
+              commonArgsWasm
+              // nixEnvArgs
+              // releaseFastArgs
+              // {
+                pname = "mitchty-wasm";
+                version = version;
+                cargoArtifacts = cargoArtifactsWasmFast;
+                cargoExtraArgs = "-p mitchty --features mitchty/webgl";
+                src = fileSetForCrate ./crates/mitchty;
+
+                STUPIDNIXFLAKEHACK = version;
+
+                doCheck = false;
+                doInstallCargoArtifacts = false;
+                installPhase = ''
+                  runHook preInstall
+                  mkdir -p $out
+                  cp -r target/wasm32-unknown-unknown/release-fast $out/
+                  runHook postInstall
+                '';
+              }
+            );
+          in
+          pkgsWasm.runCommand "mitchty-wasm-bindgen"
+            {
+              nativeBuildInputs = [
+                wasmBindgenCli
+              ];
+            }
+            ''
+              mkdir -p $out/wasm
+
+              ${wasmBindgenCli}/bin/wasm-bindgen \
+                --out-dir $out/wasm \
+                --target web \
+                --no-typescript \
+                ${wasmBuild}/release-fast/mitchty.wasm
             '';
 
         # mitchty-wasm =
@@ -917,7 +979,7 @@
           inherit
             mitchty
             mitchty-lto
-            # mitchty-wasm
+            mitchty-wasm
             mitchty-wasm-lto
             pugio
             dotdeps
@@ -961,7 +1023,7 @@
                     buildInputs = [
                       mitchty
                       mitchty-lto
-                      # mitchty-wasm
+                      mitchty-wasm
                       mitchty-wasm-lto
                     ]
                     ++ lib.optionals pkgs.stdenv.isLinux [
@@ -1037,16 +1099,16 @@
               mainProgram = "update";
             };
           };
-          # Serve WASM build locally for testing
+          # Serve WASM release-fast build locally for quick iteration testing
           # nix run .#web
-          # web = {
-          #   type = "app";
-          #   program = "${mkWebServerApp "web" mitchty-wasm true}/bin/web";
-          #   meta = {
-          #     description = "Serve WASM build locally for testing";
-          #     mainProgram = "web";
-          #   };
-          # };
+          web = {
+            type = "app";
+            program = "${mkWebServerApp "web" mitchty-wasm false}/bin/web";
+            meta = {
+              description = "Serve WASM release-fast build (no LTO) locally for testing";
+              mainProgram = "web";
+            };
+          };
           # Serve WASM LTO build locally for testing
           # nix run .#web-lto
           web-lto = {
