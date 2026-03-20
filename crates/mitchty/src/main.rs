@@ -236,7 +236,8 @@ fn main() {
             color: Srgba::gray(0.5),
         })
         .insert_resource(ui_config)
-        .init_resource::<CameraConfig>();
+        .init_resource::<CameraConfig>()
+        .init_resource::<Text3dContent>();
 
     // Conditionally add UI-specific plugins
     #[cfg(feature = "egui")]
@@ -285,6 +286,9 @@ fn main() {
                 update_fps_display.run_if(bevy::time::common_conditions::on_timer(
                     std::time::Duration::from_secs_f32(0.5),
                 )),
+                sync_text3d_to_active_post,
+                respawn_text3d_on_content_change
+                    .after(sync_text3d_to_active_post),
             ),
         );
 
@@ -606,19 +610,49 @@ fn apply_hue_animation(
     }
 }
 
+/// Resource that holds the string displayed as the 3D extruded text above the cubes.
+/// Mutate this from any system to change the label at runtime.
+#[derive(Resource)]
+pub struct Text3dContent(pub String);
+
+impl Default for Text3dContent {
+    fn default() -> Self {
+        Self(String::from("mitchty.github.io"))
+    }
+}
+
+/// Sync the 3D text label whenever the active post changes.
+///
+/// - Post selected   -> label becomes the post title.
+/// - No post selected -> label falls back to "mitchty.github.io" for now as a default.
+fn sync_text3d_to_active_post(
+    active_post: Res<ui::ActivePost>,
+    mut text_content: ResMut<Text3dContent>,
+) {
+    if !active_post.is_changed() {
+        return;
+    }
+
+    text_content.0 = match active_post.0 {
+        Some(idx) => ui::POSTS
+            .get(idx)
+            .map(|p| p.name.to_string())
+            .unwrap_or_else(|| String::from("mitchty.github.io")),
+        None => String::from("mitchty.github.io"),
+    };
+}
+
 #[derive(Component)]
 struct Text3d;
 
-/// Setup 3D text of whatever I compiled in directly above the cubes... future
-/// funsies is making this dynamic... future mitch problem
-fn setup_3d_text(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+// Spawn the 3d text with whatevers in the Resource string
+fn spawn_text3d(
+    commands: &mut Commands,
+    asset_server: &AssetServer,
+    materials: &mut Assets<StandardMaterial>,
+    text: &str,
 ) {
     let font_path = asset_path("fonts/FiraMono-Medium.ttf");
-    // let font_path = asset_path("fonts/ComicCode-Regular.otf");
-    // let font_path = asset_path("fonts/PragmataPro-Regular.ttf");
 
     let text_material = materials.add(StandardMaterial {
         base_color: Color::from(Hsla::hsl(180.0, 1.0, 0.5)),
@@ -627,11 +661,10 @@ fn setup_3d_text(
         ..default()
     });
 
-    // Spawn the text entities above the cubes for no raisin
     commands.spawn((
         TextMeshBundle {
             text_mesh: TextMesh {
-                text: String::from("Nova Aurora"),
+                text: text.to_string(),
                 font: asset_server.load(font_path),
                 style: TextMeshStyle {
                     depth: 0.1,
@@ -641,14 +674,42 @@ fn setup_3d_text(
                 },
             },
             material: MeshMaterial3d(text_material),
-            // TODO: make scale dynamic through the bevy ui settings spiel right
-            // now half size methinks
-            transform: Transform::from_xyz(0.0, 0.7, 0.0).with_scale(Vec3::splat(0.5)), // Adjust scale here (0.5 = half size)
+            transform: Transform::from_xyz(0.0, 0.7, 0.0).with_scale(Vec3::splat(0.5)),
             ..default()
         },
         HueAnimationEnabled,
         Text3d,
     ));
+}
+
+/// Setup default 3d text for startup
+fn setup_3d_text(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    text_content: Res<Text3dContent>,
+) {
+    spawn_text3d(&mut commands, &asset_server, &mut materials, &text_content.0);
+}
+
+/// Despawns the old 3d text mesh and respawns with the new Resources string value
+// TODO: Should this be an event maybe? Note the geometry has to be generated at
+// spawn time for the text to update.
+fn respawn_text3d_on_content_change(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    text_content: Res<Text3dContent>,
+    existing: Query<Entity, With<Text3d>>,
+) {
+    if !text_content.is_changed() {
+        return;
+    }
+
+    for entity in existing.iter() {
+        commands.entity(entity).despawn();
+    }
+    spawn_text3d(&mut commands, &asset_server, &mut materials, &text_content.0);
 }
 
 /// Track mouse and touch drag state for distinguishing clicks from drags
