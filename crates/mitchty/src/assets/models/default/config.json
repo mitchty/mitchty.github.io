@@ -12,13 +12,13 @@
     "beta_2": 0.999,
     "epsilon": 0.00001
   },
-  "num_epochs": 30,
+  "num_epochs": 20,
   "batch_size": 512,
   "num_workers": 8,
   "seed": 42,
   "learning_rate": 0.0003,
-  "norm_mean": 0.060783,
-  "norm_std": 0.109296,
+  "norm_mean": 0.106023,
+  "norm_std": 0.172694,
   "class_map": [
     "!",
     ",",
