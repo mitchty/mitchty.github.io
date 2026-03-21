@@ -28,6 +28,7 @@ allow = [
   "MIT-0",
   "MPL-2.0",
   "Unicode-3.0",
+  "Unicode-DFS-2016",
   "Ubuntu-font-1.0",
   "ISC",
   "OFL-1.1",
@@ -251,6 +252,15 @@ skip = [
   { name = "zune-jpeg", version = "=0.5.13" },
   { name = "zune-core", version = "=0.4.12" },
   { name = "zune-core", version = "=0.5.1" },
+  # chrono-tz &/or unicode_names2
+  { name = "phf", version = "=0.11.3" },
+  { name = "phf", version = "=0.12.1" },
+  { name = "rand", version = "=0.8.5" },
+  { name = "rand", version = "=0.9.2" },
+  { name = "rand_chacha", version = "=0.3.1" },
+  { name = "rand_chacha", version = "=0.9.0" },
+  { name = "rand_core", version = "=0.6.4" },
+  { name = "rand_core", version = "=0.9.6" },
 ]
 skip-tree = []
 

@@ -238,6 +238,31 @@ fn npy_shape(s: &str) -> Option<Vec<usize>> {
         .collect()
 }
 
+/// Return the Unicode standard name for `ch` in title case (e.g. "Exclamation
+/// Mark"), or an empty string if the codepoint has no assigned name.
+fn char_unicode_name(ch: char) -> String {
+    unicode_names2::name(ch)
+        .map(|n| {
+            // The name comes back as ALL-CAPS; convert to Title Case for readability.
+            let s = n.to_string();
+            let mut title = String::with_capacity(s.len());
+            let mut next_upper = true;
+            for c in s.chars() {
+                if c == ' ' || c == '-' {
+                    title.push(c);
+                    next_upper = true;
+                } else if next_upper {
+                    title.extend(c.to_uppercase());
+                    next_upper = false;
+                } else {
+                    title.extend(c.to_lowercase());
+                }
+            }
+            title
+        })
+        .unwrap_or_default()
+}
+
 /// Draw a single 28x28 image as colored rects in the given egui ui target.
 ///
 /// Pixels with high values are displayed as dark; near-zero pixels are skipped
@@ -366,6 +391,7 @@ pub fn data_viewer_window(
                             let ch = ds.class_char(idx);
                             ch.to_string().contains(&filter_text)
                                 || idx.to_string().contains(&filter_lc)
+                                || char_unicode_name(ch).to_lowercase().contains(&filter_lc)
                         })
                         .collect();
 
@@ -377,7 +403,12 @@ pub fn data_viewer_window(
                             for &idx in &matching {
                                 let ch = ds.class_char(idx);
                                 let count = ds.class_count(idx);
-                                let label = format!("{ch}  ({count})");
+                                let name = char_unicode_name(ch);
+                                let label = if name.is_empty() {
+                                    format!("{ch}  ({count})")
+                                } else {
+                                    format!("{ch} {name} ({count})")
+                                };
                                 if ui.selectable_label(idx == selected, &label).clicked() {
                                     new_sel = idx;
                                 }
@@ -395,10 +426,13 @@ pub fn data_viewer_window(
                     let count = ds.class_count(sel);
                     let img_size = 28.0 * scale;
 
-                    ui.label(
-                        egui::RichText::new(format!("Class {sel} = '{ch}'  ({count} samples)"))
-                            .strong(),
-                    );
+                    let ch_name = char_unicode_name(ch);
+                    let header = if ch_name.is_empty() {
+                        format!("Class {sel} = '{ch}'  ({count} samples)")
+                    } else {
+                        format!("Class {sel} = '{ch}' {ch_name}  ({count} samples)")
+                    };
+                    ui.label(egui::RichText::new(header).strong());
                     ui.add_space(4.0);
 
                     const RIGHT_W: f32 = 920.0 - LEFT_W - 12.0;

@@ -10,6 +10,26 @@ use crate::{
     kanjivg,
 };
 
+/// Parse a list of single-character tokens into `char`s for use in filtering.
+///
+/// Each token must be exactly one Unicode character; multi-character tokens are
+/// warned about and ignored. So don't pass in ~ from the shell again dumdum.
+/// Use single quotes like a non heretic.
+fn parse_chars(tokens: &[String]) -> Vec<char> {
+    tokens
+        .iter()
+        .filter_map(|t| {
+            let mut cs = t.chars();
+            let ch = cs.next()?;
+            if cs.next().is_some() {
+                tracing::warn!("ignoring token {t:?} not a char");
+                return None;
+            }
+            Some(ch)
+        })
+        .collect()
+}
+
 // I'm leaving the ETL conversion crap in here even though the data it contains
 // is too noisy to be useful. It might come in handy later. Or future me will
 // rip it out in anger.
@@ -83,6 +103,31 @@ pub struct ConvertArgs {
     /// --seed and --aug-seed are independent and can be combined freely.
     #[arg(long)]
     aug_seed: Option<u64>,
+
+    // TODO: a lot of this kanjivg only crap will filter out to other datasets
+    // at some point.
+    /// Characters to exclude from the dataset (kanjivg only).
+    ///
+    /// Each flag value must be one Unicode character. Repeat the flag
+    /// for each character to exclude like sooooo:
+    ///
+    ///   --filter ! --filter , --filter ~
+    ///
+    /// Characters that match are dropped before label assignment so the
+    /// remaining classes are always contiguous.
+    #[arg(long)]
+    filter: Vec<String>,
+
+    /// Exclude characters whose Unicode name contains the substring (kanjivg only).
+    ///
+    /// Matching is case-insensitive and is simple substring matching. Supply as a
+    /// comma-separated list in one flag, repeated flags, or both; a character
+    /// is excluded when its Unicode name contains ANY of the provided strings:
+    ///
+    ///   --filter-name "letter small,cjk radical"
+    ///   --filter-name "letter small" --filter-name "cjk radical"
+    #[arg(long, value_delimiter = ',', num_args = 0..)]
+    filter_name: Vec<String>,
 }
 
 // TODO: stop being lazy and abuse clap for arg validation
@@ -105,12 +150,16 @@ pub fn run(args: ConvertArgs) {
     let paths = output_paths(&args.out, args.train_split);
 
     if args.format.to_lowercase() == "kanjivg" {
+        let filter_chars = parse_chars(&args.filter);
+        let filter_names: Vec<String> = args.filter_name.iter().map(|s| s.to_lowercase()).collect();
         kanjivg::convert_kanjivg_dir(
             &args.input,
             &paths,
             args.train_split,
             args.seed,
             args.aug_seed,
+            &filter_chars,
+            &filter_names,
         )
         .unwrap_or_else(|e| {
             eprintln!("kanjivg conversion failed: {e}");

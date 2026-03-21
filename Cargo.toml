@@ -30,6 +30,7 @@ burn = { version = "~0.20", default-features = false, features = [
 polars = { version = "~0.53", default-features = false }
 tracing = "~0.1"
 tracing-subscriber = { version = "~0.3", features = ["env-filter"] }
+unicode_names2 = "~1"
 
 [workspace.metadata.crane]
 name = "mitchty"

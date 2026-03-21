@@ -21,6 +21,47 @@ use regex::Regex;
 use crate::data::augment_image;
 use crate::etl::{OutputPaths, write_classmap, write_npz, write_stats};
 
+/// Why a character was excluded if it was at all. used for debug logs mainly.
+#[derive(Debug)]
+enum FilterReason {
+    /// Explicitly listed via `--filter`.
+    ExplicitChar,
+    /// Unicode name contained a `--filter-name` substring; carries the matched
+    /// substring and the full unicode name of the character.
+    NameSubstring { pattern: String, name: String },
+}
+
+/// Test whether some unicode char `ch` should be excluded.
+///
+/// Returns `Some(reason)` if the character is to be dropped, `None` to keep it.
+/// Bit weird but it works out easier this way. Caller must lowercase first or
+/// this won't work.
+fn filter_reason(
+    ch: char,
+    filter_chars: &[char],
+    filter_name_lc: &[String],
+) -> Option<FilterReason> {
+    if filter_chars.contains(&ch) {
+        return Some(FilterReason::ExplicitChar);
+    }
+    if !filter_name_lc.is_empty() {
+        let name = unicode_names2::name(ch)
+            .map(|n| n.to_string())
+            .unwrap_or_default();
+        let name_lc = name.to_lowercase();
+        if let Some(pattern) = filter_name_lc
+            .iter()
+            .find(|sub| name_lc.contains(sub.as_str()))
+        {
+            return Some(FilterReason::NameSubstring {
+                pattern: pattern.clone(),
+                name,
+            });
+        }
+    }
+    None
+}
+
 /// Stroke widths in KanjiVG's 109-unit coordinate space to render. The default
 /// in the SVG files is 3. Vary it to simulate different pen pressures and brush
 /// sizes even though the input is pure black in the egui setup.
@@ -50,6 +91,8 @@ pub fn convert_kanjivg_dir(
     train_fraction: f64,
     seed: Option<u64>,
     aug_seed: Option<u64>,
+    filter_chars: &[char],
+    filter_names: &[String],
 ) -> io::Result<()> {
     let mut entries: Vec<(char, std::path::PathBuf)> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
@@ -78,6 +121,75 @@ pub fn convert_kanjivg_dir(
 
     entries.sort_by_key(|(ch, _)| *ch as u32);
     tracing::info!(dir, chars = entries.len(), "KanjiVG files found");
+
+    // Apply --filter &/or --filter-name exclusions before building the label map
+    // so that class indices remain contiguous without gaps.
+    if !filter_chars.is_empty() || !filter_names.is_empty() {
+        if !filter_chars.is_empty() {
+            let chars_repr: Vec<String> = filter_chars
+                .iter()
+                .map(|c| format!("{c:?} U+{:04X}", *c as u32)) // TODO: have a --filter-unicode option for specific unicode charpoint filtering?
+                .collect();
+            tracing::info!(patterns = %chars_repr.join(", "), "--filter is filtering");
+        }
+        if !filter_names.is_empty() {
+            tracing::info!(patterns = %filter_names.join(", "), "--filter-name is filtering");
+        }
+
+        let mut removed_by_char: usize = 0;
+        let mut removed_by_name: usize = 0;
+
+        entries.retain(
+            |(ch, _)| match filter_reason(*ch, filter_chars, filter_names) {
+                None => true,
+                Some(FilterReason::ExplicitChar) => {
+                    tracing::debug!(
+                        char = %ch,
+                        codepoint = format!("U+{:04X}", *ch as u32),
+                        "excluded by --filter"
+                    );
+                    removed_by_char += 1;
+                    false
+                }
+                Some(FilterReason::NameSubstring {
+                    ref pattern,
+                    ref name,
+                }) => {
+                    tracing::debug!(
+                        char = %ch,
+                        codepoint = format!("U+{:04X}", *ch as u32),
+                        unicode_name = %name,
+                        matched_pattern = %pattern,
+                        "excluded by --filter-name"
+                    );
+                    removed_by_name += 1;
+                    false
+                }
+            },
+        );
+
+        let removed = removed_by_char + removed_by_name;
+        if removed > 0 {
+            tracing::info!(
+                removed,
+                removed_by_char,
+                removed_by_name,
+                remaining = entries.len(),
+                "characters filtered out"
+            );
+        } else {
+            tracing::warn!(
+                "filter flags were provided however nothing matched, either the inputs aren't in the dat set or are invalid re-run with RUST_LOG=debug for more details"
+            );
+        }
+    }
+
+    if entries.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "all characters were filtered out and there is nothing to convert? seems sus",
+        ));
+    }
 
     // Note the map is via unicode point order
     let label_map: HashMap<char, u32> = entries
