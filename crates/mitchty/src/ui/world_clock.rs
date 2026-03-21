@@ -85,6 +85,77 @@ impl EditState {
     }
 }
 
+/// Alarm entry, simply in UTC moment and the IANA timezone for display usage.
+#[derive(Debug, Clone)]
+pub struct AlarmEntry {
+    /// The exact UTC time when the alarm fires.
+    pub target_ts: Timestamp,
+    /// The IANA timezone used for the alarm.
+    pub label_tz: String,
+}
+
+/// Transient state for the alarm picker popup.
+#[derive(Debug, Clone)]
+pub struct AlarmState {
+    /// Currently selected IANA tz from the dropdown.
+    pub tz: String,
+    pub year: i32,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+    /// Screen position where the popup is anchored.
+    pub spawn_pos: egui::Pos2,
+}
+
+impl AlarmState {
+    /// Build a default `AlarmState` anchored at `spawn_pos`, with the first
+    /// available timezone pre-selected and the fields set to the current time
+    /// in that specific timezone.
+    fn new(now: Timestamp, tz: &str, spawn_pos: egui::Pos2) -> Self {
+        if let Ok(jtz) = TimeZone::get(tz)
+            && let Ok(zdt) = now.to_zoned(jtz).round(Unit::Second)
+        {
+            return Self {
+                tz: tz.to_string(),
+                year: zdt.year() as i32,
+                month: zdt.month() as u8,
+                day: zdt.day() as u8,
+                hour: zdt.hour() as u8,
+                minute: 0,
+                second: 0,
+                spawn_pos,
+            };
+        }
+        Self {
+            tz: tz.to_string(),
+            year: 2025,
+            month: 1,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            spawn_pos,
+        }
+    }
+
+    /// Convert the current picker values to UTC `Timestamp`.
+    fn to_timestamp(&self) -> Option<Timestamp> {
+        let dt = civil::DateTime::new(
+            self.year as i16,
+            self.month as i8,
+            self.day as i8,
+            self.hour as i8,
+            self.minute as i8,
+            self.second as i8,
+            0,
+        )
+        .ok()?;
+        Some(dt.in_tz(&self.tz).ok()?.timestamp())
+    }
+}
+
 /// Persistent state for the World Clock egui window.
 #[derive(Resource)]
 pub struct WorldClockState {
@@ -118,6 +189,12 @@ pub struct WorldClockState {
 
     /// Active edit popup state. None = no popup open.
     pub editing: Option<EditState>,
+
+    /// All alarms the user has set, stored in insertion order for future use?
+    pub alarms: Vec<AlarmEntry>,
+
+    /// Active alarm picker popup state. None = closed.
+    pub editing_alarm: Option<AlarmState>,
 }
 
 /// Resolve the IANA name of the system's local timezone.
@@ -169,6 +246,8 @@ impl Default for WorldClockState {
             time_history: Vec::new(),
             history_cursor: 0,
             editing: None,
+            alarms: Vec::new(),
+            editing_alarm: None,
         }
     }
 }
@@ -225,7 +304,8 @@ fn format_tz(ts: Timestamp, iana: &str) -> Option<(String, String, String, i32, 
 /// Daytime is 8am to 5pm
 /// Night is the rest.
 ///
-/// I'll fix this to be better later. Might make it a shader.
+/// I'll fix this to be better later. Might make it a shader, who knows? Only
+/// future sucker mitch!
 fn analog_clock(ui: &mut egui::Ui, h: u8, m: u8, s: u8, radius: f32, is_off_hours: bool) {
     let size = egui::vec2(radius * 2.0, radius * 2.0);
     let (response, painter) = ui.allocate_painter(size, egui::Sense::hover());
@@ -434,6 +514,202 @@ fn days_in_month(year: i32, month: u8) -> u8 {
     }
 }
 
+/// Draw the alarm-setting popup window.
+///
+/// `available_tzs` is the list of IANA timezone names currently shown in the
+/// world clock table; the user picks one of those as the relevent alarm
+/// timezone.
+///
+/// Returns:
+/// - `(Some((ts, tz)), false)` when the user clicks apply with a valid future time.
+/// - `(None, true)` when the user clicks cancel.
+/// - `(None, false)` while the popup is still open and people are dilly dallying about.
+fn draw_alarm_popup(
+    ctx: &egui::Context,
+    alarm: &mut AlarmState,
+    now: Timestamp,
+    available_tzs: &[String],
+) -> (Option<(Timestamp, String)>, bool) {
+    let mut confirmed: Option<(Timestamp, String)> = None;
+    let mut cancelled = false;
+
+    const MONTH_NAMES: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+
+    egui::Window::new("Set Alarm")
+        .collapsible(false)
+        .resizable(false)
+        .fixed_pos(alarm.spawn_pos)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Timezone:");
+                egui::ComboBox::new("alarm_tz_pick", "")
+                    .selected_text(alarm.tz.as_str())
+                    .width(200.0)
+                    .show_ui(ui, |ui| {
+                        for tz_name in available_tzs {
+                            if ui
+                                .selectable_value(&mut alarm.tz, tz_name.clone(), tz_name.as_str())
+                                .changed()
+                                && let Ok(jtz) = TimeZone::get(&alarm.tz)
+                                && let Ok(zdt) = now.to_zoned(jtz).round(Unit::Second)
+                            {
+                                alarm.year = zdt.year() as i32;
+                                alarm.month = zdt.month() as u8;
+                                alarm.day = zdt.day() as u8;
+                                alarm.hour = zdt.hour() as u8;
+                                alarm.minute = 0;
+                                alarm.second = 0;
+                            }
+                        }
+                    });
+            });
+
+            ui.add_space(4.0);
+
+            // Date row.
+            ui.horizontal(|ui| {
+                ui.label("Year");
+                ui.add(
+                    egui::DragValue::new(&mut alarm.year)
+                        .range(1970..=2200)
+                        .speed(0.2),
+                );
+                let max_day = days_in_month(alarm.year, alarm.month);
+                alarm.day = alarm.day.min(max_day);
+
+                egui::ComboBox::new("alarm_pick_month", "Month")
+                    .selected_text(MONTH_NAMES[(alarm.month - 1) as usize])
+                    .width(100.0)
+                    .show_ui(ui, |ui| {
+                        for (idx, name) in MONTH_NAMES.iter().enumerate() {
+                            let mo = (idx + 1) as u8;
+                            if ui.selectable_value(&mut alarm.month, mo, *name).changed() {
+                                let max = days_in_month(alarm.year, alarm.month);
+                                alarm.day = alarm.day.min(max);
+                            }
+                        }
+                    });
+
+                let max_day = days_in_month(alarm.year, alarm.month);
+                egui::ComboBox::new("alarm_pick_day", "Day")
+                    .selected_text(format!("{:02}", alarm.day))
+                    .width(55.0)
+                    .show_ui(ui, |ui| {
+                        for d in 1u8..=max_day {
+                            ui.selectable_value(&mut alarm.day, d, format!("{:02}", d));
+                        }
+                    });
+            });
+
+            ui.add_space(4.0);
+
+            // Time row.
+            ui.horizontal(|ui| {
+                egui::ComboBox::new("alarm_pick_hour", "Hour")
+                    .selected_text(format!("{:02}", alarm.hour))
+                    .width(60.0)
+                    .show_ui(ui, |ui| {
+                        for h in 0u8..=23 {
+                            ui.selectable_value(&mut alarm.hour, h, format!("{:02}", h));
+                        }
+                    });
+                egui::ComboBox::new("alarm_pick_minute", "Min")
+                    .selected_text(format!("{:02}", alarm.minute))
+                    .width(60.0)
+                    .show_ui(ui, |ui| {
+                        for m in 0u8..=59 {
+                            ui.selectable_value(&mut alarm.minute, m, format!("{:02}", m));
+                        }
+                    });
+            });
+            alarm.second = 0;
+
+            ui.add_space(4.0);
+
+            // Preview.
+            let maybe_ts = alarm.to_timestamp();
+            let is_future = maybe_ts.map(|ts| ts > now).unwrap_or(false);
+            let preview_color = if is_future {
+                egui::Color32::from_rgb(120, 220, 120)
+            } else if maybe_ts.is_some() {
+                egui::Color32::from_rgb(255, 60, 60)
+            } else {
+                egui::Color32::RED
+            };
+            let preview_txt = match maybe_ts {
+                Some(ts) => {
+                    if let Some((time, date, offset, ..)) = format_tz(ts, &alarm.tz) {
+                        let past_note = if ts <= now {
+                            "⚠ occurs in the past ⚠"
+                        } else {
+                            ""
+                        };
+                        format!("{date}  {time}  ({offset}){past_note}")
+                    } else {
+                        "-".to_string()
+                    }
+                }
+                None => "Invalid date/time".to_string(),
+            };
+            ui.label(
+                egui::RichText::new(preview_txt)
+                    .small()
+                    .color(preview_color),
+            );
+
+            ui.add_space(6.0);
+
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(is_future, egui::Button::new("✔ Set Alarm"))
+                    .clicked()
+                    && let Some(ts) = alarm.to_timestamp()
+                {
+                    confirmed = Some((ts, alarm.tz.clone()));
+                }
+                if ui.button("✖ Cancel").clicked() {
+                    cancelled = true;
+                }
+            });
+        });
+
+    (confirmed, cancelled)
+}
+
+/// Format the countdown from `now` to `target` using humantime.
+/// Returns `"Expired"` when `target <= now`. Probably not worth keeping around.
+fn format_countdown(target: Timestamp, now: Timestamp) -> String {
+    if target <= now {
+        return "Expired".to_string();
+    }
+    let secs = (target.as_second() - now.as_second()).max(0) as u64;
+    humantime::format_duration(std::time::Duration::from_secs(secs)).to_string()
+}
+
+/// Format how long ago `target` fired relative to `now`.
+/// Returns a string like `"Expired 2h 5m 3s ago"`.
+fn format_elapsed(target: Timestamp, now: Timestamp) -> String {
+    let secs = (now.as_second() - target.as_second()).max(0) as u64;
+    format!(
+        "Expired {} ago",
+        humantime::format_duration(std::time::Duration::from_secs(secs))
+    )
+}
+
+// TODO: This is getting out of hand, need to start refactoring.
 pub fn world_clock_window(
     mut contexts: EguiContexts,
     show_query: Query<Entity, With<ShowWorldClock>>,
@@ -569,6 +845,9 @@ pub fn world_clock_window(
     const CLOCK_RADIUS: f32 = 30.0;
 
     let mut open_edit: Option<(String, Timestamp, egui::Pos2)> = None;
+    let mut open_alarm_edit = false;
+    let mut alarm_edit_pos = egui::Pos2::ZERO;
+    let mut remove_alarm: Option<usize> = None;
 
     let mut go_live = false;
     let mut go_back = false;
@@ -589,6 +868,21 @@ pub fn world_clock_window(
         .auto_sized()
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
+                // Always show the alarm button at the left.
+                let alarm_btn = ui
+                    .button(
+                        egui::RichText::new("🔔 Set Alarm")
+                            .color(egui::Color32::from_rgb(255, 220, 80)),
+                    )
+                    .on_hover_text("Set a countdown alarm");
+                if alarm_btn.clicked() {
+                    open_alarm_edit = true;
+                    alarm_edit_pos = alarm_btn.rect.left_bottom();
+                }
+
+                ui.separator();
+
+                // History and status are at the right.
                 if is_pinned || has_history {
                     // Status label.
                     if is_pinned {
@@ -662,231 +956,350 @@ pub fn world_clock_window(
                         clear_history = true;
                     }
                 } else {
-                    // No history, just reserve the space to prevent egui window resizing.
-                    ui.label(egui::RichText::new(" ").strong());
+                    // No history: keep the space empty on the right to avoid layout shifts.
+                    ui.label(egui::RichText::new(" "));
                 }
             });
             ui.add_space(4.0);
 
-            egui::Grid::new("wc_grid")
-                .spacing([12.0, 4.0])
+            // Outer 2-column layout using egui::Grid to ensure there is a rough
+            // 2 column overall layout in egui
+            egui::Grid::new("wc_outer_layout")
+                .num_columns(2)
+                .spacing([16.0, 0.0])
                 .show(ui, |ui| {
-                    ui.label(""); // analog clock column is first and has no real header to speak of
-                    if header_btn(ui, "Timezone", SortColumn::Timezone, sort_col, sort_dir) {
-                        state.sort_col =
-                            cycle_sort(state.sort_col, SortColumn::Timezone, &mut state.sort_dir);
-                    }
-                    if header_btn(ui, "Date", SortColumn::Date, sort_col, sort_dir) {
-                        state.sort_col =
-                            cycle_sort(state.sort_col, SortColumn::Date, &mut state.sort_dir);
-                    }
-                    if header_btn(ui, "Time", SortColumn::Time, sort_col, sort_dir) {
-                        state.sort_col =
-                            cycle_sort(state.sort_col, SortColumn::Time, &mut state.sort_dir);
-                    }
-                    if header_btn(ui, "Offset", SortColumn::Offset, sort_col, sort_dir) {
-                        state.sort_col =
-                            cycle_sort(state.sort_col, SortColumn::Offset, &mut state.sort_dir);
-                    }
-                    if local_offset_mins.is_some()
-                        && header_btn(ui, "Δ Local", SortColumn::DeltaLocal, sort_col, sort_dir)
-                    {
-                        state.sort_col =
-                            cycle_sort(state.sort_col, SortColumn::DeltaLocal, &mut state.sort_dir);
-                    }
-                    ui.label("");
-                    ui.end_row();
-
-                    let mut to_remove: Option<usize> = None;
-
-                    for row in &rows {
-                        let is_local = row.name == local;
-
-                        let is_off_hours = row.hour < 8 || row.hour >= 17;
-                        if row.valid {
-                            analog_clock(
-                                ui,
-                                row.hour,
-                                row.minute,
-                                row.second,
-                                CLOCK_RADIUS,
-                                is_off_hours,
-                            );
-                        } else {
-                            ui.allocate_exact_size(
-                                egui::vec2(CLOCK_RADIUS * 2.0, CLOCK_RADIUS * 2.0),
-                                egui::Sense::hover(),
-                            );
-                        }
-
-                        ui.label(if is_local {
-                            egui::RichText::new(format!("★ {}", row.name))
-                                .strong()
-                                .color(egui::Color32::WHITE)
-                        } else {
-                            egui::RichText::new(row.name.as_str())
-                        });
-
-                        if row.valid {
-                            let is_off_hours = row.hour < 8 || row.hour >= 17;
-                            let (normal_color, local_color) = if is_off_hours {
-                                (
-                                    egui::Color32::from_rgb(100, 160, 255),
-                                    egui::Color32::from_rgb(140, 200, 255),
-                                )
-                            } else {
-                                (
-                                    egui::Color32::from_rgb(120, 220, 120),
-                                    egui::Color32::from_rgb(160, 255, 160),
-                                )
-                            };
-
-                            let date_text = if is_local {
-                                egui::RichText::new(&row.date)
-                                    .strong()
-                                    .color(egui::Color32::WHITE)
-                            } else {
-                                egui::RichText::new(&row.date)
-                            };
-                            let date_btn = egui::Button::new(date_text).frame(false);
-                            let date_resp =
-                                ui.add(date_btn).on_hover_text("Click to set date & time");
-                            if date_resp.clicked() {
-                                let pos = date_resp.rect.left_bottom();
-                                open_edit = Some((row.name.clone(), now, pos));
-                            }
-
-                            let time_text = if is_local {
-                                egui::RichText::new(&row.time)
-                                    .monospace()
-                                    .strong()
-                                    .color(local_color)
-                            } else {
-                                egui::RichText::new(&row.time)
-                                    .monospace()
-                                    .color(normal_color)
-                            };
-                            let time_btn = egui::Button::new(time_text).frame(false);
-                            let time_resp =
-                                ui.add(time_btn).on_hover_text("Click to set date & time");
-                            if time_resp.clicked() {
-                                let pos = time_resp.rect.left_bottom();
-                                open_edit = Some((row.name.clone(), now, pos));
-                            }
-
+                    egui::Grid::new("wc_grid")
+                        .spacing([12.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.label(""); // analog clock column is first and has no real header to speak of
+                            if header_btn(ui, "Timezone", SortColumn::Timezone, sort_col, sort_dir)
                             {
-                                let offset_color = if row.offset_mins > 0 {
-                                    egui::Color32::from_rgb(120, 220, 120)
-                                } else if row.offset_mins < 0 {
-                                    egui::Color32::from_rgb(100, 160, 255)
-                                } else {
-                                    egui::Color32::GRAY
-                                };
-                                let text = egui::RichText::new(&row.offset)
-                                    .monospace()
-                                    .color(offset_color);
-                                ui.label(if is_local { text.strong() } else { text });
+                                state.sort_col = cycle_sort(
+                                    state.sort_col,
+                                    SortColumn::Timezone,
+                                    &mut state.sort_dir,
+                                );
+                            }
+                            if header_btn(ui, "Date", SortColumn::Date, sort_col, sort_dir) {
+                                state.sort_col = cycle_sort(
+                                    state.sort_col,
+                                    SortColumn::Date,
+                                    &mut state.sort_dir,
+                                );
+                            }
+                            if header_btn(ui, "Time", SortColumn::Time, sort_col, sort_dir) {
+                                state.sort_col = cycle_sort(
+                                    state.sort_col,
+                                    SortColumn::Time,
+                                    &mut state.sort_dir,
+                                );
+                            }
+                            if header_btn(ui, "Offset", SortColumn::Offset, sort_col, sort_dir) {
+                                state.sort_col = cycle_sort(
+                                    state.sort_col,
+                                    SortColumn::Offset,
+                                    &mut state.sort_dir,
+                                );
+                            }
+                            if local_offset_mins.is_some()
+                                && header_btn(
+                                    ui,
+                                    "Δ Local",
+                                    SortColumn::DeltaLocal,
+                                    sort_col,
+                                    sort_dir,
+                                )
+                            {
+                                state.sort_col = cycle_sort(
+                                    state.sort_col,
+                                    SortColumn::DeltaLocal,
+                                    &mut state.sort_dir,
+                                );
                             }
 
-                            if let Some(local_mins) = local_offset_mins {
-                                if is_local {
-                                    // This is the reference row — no diff to show.
-                                    ui.label(
-                                        egui::RichText::new("+00:00").color(egui::Color32::GRAY),
+                            ui.label("");
+                            ui.end_row();
+
+                            let mut to_remove: Option<usize> = None;
+
+                            for row in &rows {
+                                let is_local = row.name == local;
+
+                                let is_off_hours = row.hour < 8 || row.hour >= 17;
+                                if row.valid {
+                                    analog_clock(
+                                        ui,
+                                        row.hour,
+                                        row.minute,
+                                        row.second,
+                                        CLOCK_RADIUS,
+                                        is_off_hours,
                                     );
                                 } else {
-                                    let diff = row.offset_mins - local_mins;
-                                    let abs = diff.unsigned_abs() as i32;
-                                    let h = abs / 60;
-                                    let m = abs % 60;
-                                    let (text, color) = if diff == 0 {
-                                        ("same".to_string(), egui::Color32::GRAY)
-                                    } else if diff > 0 {
+                                    ui.allocate_exact_size(
+                                        egui::vec2(CLOCK_RADIUS * 2.0, CLOCK_RADIUS * 2.0),
+                                        egui::Sense::hover(),
+                                    );
+                                }
+
+                                ui.label(if is_local {
+                                    egui::RichText::new(format!("★ {}", row.name))
+                                        .strong()
+                                        .color(egui::Color32::WHITE)
+                                } else {
+                                    egui::RichText::new(row.name.as_str())
+                                });
+
+                                if row.valid {
+                                    let is_off_hours = row.hour < 8 || row.hour >= 17;
+                                    let (normal_color, local_color) = if is_off_hours {
                                         (
-                                            format!("+{}:{:02}", h, m),
-                                            egui::Color32::from_rgb(120, 220, 120),
+                                            egui::Color32::from_rgb(100, 160, 255),
+                                            egui::Color32::from_rgb(140, 200, 255),
                                         )
                                     } else {
                                         (
-                                            format!("-{}:{:02}", h, m),
-                                            egui::Color32::from_rgb(100, 160, 255),
+                                            egui::Color32::from_rgb(120, 220, 120),
+                                            egui::Color32::from_rgb(160, 255, 160),
                                         )
                                     };
-                                    ui.label(egui::RichText::new(text).monospace().color(color));
+
+                                    let date_text = if is_local {
+                                        egui::RichText::new(&row.date)
+                                            .strong()
+                                            .color(egui::Color32::WHITE)
+                                    } else {
+                                        egui::RichText::new(&row.date)
+                                    };
+                                    let date_btn = egui::Button::new(date_text).frame(false);
+                                    let date_resp =
+                                        ui.add(date_btn).on_hover_text("Click to set date & time");
+                                    if date_resp.clicked() {
+                                        let pos = date_resp.rect.left_bottom();
+                                        open_edit = Some((row.name.clone(), now, pos));
+                                    }
+
+                                    let time_text = if is_local {
+                                        egui::RichText::new(&row.time)
+                                            .monospace()
+                                            .strong()
+                                            .color(local_color)
+                                    } else {
+                                        egui::RichText::new(&row.time)
+                                            .monospace()
+                                            .color(normal_color)
+                                    };
+                                    let time_btn = egui::Button::new(time_text).frame(false);
+                                    let time_resp =
+                                        ui.add(time_btn).on_hover_text("Click to set date & time");
+                                    if time_resp.clicked() {
+                                        let pos = time_resp.rect.left_bottom();
+                                        open_edit = Some((row.name.clone(), now, pos));
+                                    }
+
+                                    {
+                                        let offset_color = if row.offset_mins > 0 {
+                                            egui::Color32::from_rgb(120, 220, 120)
+                                        } else if row.offset_mins < 0 {
+                                            egui::Color32::from_rgb(100, 160, 255)
+                                        } else {
+                                            egui::Color32::GRAY
+                                        };
+                                        let text = egui::RichText::new(&row.offset)
+                                            .monospace()
+                                            .color(offset_color);
+                                        ui.label(if is_local { text.strong() } else { text });
+                                    }
+
+                                    if let Some(local_mins) = local_offset_mins {
+                                        if is_local {
+                                            // This is the reference row — no diff to show.
+                                            ui.label(
+                                                egui::RichText::new("+00:00")
+                                                    .color(egui::Color32::GRAY),
+                                            );
+                                        } else {
+                                            let diff = row.offset_mins - local_mins;
+                                            let abs = diff.unsigned_abs() as i32;
+                                            let h = abs / 60;
+                                            let m = abs % 60;
+                                            let (text, color) = if diff == 0 {
+                                                ("same".to_string(), egui::Color32::GRAY)
+                                            } else if diff > 0 {
+                                                (
+                                                    format!("+{}:{:02}", h, m),
+                                                    egui::Color32::from_rgb(120, 220, 120),
+                                                )
+                                            } else {
+                                                (
+                                                    format!("-{}:{:02}", h, m),
+                                                    egui::Color32::from_rgb(100, 160, 255),
+                                                )
+                                            };
+                                            ui.label(
+                                                egui::RichText::new(text).monospace().color(color),
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    ui.label(
+                                        egui::RichText::new("invalid").color(egui::Color32::RED),
+                                    );
+                                    ui.label("-");
+                                    ui.label("-");
+                                    if local_offset_mins.is_some() {
+                                        ui.label("");
+                                    }
                                 }
+
+                                if ui
+                                    .small_button(
+                                        egui::RichText::new("✖").color(egui::Color32::RED),
+                                    )
+                                    .on_hover_text("Remove")
+                                    .clicked()
+                                {
+                                    to_remove = Some(row.orig_idx);
+                                }
+
+                                ui.end_row();
                             }
-                        } else {
-                            ui.label(egui::RichText::new("invalid").color(egui::Color32::RED));
-                            ui.label("-");
-                            ui.label("-");
-                            if local_offset_mins.is_some() {
-                                ui.label("");
+
+                            if let Some(idx) = to_remove {
+                                state.timezones.remove(idx);
                             }
+                        });
+
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("Add timezone:").strong());
+                        let search_width = 240.0_f32;
+                        let text_height = ui.spacing().interact_size.y;
+                        let resp = ui.add_sized(
+                            [search_width, text_height],
+                            egui::TextEdit::singleline(&mut state.search),
+                        );
+                        if resp.changed() {
+                            state.search_dirty = true;
                         }
 
-                        if ui
-                            .small_button(egui::RichText::new("✖").color(egui::Color32::RED))
-                            .on_hover_text("Remove")
-                            .clicked()
-                        {
-                            to_remove = Some(row.orig_idx);
+                        if state.search_dirty {
+                            state.rebuild_filter();
                         }
 
-                        ui.end_row();
-                    }
+                        if !state.filtered.is_empty() {
+                            // Cap scroll area to the same height as the left grid so
+                            // neither column can inflate the horizontal row size.
+                            let row_height = ui.text_style_height(&egui::TextStyle::Body)
+                                + ui.spacing().item_spacing.y;
+                            let content_height = state.filtered.len() as f32 * row_height;
+                            // Cap to a sensible max so the list doesn't dwarf the timezone table in egui.
+                            let scroll_height = content_height.clamp(40.0, 260.0);
+                            egui::ScrollArea::vertical()
+                                .max_height(scroll_height)
+                                .min_scrolled_width(search_width)
+                                .id_salt("wc_tz_picker")
+                                .show(ui, |ui| {
+                                    ui.set_max_width(search_width);
+                                    let mut add_tz: Option<String> = None;
+                                    for &tz_name in &state.filtered {
+                                        let already_added =
+                                            state.timezones.iter().any(|t| t == tz_name);
+                                        ui.horizontal(|ui| {
+                                            if already_added {
+                                                ui.label(
+                                                    egui::RichText::new(tz_name)
+                                                        .color(egui::Color32::GRAY)
+                                                        .italics(),
+                                                );
+                                            } else if ui.selectable_label(false, tz_name).clicked()
+                                            {
+                                                add_tz = Some(tz_name.to_string());
+                                            }
+                                        });
+                                    }
+                                    if let Some(tz) = add_tz {
+                                        state.timezones.push(tz);
+                                        state.search.clear();
+                                        state.search_dirty = true;
+                                    }
+                                });
+                        }
+                    });
+                    ui.end_row();
+                });
 
-                    if let Some(idx) = to_remove {
-                        state.timezones.remove(idx);
+            // Alarms list
+            // Active alarms list by time to alert and then expired alarms most
+            // recently expired first.
+            if !state.alarms.is_empty() {
+                ui.add_space(8.0);
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new("🔔 Alarms").strong());
+                ui.add_space(2.0);
+
+                // Build a sorted index list.
+                // Active: ascending seconds remaining.
+                // Expired: ascending seconds since expiry aka most recent first.
+                // Expired entries always come after active alarms.
+                let mut sorted_indices: Vec<usize> = (0..state.alarms.len()).collect();
+                sorted_indices.sort_by_key(|&i| {
+                    let diff = state.alarms[i].target_ts.as_second() - live_now.as_second();
+                    if diff > 0 {
+                        (0i64, diff)
+                    } else {
+                        (1i64, -diff)
                     }
                 });
 
-            ui.add_space(6.0);
-
-            ui.label(egui::RichText::new("Add timezone:").strong());
-            let search_width = 240.0_f32;
-            let text_height = ui.spacing().interact_size.y;
-            let resp = ui.add_sized(
-                [search_width, text_height],
-                egui::TextEdit::singleline(&mut state.search),
-            );
-            if resp.changed() {
-                state.search_dirty = true;
-            }
-
-            if state.search_dirty {
-                state.rebuild_filter();
-            }
-
-            if !state.filtered.is_empty() {
-                egui::ScrollArea::vertical()
-                    .max_height(300.0)
-                    .min_scrolled_width(search_width)
-                    .id_salt("wc_tz_picker")
+                egui::Grid::new("wc_alarms_grid")
+                    .spacing([8.0, 2.0])
                     .show(ui, |ui| {
-                        ui.set_max_width(search_width);
-                        let mut add_tz: Option<String> = None;
-                        for &tz_name in &state.filtered {
-                            let already_added = state.timezones.iter().any(|t| t == tz_name);
-                            ui.horizontal(|ui| {
-                                if already_added {
-                                    ui.label(
-                                        egui::RichText::new(tz_name)
-                                            .color(egui::Color32::GRAY)
-                                            .italics(),
-                                    );
-                                } else if ui.selectable_label(false, tz_name).clicked() {
-                                    add_tz = Some(tz_name.to_string());
-                                }
-                            });
-                        }
-                        if let Some(tz) = add_tz {
-                            state.timezones.push(tz);
-                            state.search.clear();
-                            state.search_dirty = true;
+                        for &idx in &sorted_indices {
+                            let alarm_entry = &state.alarms[idx];
+                            let is_expired = alarm_entry.target_ts <= live_now;
+                            let status = if is_expired {
+                                format_elapsed(alarm_entry.target_ts, live_now)
+                            } else {
+                                format_countdown(alarm_entry.target_ts, live_now)
+                            };
+                            let color = if is_expired {
+                                egui::Color32::from_rgb(180, 80, 80)
+                            } else {
+                                egui::Color32::from_rgb(255, 220, 80)
+                            };
+                            ui.label(egui::RichText::new(&alarm_entry.label_tz).color(color));
+                            if let Some((time, date, ..)) =
+                                format_tz(alarm_entry.target_ts, &alarm_entry.label_tz)
+                            {
+                                ui.label(
+                                    egui::RichText::new(format!("{date}  {time}"))
+                                        .monospace()
+                                        .color(color),
+                                );
+                            } else {
+                                ui.label("");
+                            }
+                            ui.label(egui::RichText::new(":").color(egui::Color32::GRAY));
+                            ui.label(egui::RichText::new(&status).monospace().color(color));
+                            if ui
+                                .small_button(egui::RichText::new("✖").color(egui::Color32::RED))
+                                .on_hover_text("Remove alarm")
+                                .clicked()
+                            {
+                                remove_alarm = Some(idx);
+                            }
+                            ui.end_row();
                         }
                     });
             }
         });
+
+    // Remove an alarm if user requested.
+    if let Some(idx) = remove_alarm
+        && idx < state.alarms.len()
+    {
+        state.alarms.remove(idx);
+    }
 
     if clear_history {
         state.time_history.clear();
@@ -942,6 +1355,39 @@ pub fn world_clock_window(
     }
     if close_edit {
         state.editing = None;
+    }
+
+    // Open the alarm picker when the button was clicked.
+    if open_alarm_edit {
+        if state.editing_alarm.is_some() {
+            state.editing_alarm = None;
+        } else {
+            let tz = state
+                .timezones
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "UTC".to_string());
+            state.editing_alarm = Some(AlarmState::new(live_now, &tz, alarm_edit_pos));
+        }
+    }
+
+    // Render and handle the alarm picker popup.
+    let tzs_snapshot = state.timezones.clone();
+    let mut close_alarm_edit = false;
+    if let Some(alarm_edit) = state.editing_alarm.as_mut() {
+        let (confirmed, cancelled) = draw_alarm_popup(ctx, alarm_edit, live_now, &tzs_snapshot);
+        if let Some((ts, tz)) = confirmed {
+            state.alarms.push(AlarmEntry {
+                target_ts: ts,
+                label_tz: tz,
+            });
+            close_alarm_edit = true;
+        } else if cancelled {
+            close_alarm_edit = true;
+        }
+    }
+    if close_alarm_edit {
+        state.editing_alarm = None;
     }
 
     if !open && let Ok(entity) = show_query.single() {
