@@ -470,6 +470,35 @@
           fi
         '';
 
+        # Function to build and run the Windows cross-compiled binary through
+        # steam-run + wine on Linux. Both steam-run and wineWow64Packages.full
+        # are unfree so we can't pull them into the Nix sandbox directly;
+        # instead the generated script drops into a nix-shell at runtime,
+        # keeping the flake itself pure.
+        # WINEPREFIX can be overridden by the caller's environment.
+        mkWineExecApp =
+          name: windowsPackage:
+          pkgs.writeShellApplication {
+            inherit name;
+            runtimeInputs = [ pkgs.nix ];
+            text = ''
+              EXE="${windowsPackage}/bin/mitchty.exe"
+
+              WINEPREFIX="''${WINEPREFIX:-$HOME/.wine64}"
+              export WINEPREFIX
+
+              echo "running $EXE via steam-run + wine"
+              echo "  WINEPREFIX = $WINEPREFIX"
+
+              NIXPKGS_ALLOW_UNFREE=1 \
+                ${pkgs.nix}/bin/nix-shell \
+                  --impure \
+                  -p steam-run \
+                  -p wineWow64Packages.full \
+                  --run "steam-run wine $EXE $*"
+            '';
+          };
+
         # Function to cover building local testing web app scripts for
         # debug/release builds in web/web-release apps.
         #
@@ -1129,10 +1158,18 @@
               drv = mitchty-release-windows;
             })
             // {
-              # TODO: is this mitchty.exe as the main program? Maybe I can test
-              # this out via wine?
               meta = metaCommon "run release cross compiled windows build";
             };
+
+          # Build the Windows binary and launch it via wine on Linux.
+          # Usage: nix run .#mitchty-wine-exec
+          mitchty-wine-exec = {
+            type = "app";
+            program = "${mkWineExecApp "mitchty-wine-exec" mitchty-release-windows}/bin/mitchty-wine-exec";
+            meta = metaCommon "run windows build via wine" // {
+              platforms = [ "x86_64-linux" ];
+            };
+          };
         }
         // lib.optionalAttrs pkgs.stdenv.isDarwin {
           mitchty-release =
