@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/ma", "crates/flan", "crates/mitchty", "crates/shaders"]
+members = [
+  "crates/lib",
+  "crates/ma",
+  "crates/flan",
+  "crates/mitchty",
+  "crates/shaders",
+]
 
 [workspace.package]
 edition = "2024"
@@ -28,6 +34,10 @@ burn = { version = "~0.20", default-features = false, features = [
 # is pertinent.
 polars = { version = "~0.53", default-features = false }
 clap = { version = "~4.6", features = ["derive"] }
+const_format = "~0.2"
+git-version = "~0.3"
+jiff = { version = "~0.2", default-features = false, features = ["std"] }
+rustc_version = "~0.4"
 zip = { version = "~8.3", default-features = false, features = ["deflate"] }
 tracing = "~0.1"
 tracing-subscriber = { version = "~0.3", features = ["env-filter"] }

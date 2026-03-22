@@ -1,0 +1,13 @@
+[package]
+name = "lib"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+const_format.workspace = true
+
+[build-dependencies]
+git-version.workspace = true
+jiff.workspace = true
+rustc_version.workspace = true

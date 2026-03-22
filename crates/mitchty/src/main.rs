@@ -118,7 +118,7 @@ pub struct DisplayInitialHelp;
 /// /uri/paths and params I can yeet into the binary as an equivalent.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(clap::Parser, Debug)]
-#[command(about = "mitchty - just me playing around for funsies")]
+#[command(about = "mitchty - just me playing around for funsies", long_version = lib::build_info::VERSTR)]
 struct Cli {
     /// Enable gamepad support
     #[arg(long, overrides_with = "no_gamepad")]

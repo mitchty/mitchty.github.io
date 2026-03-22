@@ -20,7 +20,7 @@ use infer::InferArgs;
 use train::TrainArgs;
 
 #[derive(Parser)]
-#[command(name = "ma", about = "abominable intelligence shenanigans")]
+#[command(name = "ma", about = "abominable intelligence shenanigans", long_version = lib::build_info::VERSTR)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,

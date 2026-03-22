@@ -303,6 +303,31 @@ fn settings_ui(
                 }
             });
 
+            // Push "About" to the right side of the menu bar for build info and
+            // attribution stuff I put off till now. Even though my data
+            // detection build pipeline for kanji is sus lets attribute things
+            // so everyone knows what I used.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button("About", |ui| {
+                    ui.label(
+                        egui::RichText::new(env!("CARGO_PKG_NAME"))
+                            .strong()
+                            .heading(),
+                    );
+                    ui.separator();
+                    ui.label(format!("Version:  {}", env!("CARGO_PKG_VERSION")));
+                    ui.label(format!("Commit:   {}", lib::build_info::GIT_COMMIT));
+                    ui.label(format!("Profile:  {}", lib::build_info::BUILD_PROFILE));
+                    ui.label(format!("Rustc:    {}", lib::build_info::RUSTC_VERSION));
+                    ui.label(format!("Built:    {}", lib::build_info::BUILD_DATE));
+                    ui.separator();
+                    ui.label(format!("Third Party"));
+                    ui.separator();
+                    ui.label(format!("Kanjivg"));
+                    ui.hyperlink("https://kanjivg.tagaini.net");
+                });
+            });
+
             ui.menu_button("Apps", |ui| {
                 let wc_open = !world_clock_query.is_empty();
                 if ui.selectable_label(wc_open, "World Clock").clicked() {

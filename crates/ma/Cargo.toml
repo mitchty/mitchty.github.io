@@ -17,6 +17,7 @@ burn = { workspace = true, features = [
   "fusion",
 ] }
 clap.workspace = true
+lib = { path = "../lib" }
 rand.workspace = true
 csv = "~1.4"
 # EUC-JP decoding for JIS 0208 in ETL conversion testing
