@@ -34,8 +34,8 @@ rand.workspace = true
 burn.workspace = true
 serde_json = "~1"
 unicode_names2.workspace = true
-zip = { version = "~2", default-features = false, features = ["deflate"] }
-clap = { version = "~4.5.61", features = ["derive"] }
+zip.workspace = true
+clap.workspace = true
 bevy_fontmesh = "~0.3"
 bevy_egui = { version = "~0.39.1", optional = true }
 bevy_pretty_text = "~0.4"

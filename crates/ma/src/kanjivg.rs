@@ -224,7 +224,7 @@ pub fn convert_kanjivg_dir(
     // Augmentation RNG - seeded from --aug-seed when provided for fully
     // reproducible geometric perturbations; otherwise non-deterministic so
     // each convert run produces different rotations/translations/scales.
-    let mut aug_rng: Box<dyn rand::RngCore> = match aug_seed {
+    let mut aug_rng: Box<dyn rand::Rng> = match aug_seed {
         Some(s) => {
             tracing::info!(
                 aug_seed = s,

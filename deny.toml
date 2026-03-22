@@ -238,20 +238,6 @@ skip = [
   { name = "wgpu-hal", version = "=27.0.4" },
   { name = "wgpu-types", version = "=26.0.0" },
   { name = "wgpu-types", version = "=27.0.1" },
-  # usvg
-  { name = "fontdb", version = "=0.22.0" },
-  { name = "fontdb", version = "=0.23.0" },
-  # resvg and/or arboard
-  { name = "gif", version = "=0.13.3" },
-  { name = "gif", version = "=0.14.1" },
-  { name = "image-webp", version = "=0.1.3" },
-  { name = "image-webp", version = "=0.2.4" },
-  { name = "png", version = "=0.17.16" },
-  { name = "png", version = "=0.18.1" },
-  { name = "zune-jpeg", version = "=0.4.21" },
-  { name = "zune-jpeg", version = "=0.5.13" },
-  { name = "zune-core", version = "=0.4.12" },
-  { name = "zune-core", version = "=0.5.1" },
   # chrono-tz &/or unicode_names2
   { name = "phf", version = "=0.11.3" },
   { name = "phf", version = "=0.12.1" },
@@ -261,6 +247,16 @@ skip = [
   { name = "rand_chacha", version = "=0.9.0" },
   { name = "rand_core", version = "=0.6.4" },
   { name = "rand_core", version = "=0.9.5" },
+  # resvg &/or bevy
+  { name = "tiny-skia", version = "=0.11.4" },
+  { name = "tiny-skia", version = "=0.12.0" },
+  { name = "tiny-skia-path", version = "=0.11.4" },
+  { name = "tiny-skia-path", version = "=0.12.0" },
+  { name = "roxmltree", version = "=0.20.0" },
+  { name = "roxmltree", version = "=0.21.1" },
+  # rand and... wesl?bevy
+  { name = "cpufeatures", version = "=0.2.17" },
+  { name = "cpufeatures", version = "=0.3.0" },
 ]
 skip-tree = []
 

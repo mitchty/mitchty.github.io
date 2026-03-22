@@ -499,7 +499,7 @@ impl Dataset<DataItem> for ConcatNpzDataset {
 /// treated as background.
 pub fn augment_image(
     image: &[[f32; 28]; 28],
-    rng: &mut (impl rand::Rng + ?Sized),
+    rng: &mut (impl rand::RngExt + ?Sized),
 ) -> [[f32; 28]; 28] {
     let sz = 28usize;
     let cx = (sz as f32 - 1.0) / 2.0;

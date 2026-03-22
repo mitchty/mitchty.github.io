@@ -17,7 +17,7 @@ pub struct ColorState {
 
 // use bevy_old_tv_shader::prelude::*;
 use polars::prelude::*;
-use rand::Rng;
+use rand::RngExt;
 
 use assets::{AssetConfigPlugin, asset_path};
 use bevy_fontmesh::prelude::*;
