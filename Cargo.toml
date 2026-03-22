@@ -11,7 +11,7 @@ members = [
 [workspace.package]
 edition = "2024"
 license = "BlueOak-1.0.0"
-version = "0.0.11"
+version = "0.0.12"
 
 [workspace.dependencies]
 bevy = { version = "~0.18.1", default-features = false }
