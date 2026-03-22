@@ -211,6 +211,14 @@ fn main() {
     #[cfg(target_arch = "wasm32")]
     console_error_panic_hook::set_once();
 
+    // This is actually just for running under wine so that jiff isn't confused
+    // and looks for a zoneinfo file that may not be there and the timezones
+    // don't work the way you'd want. On actual windows this is basically a nop.
+    #[cfg(target_os = "windows")]
+    unsafe {
+        std::env::remove_var("TZDIR");
+    }
+
     // Native: parse CLI args and build a UiConfig from them.
     #[cfg(not(target_arch = "wasm32"))]
     let (enable_gamepad, ui_config) = {
