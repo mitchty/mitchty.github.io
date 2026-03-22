@@ -401,6 +401,7 @@
           if pkgs.stdenv.isDarwin then
             craneLibDarwin.buildDepsOnly (
               commonArgsDarwin
+              // nixEnvArgs
               // releaseArgs
               // {
                 src = srcDeps;
@@ -411,6 +412,7 @@
 
         cargoArtifactsWindows = craneLibWindows.buildDepsOnly (
           commonArgsWindows
+          // nixEnvArgs
           // releaseArgs
           // {
             src = srcDeps;
@@ -580,7 +582,7 @@
           };
 
         nixEnvArgs = {
-          STUPIDNIXFLAKEHACK = version;
+          NIX_GIT_REV = version;
           # Clippy lints can be set in source via attributes instead
         };
 
@@ -668,8 +670,6 @@
                 cargoExtraArgs = "-p mitchty --features mitchty/webgl";
                 src = fileSetForCrate ./crates/mitchty;
 
-                STUPIDNIXFLAKEHACK = version;
-
                 # Don't run checks for WASM builds
                 doCheck = false;
 
@@ -729,8 +729,6 @@
                 cargoArtifacts = cargoArtifactsWasmFast;
                 cargoExtraArgs = "-p mitchty --features mitchty/webgl";
                 src = fileSetForCrate ./crates/mitchty;
-
-                STUPIDNIXFLAKEHACK = version;
 
                 doCheck = false;
                 doInstallCargoArtifacts = false;
@@ -816,6 +814,7 @@
           if pkgs.stdenv.isDarwin then
             craneLibDarwin.buildPackage (
               commonArgsDarwin
+              // nixEnvArgs
               // releaseArgs
               // {
                 pname = "mitchty-release";
@@ -823,8 +822,6 @@
                 cargoArtifacts = cargoArtifactsDarwin;
                 cargoExtraArgs = "-p mitchty";
                 src = fileSetForCrate ./crates/mitchty;
-
-                STUPIDNIXFLAKEHACK = version;
 
                 # Don't check during cross-compilation
                 doCheck = false;
@@ -842,6 +839,7 @@
 
         mitchty-release-windows = craneLibWindows.buildPackage (
           commonArgsWindows
+          // nixEnvArgs
           // releaseArgs
           // {
             pname = "mitchty-release";
@@ -849,8 +847,6 @@
             cargoArtifacts = cargoArtifactsWindows;
             cargoExtraArgs = "-p mitchty";
             src = fileSetForCrate ./crates/mitchty;
-
-            STUPIDNIXFLAKEHACK = version;
 
             # Don't check during cross-compilation
             doCheck = false;

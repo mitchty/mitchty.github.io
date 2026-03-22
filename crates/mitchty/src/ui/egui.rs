@@ -309,21 +309,33 @@ fn settings_ui(
             // so everyone knows what I used.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.menu_button("About", |ui| {
-                    ui.label(
-                        egui::RichText::new(env!("CARGO_PKG_NAME"))
-                            .strong()
-                            .heading(),
-                    );
+                    ui.hyperlink_to("GitHub Repo", lib::build_info::GIT_REPO);
                     ui.separator();
                     ui.label(format!("Version:  {}", env!("CARGO_PKG_VERSION")));
-                    ui.label(format!("Commit:   {}", lib::build_info::GIT_COMMIT));
+                    if lib::build_info::GIT_DIRTY {
+                        ui.label(format!(
+                            "Commit:   {} modified", // This is what I'll see 99% of the time
+                            lib::build_info::GIT_COMMIT
+                        ));
+                    } else {
+                        // iff we're on a build coming from nix the link will be to the commit
+                        ui.hyperlink_to(
+                            format!("Commit:   {}", lib::build_info::GIT_COMMIT),
+                            format!(
+                                "{}/commit/{}",
+                                lib::build_info::GIT_REPO,
+                                lib::build_info::GIT_COMMIT
+                            ),
+                        );
+                    }
                     ui.label(format!("Profile:  {}", lib::build_info::BUILD_PROFILE));
                     ui.label(format!("Rustc:    {}", lib::build_info::RUSTC_VERSION));
+                    // TODO: Gate the build date to debug builds only?
                     ui.label(format!("Built:    {}", lib::build_info::BUILD_DATE));
                     ui.separator();
-                    ui.label(format!("Third Party"));
+                    ui.label("Third Party Acknowlegements");
                     ui.separator();
-                    ui.label(format!("Kanjivg"));
+                    ui.label("Kanjivg");
                     ui.hyperlink("https://kanjivg.tagaini.net");
                 });
             });
