@@ -657,6 +657,51 @@
           }
         );
 
+        # Pugio dep graph: runs pugio inside a crane derivation so the result
+        # is nix-cached and reuses cargoArtifactsRelease. Output is a single
+        # SVG showing the mitchty crate dep graph with cumulative size colouring.
+        # CARGO_NET_OFFLINE ensures pugio's internal cargo invocation uses the
+        # vendored sources crane already set up rather than hitting the network.
+        ci-pugio-graph = craneLib.mkCargoDerivation (
+          commonArgs
+          // nixEnvArgs
+          // releaseArgs
+          // {
+            pname = "ci-pugio-graph";
+            cargoArtifacts = cargoArtifactsRelease;
+            src = fileSetForCrate ./crates/mitchty;
+            doCheck = false;
+            doInstallCargoArtifacts = false;
+
+            nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
+              pugio
+              pkgs.cargo-bloat
+              pkgs.fontconfig
+              pkgs.graphviz
+            ];
+
+            # Pugio's SVG renderer uses fontconfig for text layout; without a
+            # valid config it crashes before writing the output file. An empty
+            # fonts.conf with no font dirs is enough to satisfy it.
+            FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = [ ]; };
+
+            buildPhaseCargoCommand = ''
+              export CARGO_NET_OFFLINE=true
+              pugio --package mitchty \
+                --bin mitchty \
+                --release \
+                --scheme cum-sum \
+                --gradient blues \
+                --dark-mode \
+                -o "$TMPDIR/deps.svg"
+            '';
+
+            installPhaseCommand = ''
+              install -Dm644 "$TMPDIR/deps.svg" "$out/deps.svg"
+            '';
+          }
+        );
+
         mitchty-wasm-lto =
           let
             wasmBuild = craneLibWasm.buildPackage (
@@ -942,6 +987,22 @@
             license = with licenses; [ mit ];
           };
         };
+
+        # Shell app for recording binary artifact sizes and dep graph data.
+        # Works both in CI (reads GITHUB_* env vars) and locally (falls back
+        # to git). Copies deps.svg path passed as 4th arg (obtained via
+        # nix build --no-link --print-out-paths .#ci-pugio-graph).
+        #
+        # Usage: nix run .#ci-record-sizes -- <wasm> <win> <mac> <deps.svg>
+        ci-record-sizes = pkgs.writeShellApplication {
+          name = "ci-record-sizes";
+          runtimeInputs = with pkgs; [
+            coreutils
+            git
+            jq
+          ];
+          text = builtins.readFile ./.ci-record-sizes.sh;
+        };
       in
       {
         checks = {
@@ -1004,6 +1065,8 @@
           inherit
             mitchty
             mitchty-lto
+            ci-pugio-graph
+            ci-record-sizes
             mitchty-wasm
             mitchty-wasm-lto
             pugio
@@ -1040,6 +1103,14 @@
               meta = metaCommon "LTO optimized build";
             };
           default = self.apps.${system}.mitchty;
+          ci-record-sizes = {
+            type = "app";
+            program = "${ci-record-sizes}/bin/ci-record-sizes";
+            meta = {
+              description = "Record binary artifact sizes and dep graph to .build-meta/";
+              mainProgram = "ci-record-sizes";
+            };
+          };
           build-all =
             let
               all-targets =

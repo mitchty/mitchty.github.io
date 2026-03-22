@@ -1,0 +1,22 @@
+[
+  {
+    "version": "0.0.11",
+    "commit": "2204d94048e4a2a3c1fde94987daaea1c2ffbe81",
+    "short_commit": "2204d94",
+    "date": "2026-03-22T22:44:59Z",
+    "ref": "refs/heads/main",
+    "run_id": 0,
+    "detail_path": ".build-meta/versions/0.0.11-2204d94",
+    "builds": {
+      "mitchty-wasm-bg": {
+        "total_bytes": 53778583
+      },
+      "mitchty-windows-x86_64": {
+        "total_bytes": 91962083
+      },
+      "mitchty-darwin-aarch64": {
+        "total_bytes": 83080832
+      }
+    }
+  }
+]

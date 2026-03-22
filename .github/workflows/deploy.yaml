@@ -149,6 +149,49 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
+  record-sizes:
+    name: Record Binary Sizes and Dep Graphs
+    needs: [create-prerelease]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ github.token }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Configure Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Build dep graph and record sizes
+        run: |
+          pugio_svg=$(nix build --no-link --print-out-paths .#ci-pugio-graph -L)/deps.svg
+          nix run .#ci-record-sizes -- \
+            artifacts/mitchty-wasm/mitchty_bg.wasm \
+            artifacts/mitchty-windows-x86_64/mitchty-windows-x86_64.exe \
+            artifacts/mitchty-darwin-aarch64/mitchty-darwin-aarch64 \
+            "$pugio_svg"
+
+      - name: Commit build metadata
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .build-meta/
+          if git diff --cached --quiet; then
+            echo "no changes to commit"
+          else
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git commit -m "chore: record sizes and dep graph for ${GITHUB_SHA:0:7} [skip ci]"
+            git push origin "$GITHUB_REF_NAME"
+          fi
+
   create-prerelease:
     name: Create Pre-Release
     needs: [check, build-wasm-lto, build-windows, build-macos]
