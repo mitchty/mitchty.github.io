@@ -1,3 +1,6 @@
+use crate::ui::world_clock::{SortColumn, SortDir};
+use jiff::Timestamp;
+
 /// Identifies a toggleable UI window by name for arg parsing inputs on what to
 /// show at startup from clap or query params in wasm/web.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -50,6 +53,25 @@ pub struct UiConfig {
     /// read once and mapped to an index to seed the `ActivePost`. Not used at
     /// runtime afterwards. One shot system struct.
     pub initial_post: Option<usize>,
+
+    /// Override the initial timezone list shown in World Clock. When non-empty
+    /// these replace the hardcoded defaults. Each entry is an IANA tz name.
+    pub initial_timezones: Vec<String>,
+
+    /// Pre-seeded alarms for World Clock. Each entry is a simple tuple of
+    /// `(utc_timestamp, iana_tz)`. The timestamp is the exact UTC moment the
+    /// alarm fires; tz is just for display purposes.
+    pub initial_alarms: Vec<(Timestamp, String)>,
+
+    /// Initial sort column for the World Clock table. `None` means insertion order.
+    pub initial_sort_col: SortColumn,
+
+    /// Initial sort direction for the World Clock table.
+    pub initial_sort_dir: SortDir,
+
+    /// If `Some`, the World Clock starts with the clock frozen at this UTC moment
+    /// instead of showing live time.
+    pub initial_pinned: Option<Timestamp>,
 }
 
 impl Default for UiConfig {
@@ -61,6 +83,11 @@ impl Default for UiConfig {
             #[cfg(not(target_arch = "wasm32"))]
             show_data_viewer: false,
             initial_post: None,
+            initial_timezones: Vec::new(),
+            initial_alarms: Vec::new(),
+            initial_sort_col: SortColumn::None,
+            initial_sort_dir: SortDir::Asc,
+            initial_pinned: None,
         }
     }
 }

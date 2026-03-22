@@ -42,7 +42,8 @@ impl Plugin for SettingsUiPlugin {
         // On native builds, fall back to the on-disk artifact directories so
         // that a freshly-trained model in recognizer/ still overrides the
         // compiled-in default during development. We do this for debug builds.
-        #[cfg(any(debug_assertions, not(target_arch = "wasm32")))]
+        // Note: explicitly exclude wasm32 InferenceEngine::load is native-only for now.
+        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
         let engine = engine.or_else(|| {
             ["recognizer", "../../recognizer", "../recognizer"]
                 .iter()
@@ -57,7 +58,6 @@ impl Plugin for SettingsUiPlugin {
             .init_resource::<EguiWantsInput>()
             .init_resource::<RecognizerState>()
             .init_resource::<InferenceResult>()
-            .init_resource::<WorldClockState>()
             .insert_non_send_resource(engine)
             .add_systems(Startup, setup_egui);
 
@@ -166,6 +166,17 @@ fn setup_egui(
     if let Some(idx) = ui_config.initial_post {
         *active_post = ActivePost(Some(idx));
     }
+
+    // Build WorldClockState from UiConfig overrides. insert_resource replaces
+    // the defaults for startup if provided.
+    let wc_state = WorldClockState::from_config(
+        &ui_config.initial_timezones,
+        &ui_config.initial_alarms,
+        ui_config.initial_sort_col,
+        ui_config.initial_sort_dir,
+        ui_config.initial_pinned,
+    );
+    commands.insert_resource(wc_state);
 }
 
 /// Display the settings UI using egui as a top menu bar

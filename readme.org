@@ -6,13 +6,31 @@ Mostly me just avoiding learning how to do any web programming by abusing wasm t
 
 Note this is basically a "cross platform" game essentially. Thus yes it can compile to windows/macos/linux binaries as well. Technically ios/android could be setup too but I've no need for such things if the wasm build works.
 
-You can toggle effects on/off like so:
-- d toggles a debug window (on touch screen devices a tap will do the same)
-- h toggles hue changes
-- f toggles fps display
-- c toggles cube rotation
-- r toggles camera rotation
-- t toggles a tv overlay shader to make things look like a crt
+The ui is built, for now, using egui and bevy as the backing frameworks. Most of this is all very much "for funsies" kind of things but there is some useful stuff now. This will "eventually" become my own interactive blog or bitbucket of whatever fancies me. But there are a few things I've always wanted to do better than whats out there feature wise.
+
+For now thats this, note this link is to the web version but the windows/mac builds are all the same. In fact those can do more than the wasm/web version due to them having a filesystem. Though nothing of import really.
+
+** Potent Notables
+
+*** World Clock
+
+[[https://mitchty.github.io/?app=world-clock][Linky Here]]
+
+The only real thing thats of note is the "world clock" appletish thing. You can add multiple time zones and sort to your hearts content. This uses the tzdb db so, it should have literally every time zone includging the weird ones like those Canadian Newfies and their weird 30 minute timezone and even the Chatham islands with their 45 minute timezone offset.
+
+You can also setup alerts, though note they are in app only right now. So probably more countdowns would be a better name but no bother. In addition you can also click on the date or time colums of a timezone and go forward/back in time to see what that time was for those timezones. Its mostly everything I wanted in a time app.
+
+And then, as a final pièce de résistance, you can copy/paste the current config so that others can open up the exact same config on their end in their own browser by using the `Copy Link` or `Copy Command` buttons depending on which version of this you're running.
+
+So you can share specific layouts and alerts or historical stuff to others. Or for the real reason this all exists is to make sure a meeting is at the right time by sharing with others so everyone agrees.
+
+TODO: Pour moi, record a video of how to abuse this? It'll get outdated I'm lazy and won't bother updating it... Future me decide until then I'm leaving the shame in the readme of me not being sure what to do or not.
+
+** Im...potent Notables?
+
+Everything else that is in this should be considered me just faffing about for fun. It might work, it might not, it might break I might remove it. Only the future Shadow me knows what fear lurks in the hearts of future me.
+
+But I will get it to an interactive blag kinda state at some point.
 
 ** How to build this stuff?
 
@@ -26,7 +44,7 @@ To run all checks/unit tests formatting tests etc...
 nix flake check -L
 #+end_src
 
-Linux build, should work on xorg or wayland but not well tested whatever I run is what I test with. Note that macos builds the same.
+Linux build, should work on xorg or wayland but not well tested whatever I run is what I test with. Note that macos builds the same. This is the only "supported" way to build this on linux. I can't be bothered to deal with dependencies in other distributions.
 
 #+begin_src sh
 nix build .#mitchty

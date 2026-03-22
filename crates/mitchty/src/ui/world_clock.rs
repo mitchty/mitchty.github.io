@@ -2,6 +2,12 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use jiff::{Timestamp, Unit, civil, tz::TimeZone};
 
+#[cfg(not(target_arch = "wasm32"))]
+use arboard;
+
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures;
+
 /// Which column the table is currently being sorted by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SortColumn {
@@ -16,12 +22,58 @@ pub enum SortColumn {
     DeltaLocal,
 }
 
+impl SortColumn {
+    /// Parse from a CLI/URL slug, case-insensitive.
+    pub fn from_slug(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "timezone" | "tz" => Some(Self::Timezone),
+            "time" => Some(Self::Time),
+            "date" => Some(Self::Date),
+            "offset" => Some(Self::Offset),
+            "delta" | "delta-local" | "delta_local" => Some(Self::DeltaLocal),
+            _ => None,
+        }
+    }
+
+    /// Serialise to the canonical slug used in CLI args and URL params.
+    pub fn to_slug(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Timezone => Some("timezone"),
+            Self::Time => Some("time"),
+            Self::Date => Some("date"),
+            Self::Offset => Some("offset"),
+            Self::DeltaLocal => Some("delta-local"),
+        }
+    }
+}
+
 /// Sort direction ascending or descending or other?
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SortDir {
     #[default]
     Asc,
     Desc,
+}
+
+impl SortDir {
+    /// Parse from a CLI/URL slug, case-insensitive.
+    /// Returns `None` for unrecognised values so callers can fail properly.
+    pub fn from_slug(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "asc" | "ascending" | "a" => Some(Self::Asc),
+            "desc" | "descending" | "d" => Some(Self::Desc),
+            _ => None,
+        }
+    }
+
+    /// Serialise to the canonical slug.
+    pub fn to_slug(self) -> &'static str {
+        match self {
+            Self::Asc => "asc",
+            Self::Desc => "desc",
+        }
+    }
 }
 
 /// Marker component for if the window shows or not.
@@ -195,6 +247,11 @@ pub struct WorldClockState {
 
     /// Active alarm picker popup state. None = closed.
     pub editing_alarm: Option<AlarmState>,
+
+    /// When `Some`, the copy-link button was clicked recently.
+    /// Stores the `Timestamp` of the click so we can show a brief "✔ Copied!"
+    /// label for about 2 seconds and then revert back to the normal label.
+    pub copy_feedback_until: Option<Timestamp>,
 }
 
 /// Resolve the IANA name of the system's local timezone.
@@ -220,8 +277,7 @@ impl Default for WorldClockState {
     fn default() -> Self {
         let local = local_tz_name();
 
-        // Default start is local timezone then these defaults. Need to make it
-        // so I can pass these in as args later
+        // Default timezone list: local tz first, then random timezones I find useful.
         let mut timezones = vec![
             local.clone(),
             "UTC".to_string(),
@@ -248,7 +304,47 @@ impl Default for WorldClockState {
             editing: None,
             alarms: Vec::new(),
             editing_alarm: None,
+            copy_feedback_until: None,
         }
+    }
+}
+
+impl WorldClockState {
+    /// Build a `WorldClockState` seeded from the values parsed out of CLI args
+    /// or URL query parameters. Basically lets me "serialize" or "deserialize"
+    /// the windows state and pass that back in via args or query params later.
+    pub fn from_config(
+        initial_timezones: &[String],
+        initial_alarms: &[(Timestamp, String)],
+        initial_sort_col: SortColumn,
+        initial_sort_dir: SortDir,
+        initial_pinned: Option<Timestamp>,
+    ) -> Self {
+        let mut state = Self::default();
+
+        if !initial_timezones.is_empty() {
+            let mut tzs: Vec<String> = initial_timezones.to_vec();
+            tzs.dedup();
+            state.timezones = tzs;
+        }
+
+        for (ts, tz) in initial_alarms {
+            state.alarms.push(AlarmEntry {
+                target_ts: *ts,
+                label_tz: tz.clone(),
+            });
+        }
+
+        state.sort_col = initial_sort_col;
+        state.sort_dir = initial_sort_dir;
+
+        if let Some(ts) = initial_pinned {
+            state.time_history.push(ts);
+            state.history_cursor = 0;
+            state.pinned_time = Some(ts);
+        }
+
+        state
     }
 }
 
@@ -709,6 +805,145 @@ fn format_elapsed(target: Timestamp, now: Timestamp) -> String {
     )
 }
 
+/// Build the shareable string that reconstructs the current world clock layout.
+///
+/// - **Native**: returns a CLI arg string you could use to get to this setup ex:
+///   `command --app=world-clock --tz=UTC,America/New_York --sort=offset --sort-dir=asc --pinned=1720000000`
+/// - **WASM**: returns a full URL using the current `window.location` origin +
+///   pathname, e.g. `https://example.com/?app=world-clock&tz=UTC%2CAmerica%2FNew_York&sort=offset`
+///
+/// Alarms are serialised as `TZ:EPOCH_SECS`. Sort is only included when a
+/// non-None column is active. Pinned time is only included when the clock is
+/// frozen aka you were actively looking at a historical time.
+// TODO: This also needs to be yeeted into a library and have unit tests.
+fn build_share_string(
+    timezones: &[String],
+    alarms: &[AlarmEntry],
+    sort_col: SortColumn,
+    sort_dir: SortDir,
+    pinned_time: Option<Timestamp>,
+) -> String {
+    // Percent-encode only the characters that would otherwise break URL query parsing.
+    // For IANA names the only special character in practice is '/', which becomes '%2F'.
+    #[cfg(target_arch = "wasm32")]
+    fn url_encode(s: &str) -> String {
+        s.replace('/', "%2F").replace(' ', "%20")
+    }
+
+    let tz_joined = timezones.join(",");
+
+    let alarm_parts: Vec<String> = alarms
+        .iter()
+        .map(|a| format!("{}:{}", a.label_tz, a.target_ts.as_second()))
+        .collect();
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Resolve the executable name: try argv[0] first, if we were on $PATH
+        // use that and the exe name, otherwise just use "mitchty" and hope for
+        // the best I guess.
+        let exe = std::env::args()
+            .next()
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                std::env::current_exe()
+                    .ok()
+                    .map(|p| p.display().to_string())
+            })
+            .unwrap_or_else(|| "mitchty".to_string());
+
+        let mut parts = vec![exe, "--app=world-clock".to_string()];
+        if !tz_joined.is_empty() {
+            parts.push(format!("--tz={}", tz_joined));
+        }
+        for a in &alarm_parts {
+            parts.push(format!("--alarm={}", a));
+        }
+        if let Some(col_slug) = sort_col.to_slug() {
+            parts.push(format!("--sort={}", col_slug));
+            // Only emit sort-dir when a sort column is active; asc is the default so
+            // we always include it to be sure copy/paste is right
+            parts.push(format!("--sort-dir={}", sort_dir.to_slug()));
+        }
+        if let Some(ts) = pinned_time {
+            parts.push(format!("--pinned={}", ts.as_second()));
+        }
+        parts.join(" ")
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        // WASM URL form using the browser's current origin + pathname.
+        let base = web_sys::window()
+            .and_then(|w| {
+                let loc = w.location();
+                let origin = loc.origin().ok()?;
+                let pathname = loc.pathname().ok()?;
+                Some(format!("{}{}", origin, pathname))
+            })
+            .unwrap_or_else(|| "/".to_string());
+
+        let mut params = vec!["app=world-clock".to_string()];
+
+        if !tz_joined.is_empty() {
+            // Encode each tz name individually then rejoin with %2C which is encoded comma.
+            let encoded_tzs: Vec<String> = timezones.iter().map(|t| url_encode(t)).collect();
+            params.push(format!("tz={}", encoded_tzs.join("%2C")));
+        }
+
+        for a in &alarm_parts {
+            // Encode TZ part but leave the colon separator and digits as-is.
+            if let Some((tz, epoch)) = a.split_once(':') {
+                params.push(format!("alarm={}%3A{}", url_encode(tz), epoch));
+            }
+        }
+
+        if let Some(col_slug) = sort_col.to_slug() {
+            params.push(format!("sort={}", col_slug));
+            params.push(format!("sort-dir={}", sort_dir.to_slug()));
+        }
+
+        if let Some(ts) = pinned_time {
+            params.push(format!("pinned={}", ts.as_second()));
+        }
+
+        format!("{}?{}", base, params.join("&"))
+    }
+}
+
+/// Write `text` to the system clipboard.
+///
+/// - Native: uses `arboard` for direct OS clipboard access.
+/// - WASM: calls the async Clipboard API via `wasm_bindgen_futures::spawn_local`
+///   fire-and-forget; the browser may show a permission prompt the first time
+///   thats a user problem not mine.
+fn copy_to_clipboard(_ctx: &egui::Context, text: String) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        match arboard::Clipboard::new() {
+            Ok(mut cb) => {
+                if let Err(e) = cb.set_text(text.as_str()) {
+                    bevy::log::warn!("clipboard write failed: {}", e);
+                }
+            }
+            Err(e) => bevy::log::warn!("could not open clipboard: {}", e),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        // egui's ctx.copy_text won't reach the browser clipboard from inside a
+        // WebGL canvas on most browsers, so we go direct via the Web Clipboard API.
+        if let Some(window) = web_sys::window() {
+            let clipboard = window.navigator().clipboard();
+            let promise = clipboard.write_text(&text);
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+            });
+        }
+    }
+}
+
 // TODO: This is getting out of hand, need to start refactoring.
 pub fn world_clock_window(
     mut contexts: EguiContexts,
@@ -868,7 +1103,50 @@ pub fn world_clock_window(
         .auto_sized()
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                // Always show the alarm button at the left.
+                // Copy-link/command button is first for no raisin.
+                {
+                    let now_ts = Timestamp::now();
+                    let showing_feedback = state
+                        .copy_feedback_until
+                        .map(|until| now_ts < until)
+                        .unwrap_or(false);
+
+                    let btn_label = if showing_feedback {
+                        egui::RichText::new("✔ Copied!")
+                            .color(egui::Color32::from_rgb(100, 220, 100))
+                    } else {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        let text = "📋 Copy Command";
+                        #[cfg(target_arch = "wasm32")]
+                        let text = "📋 Copy Link";
+                        egui::RichText::new(text).color(egui::Color32::from_rgb(150, 200, 255))
+                    };
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let hover = "Copy a runnable command that reopens this layout";
+                    #[cfg(target_arch = "wasm32")]
+                    let hover = "Copy a shareable URL for this layout";
+
+                    let copy_resp = ui.button(btn_label).on_hover_text(hover);
+
+                    if copy_resp.clicked() {
+                        let link = build_share_string(
+                            &state.timezones,
+                            &state.alarms,
+                            state.sort_col,
+                            state.sort_dir,
+                            state.pinned_time,
+                        );
+                        copy_to_clipboard(ctx, link);
+                        // Show copied blurb for 2 seconds, then revert.
+                        state.copy_feedback_until =
+                            Some(Timestamp::from_second(now_ts.as_second() + 2).unwrap_or(now_ts));
+                    }
+                }
+
+                ui.separator();
+
+                // Alarm button next.
                 let alarm_btn = ui
                     .button(
                         egui::RichText::new("🔔 Set Alarm")

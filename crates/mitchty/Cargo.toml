@@ -52,10 +52,14 @@ polars = { version = "~0.53", default-features = false, features = ["lazy"] }
 egui-file-dialog = { version = "~0.12" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# Need to set this for paste to work in wayland.
+# For wayland clipboard crap to work right, its derp
 arboard = { version = "~3.6", default-features = false, features = [
   "wayland-data-control",
 ] }
+
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "linux")))'.dependencies]
+# macOS, Windows and other non-wasm non-Linux targets use plain arboard.
+arboard = { version = "~3.6", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "~0.1.7"
@@ -68,4 +72,10 @@ getrandom.workspace = true
 polars = { version = "~0.53", default-features = false }
 # Used for reading window.location.search() to parse ?show= URL query params
 # at startup (WASM equivalent of --show CLI flag).
-web-sys = { version = "~0.3", features = ["Navigator", "Window", "Location"] }
+web-sys = { version = "~0.3", features = [
+  "Navigator",
+  "Window",
+  "Location",
+  "Clipboard",
+] }
+wasm-bindgen-futures = "~0.4"

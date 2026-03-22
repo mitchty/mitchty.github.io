@@ -141,9 +141,69 @@ struct Cli {
     /// line ars.
     #[arg(long, value_name = "POST")]
     post: Option<String>,
+
+    /// Override the world clock timezone list. Comma-separated or repeated inputs allowed.
+    /// Each value must be a valid IANA timezone name e.g. America/New_York.
+    #[arg(long = "tz", value_delimiter = ',', value_name = "TZ", action = clap::ArgAction::Append)]
+    tz: Vec<String>,
+
+    /// Set up the initial world clock alarms.
+    /// Format: `IANA_TZ:UTC_SECONDS` UTC_SECONDS is the Unix epoch timestamp in seconds when the alarm fires.
+    /// Example: --alarm America/New_York:1893456000
+    #[arg(long = "alarm", value_name = "TZ:EPOCH", action = clap::ArgAction::Append)]
+    alarm: Vec<String>,
+
+    /// Set the initial sort column for the World Clock table.
+    /// Values: timezone, time, date, offset, delta-local
+    #[arg(long = "sort", value_name = "COLUMN")]
+    sort: Option<String>,
+
+    /// Set the initial sort direction for the World Clock table.
+    /// Values: asc (default), desc
+    #[arg(long = "sort-dir", value_name = "DIR")]
+    sort_dir: Option<String>,
+
+    /// Start the World Clock frozen at this UTC moment instead of live time.
+    /// Value is a Unix timestamp in seconds since epoch.
+    #[arg(long = "pinned", value_name = "EPOCH")]
+    pinned: Option<i64>,
 }
 
-/// TODO: This files getting obscenely too long time to start splitting stuff up.
+/// Minimal percent-decoder for URL query string values I need. If I do more
+/// this should be dropped like a rock and a crate found.
+///
+/// Only handles `%XX` sequences and `+` space. Good enough for IANA tz names
+/// which can contain `/` encoded as `%2F` and epoch seconds which is all I need
+/// for now.
+#[cfg(target_arch = "wasm32")]
+fn percent_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                out.push((hi * 16 + lo) as u8 as char);
+                i += 3;
+                continue;
+            }
+        } else if bytes[i] == b'+' {
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+/// TODO: This files getting obscenely too long time to start splitting stuff up
+/// into a dedicated lib crate. I've put this off for too long.
+// ALso need to start moving arg parsing into dedicated functions and add unit tests.
 fn main() {
     // Set up better panic messages for WASM for when this stuff seems to not
     // work or I manage to use a library that won't run on it without paying
@@ -155,20 +215,91 @@ fn main() {
     #[cfg(not(target_arch = "wasm32"))]
     let (enable_gamepad, ui_config) = {
         use clap::Parser;
+        use jiff::Timestamp;
         let cli = Cli::parse();
 
         let mut cfg = ui::UiConfig::default();
         for slug in &cli.app {
             match ui::UiWindow::from_slug(slug) {
                 Some(w) => cfg.enable_window(w),
-                None => bevy::log::warn!("--app: unknown app {:?} (ignored)", slug),
+                None => bevy::log::warn!("--app: unknown app {:?} ignoring it", slug),
             }
         }
 
         if let Some(name) = &cli.post {
             match ui::post_index_for_name(name) {
                 Some(idx) => cfg.initial_post = Some(idx),
-                None => bevy::log::warn!("--post: unknown post {:?} (ignored)", name),
+                None => bevy::log::warn!("--post: unknown post {:?} ignoring it", name),
+            }
+        }
+
+        // Collect --tz values. Validate each name against the bundled tz
+        // database and skip unknown inputs assuming they're people being
+        // cheeky. Stuff not in the tzdb is dropped like a rock.
+        for tz in &cli.tz {
+            let tz = tz.trim();
+            if tz.is_empty() {
+                continue;
+            }
+            if jiff_tzdb::available().any(|n| n == tz) {
+                cfg.initial_timezones.push(tz.to_string());
+            } else {
+                bevy::log::warn!("--tz: unknown timezone {:?} ignoring it", tz);
+            }
+        }
+
+        // Parse --alarm TZ:EPOCH_SECS entries.
+        for entry in &cli.alarm {
+            if let Some((tz, epoch_str)) = entry.split_once(':') {
+                let tz = tz.trim();
+                let epoch_str = epoch_str.trim();
+                match epoch_str.parse::<i64>() {
+                    Ok(secs) => match Timestamp::from_second(secs) {
+                        Ok(ts) => cfg.initial_alarms.push((ts, tz.to_string())),
+                        Err(_) => bevy::log::warn!(
+                            "--alarm: epoch out of range in {:?} ignoring it",
+                            entry
+                        ),
+                    },
+                    Err(_) => bevy::log::warn!(
+                        "--alarm: could not parse epoch in {:?} ignoring it",
+                        entry
+                    ),
+                }
+            } else {
+                bevy::log::warn!(
+                    "--alarm: expected TZ:EPOCH format, got {:?} ignoring it",
+                    entry
+                );
+            }
+        }
+
+        // Parse --sort column.
+        if let Some(col_slug) = &cli.sort {
+            use ui::world_clock::SortColumn;
+            match SortColumn::from_slug(col_slug.trim()) {
+                Some(col) => cfg.initial_sort_col = col,
+                None => bevy::log::warn!("--sort: unknown column {:?} ignoring it", col_slug),
+            }
+        }
+
+        // Parse --sort-dir direction.
+        if let Some(dir_slug) = &cli.sort_dir {
+            use ui::world_clock::SortDir;
+            match SortDir::from_slug(dir_slug.trim()) {
+                Some(dir) => cfg.initial_sort_dir = dir,
+                None => bevy::log::warn!(
+                    "--sort-dir: expected asc or desc, got {:?} ignoring it",
+                    dir_slug
+                ),
+            }
+        }
+
+        // Parse --pinned epoch seconds.
+        if let Some(secs) = cli.pinned {
+            match Timestamp::from_second(secs) {
+                Ok(ts) => cfg.initial_pinned = Some(ts),
+                Err(_) => bevy::log::warn!("--pinned: epoch out of range {} ignoring it", secs),
             }
         }
 
@@ -184,6 +315,7 @@ fn main() {
     // query string including the leading '?'.
     #[cfg(target_arch = "wasm32")]
     let ui_config = {
+        use jiff::Timestamp;
         let mut cfg = ui::UiConfig::default();
 
         let query = web_sys::window()
@@ -193,7 +325,10 @@ fn main() {
         for pair in query.trim_start_matches('?').split('&') {
             let mut parts = pair.splitn(2, '=');
             let key = parts.next().unwrap_or("").trim();
-            let value = parts.next().unwrap_or("").trim();
+            let raw_value = parts.next().unwrap_or("").trim();
+            // Percent-decode the value so spaces/special chars survive URL encoding.
+            let value = percent_decode(raw_value);
+            let value = value.as_str();
 
             if key.eq_ignore_ascii_case("app") {
                 // Value may itself be comma-separated just like in the cli. Symmetry is nice.
@@ -204,14 +339,80 @@ fn main() {
                     }
                     match ui::UiWindow::from_slug(slug) {
                         Some(w) => cfg.enable_window(w),
-                        None => bevy::log::warn!("?app=: unknown app {:?} (ignored)", slug),
+                        None => bevy::log::warn!("?app=: unknown app {:?} ignoring it", slug),
                     }
                 }
             } else if key.eq_ignore_ascii_case("post") {
                 // Single post name; only one post can be active at a time, last one wins.
                 match ui::post_index_for_name(value) {
                     Some(idx) => cfg.initial_post = Some(idx),
-                    None => bevy::log::warn!("?post=: unknown post {:?} (ignored)", value),
+                    None => bevy::log::warn!("?post=: unknown post {:?} ignoring it", value),
+                }
+            } else if key.eq_ignore_ascii_case("tz") {
+                // Comma-separated list of IANA timezone names. Validate each
+                // against the bundled tz database and skip unknowns.
+                // TODO: This all needs a refactor but thats for later me.
+                for tz in value.split(',') {
+                    let tz = tz.trim();
+                    if tz.is_empty() {
+                        continue;
+                    }
+                    if jiff_tzdb::available().any(|n| n == tz) {
+                        cfg.initial_timezones.push(tz.to_string());
+                    } else {
+                        bevy::log::warn!("?tz=: unknown timezone {:?} ignoring it", tz);
+                    }
+                }
+            } else if key.eq_ignore_ascii_case("alarm") {
+                // Each value is TZ:EPOCH_SECS. May be repeated or comma-separated.
+                for entry in value.split(',') {
+                    let entry = entry.trim();
+                    if let Some((tz, epoch_str)) = entry.split_once(':') {
+                        let tz = tz.trim();
+                        let epoch_str = epoch_str.trim();
+                        match epoch_str.parse::<i64>() {
+                            Ok(secs) => match Timestamp::from_second(secs) {
+                                Ok(ts) => cfg.initial_alarms.push((ts, tz.to_string())),
+                                Err(_) => bevy::log::warn!(
+                                    "?alarm=: epoch out of range in {:?} ignoring it",
+                                    entry
+                                ),
+                            },
+                            Err(_) => {
+                                bevy::log::warn!("?alarm=: bad epoch in {:?} ignoring it", entry)
+                            }
+                        }
+                    } else if !entry.is_empty() {
+                        bevy::log::warn!("?alarm=: expected TZ:EPOCH, got {:?} ignoring it", entry);
+                    }
+                }
+            } else if key.eq_ignore_ascii_case("sort") {
+                use ui::world_clock::SortColumn;
+                match SortColumn::from_slug(value) {
+                    Some(col) => cfg.initial_sort_col = col,
+                    None => bevy::log::warn!("?sort=: unknown column {:?} ignoring it", value),
+                }
+            } else if key.eq_ignore_ascii_case("sort-dir") {
+                use ui::world_clock::SortDir;
+                match SortDir::from_slug(value) {
+                    Some(dir) => cfg.initial_sort_dir = dir,
+                    None => bevy::log::warn!(
+                        "?sort-dir=: expected asc or desc, got {:?} ignoring it",
+                        value
+                    ),
+                }
+            } else if key.eq_ignore_ascii_case("pinned") {
+                match value.parse::<i64>() {
+                    Ok(secs) => match Timestamp::from_second(secs) {
+                        Ok(ts) => cfg.initial_pinned = Some(ts),
+                        Err(_) => {
+                            bevy::log::warn!("?pinned=: epoch out of range {:?} ignoring it", value)
+                        }
+                    },
+                    Err(_) => bevy::log::warn!(
+                        "?pinned=: expected integer epoch, got {:?} ignoring it",
+                        value
+                    ),
                 }
             }
         }
