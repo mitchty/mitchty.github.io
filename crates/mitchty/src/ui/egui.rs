@@ -303,6 +303,41 @@ fn settings_ui(
                 }
             });
 
+            ui.menu_button("Apps", |ui| {
+                let wc_open = !world_clock_query.is_empty();
+                if ui.selectable_label(wc_open, "World Clock").clicked() {
+                    if wc_open {
+                        if let Ok(entity) = world_clock_query.single() {
+                            commands.entity(entity).despawn();
+                        }
+                    } else {
+                        commands.spawn(ShowWorldClock);
+                    }
+                    ui.close();
+                }
+
+                ui.separator();
+                ui.label(egui::RichText::new("Abominable Intelligence").strong());
+
+                if ui.button("Recognizer").clicked() {
+                    if recognizer_query.is_empty() {
+                        commands.spawn(ShowRecognizer);
+                    } else if let Ok(entity) = recognizer_query.single() {
+                        commands.entity(entity).despawn();
+                    }
+                    ui.close();
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if ui.button("Data Viewer").clicked() {
+                    if data_viewer_query.is_empty() {
+                        commands.spawn(ShowDataViewer);
+                    } else if let Ok(entity) = data_viewer_query.single() {
+                        commands.entity(entity).despawn();
+                    }
+                    ui.close();
+                }
+            });
+
             // Push "About" to the right side of the menu bar for build info and
             // attribution stuff I put off till now. Even though my data
             // detection build pipeline for kanji is sus lets attribute things
@@ -338,41 +373,6 @@ fn settings_ui(
                     ui.label("Kanjivg");
                     ui.hyperlink("https://kanjivg.tagaini.net");
                 });
-            });
-
-            ui.menu_button("Apps", |ui| {
-                let wc_open = !world_clock_query.is_empty();
-                if ui.selectable_label(wc_open, "World Clock").clicked() {
-                    if wc_open {
-                        if let Ok(entity) = world_clock_query.single() {
-                            commands.entity(entity).despawn();
-                        }
-                    } else {
-                        commands.spawn(ShowWorldClock);
-                    }
-                    ui.close();
-                }
-
-                ui.separator();
-                ui.label(egui::RichText::new("Abominable Intelligence").strong());
-
-                if ui.button("Recognizer").clicked() {
-                    if recognizer_query.is_empty() {
-                        commands.spawn(ShowRecognizer);
-                    } else if let Ok(entity) = recognizer_query.single() {
-                        commands.entity(entity).despawn();
-                    }
-                    ui.close();
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                if ui.button("Data Viewer").clicked() {
-                    if data_viewer_query.is_empty() {
-                        commands.spawn(ShowDataViewer);
-                    } else if let Ok(entity) = data_viewer_query.single() {
-                        commands.entity(entity).despawn();
-                    }
-                    ui.close();
-                }
             });
         });
     });
