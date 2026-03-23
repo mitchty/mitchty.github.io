@@ -14,9 +14,9 @@ For now thats this, note this link is to the web version but the windows/mac bui
 
 *** World Clock
 
-[[https://mitchty.github.io/?app=world-clock][Linky Here]]
+[[https://mitchty.github.io/?app=world-clock][Linky Here]] [[https://mitchty.github.io/?app=world-clock&tz=America%2FChicago%2CUTC%2CAmerica%2FNew_York%2CAmerica%2FLos_Angeles%2CEurope%2FParis%2CAsia%2FTokyo%2CCanada%2FNewfoundland%2CPacific%2FChatham&alarm=Asia%2FTokyo%3A1987362000&alarm=America%2FChicago%3A1774225740&pinned=1286723400][A more complete example with alarms and randomly chosen history to demonstrate using the clock remotely.]]
 
-The only real thing thats of note is the "world clock" appletish thing. You can add multiple time zones and sort to your hearts content. This uses the tzdb db so, it should have literally every time zone includging the weird ones like those Canadian Newfies and their weird 30 minute timezone and even the Chatham islands with their 45 minute timezone offset.
+The only real thing thats of note is the "world clock" appletish thing. You can add multiple time zones and sort to your hearts content. This uses the tzdb db so, it should have literally every time zone including the weird ones like those Canadian Newfies and their weird 30 minute timezone and even the Chatham islands with their 45 minute timezone offset. So it should basically be "every time zone" possible. At least for now, until new ones pop up like rabbits.
 
 You can also setup alerts, though note they are in app only right now. So probably more countdowns would be a better name but no bother. In addition you can also click on the date or time colums of a timezone and go forward/back in time to see what that time was for those timezones. Its mostly everything I wanted in a time app.
 
