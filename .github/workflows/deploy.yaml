@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
         # building all this junk/checks takes slightly more than the default
         # 17GiB of space. So stole this script from elsewhere to get enough
@@ -46,6 +48,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -85,6 +89,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -114,6 +120,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -157,6 +165,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          lfs: true
           token: ${{ github.token }}
 
       - name: Install Nix
