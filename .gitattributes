@@ -3,3 +3,8 @@
 *.ttf filter=lfs diff=lfs merge=lfs -text
 *.mpk filter=lfs diff=lfs merge=lfs -text
 *.ktx2 filter=lfs diff=lfs merge=lfs -text
+crates/mitchty/src/assets/fonts/FiraMono-Medium.ttf filter=lfs diff=lfs merge=lfs -text
+crates/mitchty/src/assets/fonts/NotoSansJP-Regular.ttf filter=lfs diff=lfs merge=lfs -text
+crates/mitchty/src/assets/environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2 filter=lfs diff=lfs merge=lfs -text
+crates/mitchty/src/assets/environment_maps/pisa_specular_rgb9e5_zstd.ktx2 filter=lfs diff=lfs merge=lfs -text
+crates/mitchty/src/assets/models/default/model.mpk filter=lfs diff=lfs merge=lfs -text
