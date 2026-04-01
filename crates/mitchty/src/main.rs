@@ -148,9 +148,11 @@ struct Cli {
     tz: Vec<String>,
 
     /// Set up the initial world clock alarms.
-    /// Format: `IANA_TZ:UTC_SECONDS` UTC_SECONDS is the Unix epoch timestamp in seconds when the alarm fires.
+    /// Format: `IANA_TZ:UTC_SECONDS` or `LABEL:IANA_TZ:UTC_SECONDS`, label is optional.
+    /// UTC_SECONDS is the Unix epoch timestamp in seconds when the alarm fires.
     /// Example: --alarm America/New_York:1893456000
-    #[arg(long = "alarm", value_name = "TZ:EPOCH", action = clap::ArgAction::Append)]
+    /// Example: --alarm "Birthday:America/New_York:1893456000"
+    #[arg(long = "alarm", value_name = "[LABEL:]TZ:EPOCH", action = clap::ArgAction::Append)]
     alarm: Vec<String>,
 
     /// Set the initial sort column for the World Clock table.
@@ -201,6 +203,28 @@ fn percent_decode(s: &str) -> String {
     out
 }
 
+#[cfg(target_os = "windows")]
+use std::ffi::c_void;
+
+#[cfg(target_os = "windows")]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetModuleHandleA(lpModuleName: *const u8) -> *const c_void;
+    fn GetProcAddress(hModule: *const c_void, lpProcName: *const u8) -> *const c_void;
+}
+
+#[cfg(target_os = "windows")]
+fn is_wine() -> bool {
+    unsafe {
+        let kernel32 = GetModuleHandleA("kernel32.dll\0".as_ptr());
+        if kernel32.is_null() {
+            return false;
+        }
+        let wine_func = GetProcAddress(kernel32, "wine_get_unix_file_name\0".as_ptr());
+        !wine_func.is_null()
+    }
+}
+
 /// TODO: This files getting obscenely too long time to start splitting stuff up
 /// into a dedicated lib crate. I've put this off for too long.
 // ALso need to start moving arg parsing into dedicated functions and add unit tests.
@@ -215,8 +239,14 @@ fn main() {
     // and looks for a zoneinfo file that may not be there and the timezones
     // don't work the way you'd want. On actual windows this is basically a nop.
     #[cfg(target_os = "windows")]
-    unsafe {
-        std::env::remove_var("TZDIR");
+    bevy::log::info!("is_wine {}", is_wine());
+
+    #[cfg(target_os = "windows")]
+    if is_wine() {
+        unsafe {
+            std::env::remove_var("TZDIR");
+        }
+        bevy::log::info!("wine workaround, removed TZDIR for time parsing");
     }
 
     // Native: parse CLI args and build a UiConfig from them.
@@ -256,29 +286,19 @@ fn main() {
             }
         }
 
-        // Parse --alarm TZ:EPOCH_SECS entries.
+        // Parse --alarm [LABEL:]TZ:EPOCH_SECS entries.
         for entry in &cli.alarm {
-            if let Some((tz, epoch_str)) = entry.split_once(':') {
-                let tz = tz.trim();
-                let epoch_str = epoch_str.trim();
-                match epoch_str.parse::<i64>() {
-                    Ok(secs) => match Timestamp::from_second(secs) {
-                        Ok(ts) => cfg.initial_alarms.push((ts, tz.to_string())),
-                        Err(_) => bevy::log::warn!(
-                            "--alarm: epoch out of range in {:?} ignoring it",
-                            entry
-                        ),
-                    },
-                    Err(_) => bevy::log::warn!(
-                        "--alarm: could not parse epoch in {:?} ignoring it",
-                        entry
-                    ),
-                }
-            } else {
-                bevy::log::warn!(
-                    "--alarm: expected TZ:EPOCH format, got {:?} ignoring it",
+            match ui::world_clock::parse_alarm_entry(entry) {
+                Some((secs, tz, label)) => match Timestamp::from_second(secs) {
+                    Ok(ts) => cfg.initial_alarms.push((ts, tz, label)),
+                    Err(_) => {
+                        bevy::log::warn!("--alarm: epoch out of range in {:?} ignoring it", entry)
+                    }
+                },
+                None => bevy::log::warn!(
+                    "--alarm: expected [LABEL:]TZ:EPOCH format, got {:?} ignoring it",
                     entry
-                );
+                ),
             }
         }
 
@@ -372,26 +392,24 @@ fn main() {
                     }
                 }
             } else if key.eq_ignore_ascii_case("alarm") {
-                // Each value is TZ:EPOCH_SECS. May be repeated or comma-separated.
+                // Each value is [LABEL:]TZ:EPOCH_SECS. May be repeated or comma-separated.
                 for entry in value.split(',') {
                     let entry = entry.trim();
-                    if let Some((tz, epoch_str)) = entry.split_once(':') {
-                        let tz = tz.trim();
-                        let epoch_str = epoch_str.trim();
-                        match epoch_str.parse::<i64>() {
-                            Ok(secs) => match Timestamp::from_second(secs) {
-                                Ok(ts) => cfg.initial_alarms.push((ts, tz.to_string())),
-                                Err(_) => bevy::log::warn!(
-                                    "?alarm=: epoch out of range in {:?} ignoring it",
-                                    entry
-                                ),
-                            },
-                            Err(_) => {
-                                bevy::log::warn!("?alarm=: bad epoch in {:?} ignoring it", entry)
-                            }
-                        }
-                    } else if !entry.is_empty() {
-                        bevy::log::warn!("?alarm=: expected TZ:EPOCH, got {:?} ignoring it", entry);
+                    if entry.is_empty() {
+                        continue;
+                    }
+                    match ui::world_clock::parse_alarm_entry(entry) {
+                        Some((secs, tz, label)) => match Timestamp::from_second(secs) {
+                            Ok(ts) => cfg.initial_alarms.push((ts, tz, label)),
+                            Err(_) => bevy::log::warn!(
+                                "?alarm=: epoch out of range in {:?} ignoring it",
+                                entry
+                            ),
+                        },
+                        None => bevy::log::warn!(
+                            "?alarm=: expected [LABEL:]TZ:EPOCH, got {:?} ignoring it",
+                            entry
+                        ),
                     }
                 }
             } else if key.eq_ignore_ascii_case("sort") {
@@ -495,7 +513,9 @@ fn main() {
                 update_fps_display.run_if(bevy::time::common_conditions::on_timer(
                     std::time::Duration::from_secs_f32(0.5),
                 )),
-                sync_text3d_to_active_post,
+                sync_text3d_to_active_post.run_if(bevy::time::common_conditions::on_timer(
+                    std::time::Duration::from_secs(1),
+                )),
                 respawn_text3d_on_content_change.after(sync_text3d_to_active_post),
             ),
         );
@@ -829,25 +849,54 @@ impl Default for Text3dContent {
     }
 }
 
-/// Sync the 3D text label whenever the active post changes.
+/// Sync the 3D text label once per second.
 ///
-/// - Post selected   -> label becomes the post title.
-/// - No post selected -> label falls back to "mitchty.github.io" for now as a default.
+/// Priority order:
+/// 1. If the World Clock has at least one active (non-expired) alarm, show the
+///    countdown to the soonest one, e.g. `"3h 25m 10s"`.
+/// 2. Otherwise, if a blog post is selected, show the post title.
+/// 3. Otherwise fall back to `"mitchty.github.io"`.
 fn sync_text3d_to_active_post(
     active_post: Res<ui::ActivePost>,
+    world_clock: Option<Res<ui::WorldClockState>>,
     mut text_content: ResMut<Text3dContent>,
 ) {
-    if !active_post.is_changed() {
-        return;
-    }
+    use jiff::Timestamp;
 
-    text_content.0 = match active_post.0 {
-        Some(idx) => ui::POSTS
-            .get(idx)
-            .map(|p| p.name.to_string())
-            .unwrap_or_else(|| String::from("mitchty.github.io")),
-        None => String::from("mitchty.github.io"),
+    let now = Timestamp::now();
+
+    // Find the soonest active alarm across all world-clock alarms, if any.
+    let countdown_str: Option<String> = world_clock.and_then(|wc| {
+        wc.alarms
+            .iter()
+            .filter(|a| a.target_ts > now)
+            .min_by_key(|a| a.target_ts.as_second())
+            .map(|a| {
+                let secs = (a.target_ts.as_second() - now.as_second()).max(0) as u64;
+                let cd =
+                    humantime::format_duration(std::time::Duration::from_secs(secs)).to_string();
+                match &a.label {
+                    Some(lbl) => format!("{} in {}", lbl, cd),
+                    None => cd,
+                }
+            })
+    });
+
+    let new_text = if let Some(cd) = countdown_str {
+        cd
+    } else {
+        match active_post.0 {
+            Some(idx) => ui::POSTS
+                .get(idx)
+                .map(|p| p.name.to_string())
+                .unwrap_or_else(|| String::from("mitchty.github.io")),
+            None => String::from("mitchty.github.io"),
+        }
     };
+
+    if text_content.0 != new_text {
+        text_content.0 = new_text;
+    }
 }
 
 #[derive(Component)]
@@ -860,7 +909,8 @@ fn spawn_text3d(
     materials: &mut Assets<StandardMaterial>,
     text: &str,
 ) {
-    let font_path = asset_path("fonts/FiraMono-Medium.ttf");
+    //    let font_path = asset_path("fonts/FiraMono-Medium.ttf");
+    let font_path = asset_path("fonts/NotoSansJP-Regular.ttf");
 
     let text_material = materials.add(StandardMaterial {
         base_color: Color::from(Hsla::hsl(180.0, 1.0, 0.5)),
@@ -1180,4 +1230,111 @@ fn tick_plot_data(
         .expect("plot DataFrame vstack append failed");
 
     events.write(flan::PlotDataUpdated);
+}
+
+// TODO: A lot of copy paste between this and the uri parser. Future me can fix it!
+#[cfg(test)]
+mod tests {
+    use crate::ui::world_clock::parse_alarm_entry;
+
+    /// Simulates the comma-split loop used by both the native CLI and the WASM
+    /// URL parsers: split on ',', trim each entry, skip empty and unparseable
+    /// entries; keep valid `(epoch, tz, label)` triples.
+    fn parse_alarm_value(value: &str) -> Vec<(i64, String, Option<String>)> {
+        value
+            .split(',')
+            .filter_map(|entry| {
+                let entry = entry.trim();
+                if entry.is_empty() {
+                    return None;
+                }
+                parse_alarm_entry(entry)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn single_two_part_entry() {
+        let results = parse_alarm_value("America/Chicago:1775012160");
+        assert_eq!(results.len(), 1);
+        let (epoch, tz, label) = &results[0];
+        assert_eq!(*epoch, 1775012160);
+        assert_eq!(tz, "America/Chicago");
+        assert_eq!(*label, None);
+    }
+
+    #[test]
+    fn single_three_part_entry_with_label() {
+        let results = parse_alarm_value("Birthday:America/Chicago:1775012160");
+        assert_eq!(results.len(), 1);
+        let (epoch, tz, label) = &results[0];
+        assert_eq!(*epoch, 1775012160);
+        assert_eq!(tz, "America/Chicago");
+        assert_eq!(*label, Some("Birthday".to_string()));
+    }
+
+    #[test]
+    fn comma_separated_two_entries() {
+        let results = parse_alarm_value("America/Chicago:1775012160,America/New_York:1893456000");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].1, "America/Chicago");
+        assert_eq!(results[1].1, "America/New_York");
+        assert_eq!(results[0].2, None);
+        assert_eq!(results[1].2, None);
+    }
+
+    #[test]
+    fn comma_separated_mixed_label_and_no_label() {
+        let results =
+            parse_alarm_value("Birthday:America/Chicago:1775012160,America/New_York:1893456000");
+        assert_eq!(results.len(), 2);
+        let (_, tz0, lbl0) = &results[0];
+        let (_, tz1, lbl1) = &results[1];
+        assert_eq!(tz0, "America/Chicago");
+        assert_eq!(*lbl0, Some("Birthday".to_string()));
+        assert_eq!(tz1, "America/New_York");
+        assert_eq!(*lbl1, None);
+    }
+
+    #[test]
+    fn whitespace_around_entries_is_trimmed() {
+        // The URL percent_decode step may leave spaces be sure we handle those cases.
+        let results = parse_alarm_value("  America/Chicago:1775012160  ,  UTC:1893456000  ");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].1, "America/Chicago");
+        assert_eq!(results[1].1, "UTC");
+    }
+
+    #[test]
+    fn empty_entry_from_leading_comma_is_skipped() {
+        // Leading or trailing , producing blank things to parse that should be ignored
+        let results = parse_alarm_value(",America/Chicago:1775012160,");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1, "America/Chicago");
+    }
+
+    #[test]
+    fn all_whitespace_entry_is_skipped() {
+        let results = parse_alarm_value("   ,America/Chicago:1775012160");
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn invalid_entry_is_skipped_valid_ok() {
+        let results = parse_alarm_value("notvalid,America/Chicago:1775012160");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1, "America/Chicago");
+    }
+
+    #[test]
+    fn all_invalid_entries_returns_empty() {
+        let results = parse_alarm_value("bad,alsoBad,stillBad");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn entirely_empty_value_returns_empty() {
+        let results = parse_alarm_value("");
+        assert!(results.is_empty());
+    }
 }

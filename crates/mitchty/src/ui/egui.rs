@@ -195,6 +195,7 @@ fn settings_ui(
     mut active_post: ResMut<ActivePost>,
     mut active_shader: ResMut<ActiveShader>,
     available_shaders: Res<AvailableShaders>,
+    mut plot_query: Query<&mut Visibility, With<flan::PlotUiNode>>,
     mut commands: Commands,
 ) -> Result {
     if show_egui_query.is_empty() {
@@ -270,7 +271,6 @@ fn settings_ui(
                         commands.entity(entity).despawn();
                     }
                 }
-
                 ui.separator();
 
                 ui.label(egui::RichText::new("Background color").strong());
@@ -338,10 +338,9 @@ fn settings_ui(
                 }
             });
 
-            // Push "About" to the right side of the menu bar for build info and
-            // attribution stuff I put off till now. Even though my data
-            // detection build pipeline for kanji is sus lets attribute things
-            // so everyone knows what I used.
+            // About and Experiments ar on the RHS of the menu bar. NOte due to
+            // the ordering stuff to the left aka Experiments goes after the
+            // About definition.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.menu_button("About", |ui| {
                     ui.hyperlink_to("GitHub Repo", lib::build_info::GIT_REPO);
@@ -372,6 +371,22 @@ fn settings_ui(
                     ui.separator();
                     ui.label("Kanjivg");
                     ui.hyperlink("https://kanjivg.tagaini.net");
+                });
+
+                ui.menu_button("Experiments", |ui| {
+                    let mut line_graph_visible = plot_query
+                        .single()
+                        .map(|v| *v != Visibility::Hidden)
+                        .unwrap_or(false);
+                    if ui.checkbox(&mut line_graph_visible, "Line Graph").changed()
+                        && let Ok(mut vis) = plot_query.single_mut()
+                    {
+                        *vis = if line_graph_visible {
+                            Visibility::Visible
+                        } else {
+                            Visibility::Hidden
+                        };
+                    }
                 });
             });
         });

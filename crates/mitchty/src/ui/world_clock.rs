@@ -144,6 +144,9 @@ pub struct AlarmEntry {
     pub target_ts: Timestamp,
     /// The IANA timezone used for the alarm.
     pub label_tz: String,
+    /// Optional human-readable label. When set the 3D countdown reads
+    /// `"<label> in <countdown>"` instead of the bare countdown.
+    pub label: Option<String>,
 }
 
 /// Transient state for the alarm picker popup.
@@ -159,6 +162,8 @@ pub struct AlarmState {
     pub second: u8,
     /// Screen position where the popup is anchored.
     pub spawn_pos: egui::Pos2,
+    /// Optional label for the alarm.
+    pub label: String,
 }
 
 impl AlarmState {
@@ -178,6 +183,7 @@ impl AlarmState {
                 minute: 0,
                 second: 0,
                 spawn_pos,
+                label: String::new(),
             };
         }
         Self {
@@ -189,6 +195,7 @@ impl AlarmState {
             minute: 0,
             second: 0,
             spawn_pos,
+            label: String::new(),
         }
     }
 
@@ -315,7 +322,7 @@ impl WorldClockState {
     /// the windows state and pass that back in via args or query params later.
     pub fn from_config(
         initial_timezones: &[String],
-        initial_alarms: &[(Timestamp, String)],
+        initial_alarms: &[(Timestamp, String, Option<String>)],
         initial_sort_col: SortColumn,
         initial_sort_dir: SortDir,
         initial_pinned: Option<Timestamp>,
@@ -328,10 +335,11 @@ impl WorldClockState {
             state.timezones = tzs;
         }
 
-        for (ts, tz) in initial_alarms {
+        for (ts, tz, label) in initial_alarms {
             state.alarms.push(AlarmEntry {
                 target_ts: *ts,
                 label_tz: tz.clone(),
+                label: label.clone(),
             });
         }
 
@@ -564,7 +572,7 @@ fn draw_picker_popup(ctx: &egui::Context, edit: &mut EditState) -> (Option<Times
                     if let Some((time, date, offset, ..)) = format_tz(ts, &edit.tz) {
                         format!("{date}  {time}  ({offset})")
                     } else {
-                        "—".to_string()
+                        "-".to_string()
                     }
                 }
                 None => "Invalid date/time".to_string(),
@@ -617,7 +625,8 @@ fn days_in_month(year: i32, month: u8) -> u8 {
 /// timezone.
 ///
 /// Returns:
-/// - `(Some((ts, tz)), false)` when the user clicks apply with a valid future time.
+/// - `(Some((ts, tz, label)), false)` when the user clicks apply with a valid future time.
+///   `label` is `Some(text)` when the user filled in the optional label field.
 /// - `(None, true)` when the user clicks cancel.
 /// - `(None, false)` while the popup is still open and people are dilly dallying about.
 fn draw_alarm_popup(
@@ -625,8 +634,8 @@ fn draw_alarm_popup(
     alarm: &mut AlarmState,
     now: Timestamp,
     available_tzs: &[String],
-) -> (Option<(Timestamp, String)>, bool) {
-    let mut confirmed: Option<(Timestamp, String)> = None;
+) -> (Option<(Timestamp, String, Option<String>)>, bool) {
+    let mut confirmed: Option<(Timestamp, String, Option<String>)> = None;
     let mut cancelled = false;
 
     const MONTH_NAMES: [&str; 12] = [
@@ -735,6 +744,14 @@ fn draw_alarm_popup(
 
             ui.add_space(4.0);
 
+            // Optional label row.
+            ui.horizontal(|ui| {
+                ui.label("Label (optional):");
+                ui.text_edit_singleline(&mut alarm.label);
+            });
+
+            ui.add_space(4.0);
+
             // Preview.
             let maybe_ts = alarm.to_timestamp();
             let is_future = maybe_ts.map(|ts| ts > now).unwrap_or(false);
@@ -774,7 +791,12 @@ fn draw_alarm_popup(
                     .clicked()
                     && let Some(ts) = alarm.to_timestamp()
                 {
-                    confirmed = Some((ts, alarm.tz.clone()));
+                    let label = alarm.label.trim().to_string();
+                    confirmed = Some((
+                        ts,
+                        alarm.tz.clone(),
+                        if label.is_empty() { None } else { Some(label) },
+                    ));
                 }
                 if ui.button("✖ Cancel").clicked() {
                     cancelled = true;
@@ -805,6 +827,35 @@ fn format_elapsed(target: Timestamp, now: Timestamp) -> String {
     )
 }
 
+/// Parse a single alarm entry string in the form `[LABEL:]TZ:EPOCH`.
+///
+/// For "backwards compat" this allows for `string:tz:epoch` and `tz:epoch` to
+/// parse the same so I don't have to update any docs that might have links in
+/// em.
+///
+/// Returns `(epoch_secs, tz, label)` on success, `None` on any parse failure.
+pub(crate) fn parse_alarm_entry(entry: &str) -> Option<(i64, String, Option<String>)> {
+    let (prefix, epoch_str) = entry.rsplit_once(':')?;
+    let epoch: i64 = epoch_str.trim().parse().ok()?;
+    // TODO: Future mitch refactor this is jank af
+    let (label, tz) = if let Some((lbl, tz)) = prefix.rsplit_once(':') {
+        (Some(lbl.trim().to_string()), tz.trim().to_string())
+    } else {
+        (None, prefix.trim().to_string())
+    };
+    Some((epoch, tz, label))
+}
+
+/// Serialize a single alarm back into ^^^ what that expects to parse
+///
+/// Produces `LABEL:TZ:EPOCH` when a label is present, `TZ:EPOCH` otherwise for backwards compat.
+pub(crate) fn format_alarm_entry(label_tz: &str, epoch: i64, label: Option<&str>) -> String {
+    match label {
+        Some(lbl) => format!("{}:{}:{}", lbl, label_tz, epoch),
+        None => format!("{}:{}", label_tz, epoch),
+    }
+}
+
 /// Build the shareable string that reconstructs the current world clock layout.
 ///
 /// - **Native**: returns a CLI arg string you could use to get to this setup ex:
@@ -812,10 +863,9 @@ fn format_elapsed(target: Timestamp, now: Timestamp) -> String {
 /// - **WASM**: returns a full URL using the current `window.location` origin +
 ///   pathname, e.g. `https://example.com/?app=world-clock&tz=UTC%2CAmerica%2FNew_York&sort=offset`
 ///
-/// Alarms are serialised as `TZ:EPOCH_SECS`. Sort is only included when a
+/// Alarms are serialized as `[LABEL:]TZ:EPOCH_SECS`. Sort is only included when a
 /// non-None column is active. Pinned time is only included when the clock is
 /// frozen aka you were actively looking at a historical time.
-// TODO: This also needs to be yeeted into a library and have unit tests.
 fn build_share_string(
     timezones: &[String],
     alarms: &[AlarmEntry],
@@ -834,7 +884,7 @@ fn build_share_string(
 
     let alarm_parts: Vec<String> = alarms
         .iter()
-        .map(|a| format!("{}:{}", a.label_tz, a.target_ts.as_second()))
+        .map(|a| format_alarm_entry(&a.label_tz, a.target_ts.as_second(), a.label.as_deref()))
         .collect();
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -892,9 +942,16 @@ fn build_share_string(
         }
 
         for a in &alarm_parts {
-            // Encode TZ part but leave the colon separator and digits as-is.
-            if let Some((tz, epoch)) = a.split_once(':') {
-                params.push(format!("alarm={}%3A{}", url_encode(tz), epoch));
+            // Split on the LAST colon: to mimic the clap arg parsing for
+            // string:tz:epoch. Each colon in the prefix gets encoded as %3A and
+            // slashes in tz names get encoded by url_encode as before.
+            if let Some((prefix, epoch)) = a.rsplit_once(':') {
+                let encoded_prefix = prefix
+                    .split(':')
+                    .map(url_encode)
+                    .collect::<Vec<_>>()
+                    .join("%3A");
+                params.push(format!("alarm={}%3A{}", encoded_prefix, epoch));
             }
         }
 
@@ -1391,7 +1448,7 @@ pub fn world_clock_window(
 
                                     if let Some(local_mins) = local_offset_mins {
                                         if is_local {
-                                            // This is the reference row — no diff to show.
+                                            // This is the reference row - no diff to show.
                                             ui.label(
                                                 egui::RichText::new("+00:00")
                                                     .color(egui::Color32::GRAY),
@@ -1545,7 +1602,13 @@ pub fn world_clock_window(
                             } else {
                                 egui::Color32::from_rgb(255, 220, 80)
                             };
-                            ui.label(egui::RichText::new(&alarm_entry.label_tz).color(color));
+                            // Timezone + optional label.
+                            let tz_label = if let Some(lbl) = &alarm_entry.label {
+                                format!("{} ({})", lbl, alarm_entry.label_tz)
+                            } else {
+                                alarm_entry.label_tz.clone()
+                            };
+                            ui.label(egui::RichText::new(&tz_label).color(color));
                             if let Some((time, date, ..)) =
                                 format_tz(alarm_entry.target_ts, &alarm_entry.label_tz)
                             {
@@ -1654,10 +1717,11 @@ pub fn world_clock_window(
     let mut close_alarm_edit = false;
     if let Some(alarm_edit) = state.editing_alarm.as_mut() {
         let (confirmed, cancelled) = draw_alarm_popup(ctx, alarm_edit, live_now, &tzs_snapshot);
-        if let Some((ts, tz)) = confirmed {
+        if let Some((ts, tz, label)) = confirmed {
             state.alarms.push(AlarmEntry {
                 target_ts: ts,
                 label_tz: tz,
+                label,
             });
             close_alarm_edit = true;
         } else if cancelled {
@@ -1673,4 +1737,157 @@ pub fn world_clock_window(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_alarm_entry, parse_alarm_entry};
+
+    #[test]
+    fn parse_two_form_plain_tz() {
+        // Ye olde tz:epoch form
+        let (epoch, tz, label) = parse_alarm_entry("UTC:1893456000").unwrap();
+        assert_eq!(epoch, 1893456000);
+        assert_eq!(tz, "UTC");
+        assert_eq!(label, None);
+    }
+
+    #[test]
+    fn parse_two_form_iana_slash_tz() {
+        // IANA tz names contain '/'s which we don't want to parse as a uri indicator
+        let (epoch, tz, label) = parse_alarm_entry("America/New_York:1893456000").unwrap();
+        assert_eq!(epoch, 1893456000);
+        assert_eq!(tz, "America/New_York");
+        assert_eq!(label, None);
+    }
+
+    #[test]
+    fn parse_three_form_with_label() {
+        // new hotness 3 form with a label, such features!
+        let (epoch, tz, label) = parse_alarm_entry("Birthday:America/New_York:1893456000").unwrap();
+        assert_eq!(epoch, 1893456000);
+        assert_eq!(tz, "America/New_York");
+        assert_eq!(label, Some("Birthday".to_string()));
+    }
+
+    #[test]
+    fn parse_three_form_label_with_space() {
+        // Labels may contain spaces too cause yeah
+        let (epoch, tz, label) =
+            parse_alarm_entry("My Birthday:America/Chicago:1775012160").unwrap();
+        assert_eq!(epoch, 1775012160);
+        assert_eq!(tz, "America/Chicago");
+        assert_eq!(label, Some("My Birthday".to_string()));
+    }
+
+    #[test]
+    fn parse_three_form_iana_tz_path() {
+        // Some IANA names have two slashes e.g. America/Indiana/Indianapolis
+        let (epoch, tz, label) =
+            parse_alarm_entry("Meeting:America/Indiana/Indianapolis:1893456000").unwrap();
+        assert_eq!(epoch, 1893456000);
+        assert_eq!(tz, "America/Indiana/Indianapolis");
+        assert_eq!(label, Some("Meeting".to_string()));
+    }
+
+    #[test]
+    fn parse_trims_whitespace() {
+        //  Tolerate surrounding whitespace from comma-split entries just in
+        //  case someone starts building these manually like a weirdo.
+        let (epoch, tz, label) = parse_alarm_entry("  UTC : 1893456000 ").unwrap();
+        assert_eq!(epoch, 1893456000);
+        // The tz/label trimming is on the prefix/suffix, not mid-name
+        assert_eq!(tz, "UTC");
+        assert_eq!(label, None);
+    }
+
+    #[test]
+    fn parse_bad_epoch_returns_none() {
+        assert!(parse_alarm_entry("America/New_York:notanumber").is_none());
+    }
+
+    #[test]
+    fn parse_missing_colon_returns_none() {
+        // No colon at all means we cannot split epoch from tz
+        assert!(parse_alarm_entry("1893456000").is_none());
+    }
+
+    #[test]
+    fn parse_empty_string_returns_none() {
+        assert!(parse_alarm_entry("").is_none());
+    }
+
+    #[test]
+    fn parse_epoch_only_colon_prefix_empty() {
+        // I think in this instance maybe we just default to UTC here?
+        // TODO: future mitch brain on it longer
+        // ":1893456000" — prefix is empty string, tz would be "", which is
+        // technically Some("") but we still return it (callers validate the tz)
+        let (epoch, tz, label) = parse_alarm_entry(":1893456000").unwrap();
+        assert_eq!(epoch, 1893456000);
+        assert_eq!(tz, "");
+        assert_eq!(label, None);
+    }
+
+    #[test]
+    fn format_no_label_two_form() {
+        assert_eq!(
+            format_alarm_entry("UTC", 1893456000, None),
+            "UTC:1893456000"
+        );
+    }
+
+    #[test]
+    fn format_no_label_iana_slash() {
+        assert_eq!(
+            format_alarm_entry("America/New_York", 1893456000, None),
+            "America/New_York:1893456000"
+        );
+    }
+
+    #[test]
+    fn format_with_label_three_form() {
+        assert_eq!(
+            format_alarm_entry("America/New_York", 1893456000, Some("Birthday")),
+            "Birthday:America/New_York:1893456000"
+        );
+    }
+
+    #[test]
+    fn format_with_label_with_space() {
+        assert_eq!(
+            format_alarm_entry("America/Chicago", 1775012160, Some("My Birthday")),
+            "My Birthday:America/Chicago:1775012160"
+        );
+    }
+
+    // God I hope none of this ever fails but in case it does make sure it round
+    // trips fine and hopefully I got enough tests to make this useful in future.
+    #[test]
+    fn round_trip_no_label() {
+        let serialized = format_alarm_entry("Asia/Tokyo", 1893456000, None);
+        let (epoch, tz, label) = parse_alarm_entry(&serialized).unwrap();
+        assert_eq!(epoch, 1893456000);
+        assert_eq!(tz, "Asia/Tokyo");
+        assert_eq!(label, None);
+    }
+
+    #[test]
+    fn round_trip_with_label() {
+        let serialized = format_alarm_entry("Europe/Paris", 1893456000, Some("New Year"));
+        let (epoch, tz, label) = parse_alarm_entry(&serialized).unwrap();
+        assert_eq!(epoch, 1893456000);
+        assert_eq!(tz, "Europe/Paris");
+        assert_eq!(label, Some("New Year".to_string()));
+    }
+
+    #[test]
+    fn round_trip_iana_tz_with_label() {
+        let serialized =
+            format_alarm_entry("America/Indiana/Indianapolis", 1893456000, Some("Sprint"));
+        let (epoch, tz, label) = parse_alarm_entry(&serialized).unwrap();
+        assert_eq!(epoch, 1893456000);
+        assert_eq!(tz, "America/Indiana/Indianapolis");
+        assert_eq!(label, Some("Sprint".to_string()));
+    }
 }

@@ -128,6 +128,7 @@ fn setup_plot_ui(
             height: Val::Px(200.0),
             ..default()
         },
+        Visibility::Hidden,
         MaterialNode(material),
         PlotUiNode,
     ));

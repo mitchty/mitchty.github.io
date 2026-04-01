@@ -58,10 +58,11 @@ pub struct UiConfig {
     /// these replace the hardcoded defaults. Each entry is an IANA tz name.
     pub initial_timezones: Vec<String>,
 
-    /// Pre-seeded alarms for World Clock. Each entry is a simple tuple of
-    /// `(utc_timestamp, iana_tz)`. The timestamp is the exact UTC moment the
-    /// alarm fires; tz is just for display purposes.
-    pub initial_alarms: Vec<(Timestamp, String)>,
+    /// Pre-seeded alarms for World Clock. Each entry is a tuple of
+    /// `(utc_timestamp, iana_tz, optional_label)`. The timestamp is the exact
+    /// UTC moment the alarm fires; tz is for display; label is the optional
+    /// human-readable name shown in the 3D countdown text.
+    pub initial_alarms: Vec<(Timestamp, String, Option<String>)>,
 
     /// Initial sort column for the World Clock table. `None` means insertion order.
     pub initial_sort_col: SortColumn,
