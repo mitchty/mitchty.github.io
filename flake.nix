@@ -657,6 +657,24 @@
           }
         );
 
+        # Release build of the plain ma binary with wgpu backend
+        ma = craneLib.buildPackage (
+          commonArgs
+          // nixEnvArgs
+          // releaseArgs
+          // {
+            pname = "ma";
+            cargoArtifacts = cargoArtifactsRelease;
+            cargoExtraArgs = "-p ma --bin ma";
+            src = fileSetForCrate ./crates/ma;
+            doCheck = false;
+            meta = {
+              description = "ma nn utility cli";
+              mainProgram = "ma";
+            };
+          }
+        );
+
         # Pugio dep graph: runs pugio inside a crane derivation so the result
         # is nix-cached and reuses cargoArtifactsRelease. Output is a single
         # SVG showing the mitchty crate dep graph with cumulative size colouring.
@@ -1065,6 +1083,7 @@
           inherit
             mitchty
             mitchty-lto
+            ma
             ci-pugio-graph
             ci-record-sizes
             mitchty-wasm
@@ -1102,6 +1121,14 @@
             // {
               meta = metaCommon "LTO optimized build";
             };
+          ma = {
+            type = "app";
+            program = "${ma}/bin/ma";
+            meta = {
+              description = "ma nn utility cli";
+              mainProgram = "ma";
+            };
+          };
           default = self.apps.${system}.mitchty;
           ci-record-sizes = {
             type = "app";
