@@ -100,6 +100,14 @@ impl Default for AvailableShaders {
                 name: "em-interference".to_string(),
                 display_name: "EM Interference".to_string(),
             },
+            ShaderInfo {
+                name: "oil-painting".to_string(),
+                display_name: "Oil Painting".to_string(),
+            },
+            ShaderInfo {
+                name: "edge-cartoon".to_string(),
+                display_name: "Edge Cartoon".to_string(),
+            },
         ];
 
         Self { shaders }

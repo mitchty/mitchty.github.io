@@ -76,5 +76,7 @@ impl Plugin for ShadersPlugin {
         bevy::asset::embedded_asset!(app, "fullscreen/chromatic-aberration.wesl");
         bevy::asset::embedded_asset!(app, "fullscreen/vhs-effect.wesl");
         bevy::asset::embedded_asset!(app, "fullscreen/em-interference.wesl");
+        bevy::asset::embedded_asset!(app, "fullscreen/oil-painting.wesl");
+        bevy::asset::embedded_asset!(app, "fullscreen/edge-cartoon.wesl");
     }
 }
