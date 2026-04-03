@@ -195,9 +195,14 @@ pub fn manage_effect_settings(
     }
 }
 
-/// Update time uniform for animated effects
+/// Update time uniform for animated effects.
+///
+/// Clamp the time effect to 60 seconds as a period. Note the period if depended
+/// upon will reset.
+const TIME_PERIOD_SECS: f32 = 60.0;
+
 pub fn update_effect_time(time: Res<Time>, mut settings_query: Query<&mut PostProcessSettings>) {
-    let current_time = time.elapsed_secs();
+    let current_time = time.elapsed_secs() % TIME_PERIOD_SECS;
 
     for mut settings in settings_query.iter_mut() {
         settings.time = current_time;
