@@ -95,31 +95,54 @@ static DEFAULT_MODEL_WEIGHTS: &[u8] = include_bytes!("../assets/models/default/m
 /// Oneshot system, after insertion noto sans jp is inserted to the end of every
 /// fontfamily so that latin/ascii uses default font and other codepoints
 /// hopefully get hit with noto sans jp for kanji et al.
-fn configure_egui_style(mut contexts: EguiContexts, mut done: Local<bool>) -> Result {
-    if *done {
-        return Ok(());
-    }
-    *done = true;
-
+///
+/// Runs every frame but only mutates when the egui theme has changed so that
+/// the +4 font-size bump is re-applied after a light/dark theme switch.
+/// `global_theme_preference_switch` resets the style to egui built-in
+/// defaults when the theme changes which basically resets everything.
+// TODO: Need a better way to deal with gooey colors/text this is ass to deal
+// with onesie twosie.
+fn configure_egui_style(
+    mut contexts: EguiContexts,
+    mut last_theme: Local<Option<egui::ThemePreference>>,
+) -> Result {
     let ctx = contexts.ctx_mut()?;
+    let current_theme = ctx.options(|o| o.theme_preference);
 
-    let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        "NotoSansJP".to_owned(),
-        egui::FontData::from_static(NOTO_SANS_JP).into(),
-    );
+    let first_run = last_theme.is_none();
+    let theme_changed = last_theme.is_none_or(|t| t != current_theme);
 
-    // Only use noto sans jp for anything that fails to render in a latin subset
-    for family_data in fonts.families.values_mut() {
-        family_data.push("NotoSansJP".to_owned());
-    }
-    ctx.set_fonts(fonts);
-
-    ctx.style_mut(|style| {
-        for font_id in style.text_styles.values_mut() {
-            font_id.size += 4.0;
+    if first_run {
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "NotoSansJP".to_owned(),
+            egui::FontData::from_static(NOTO_SANS_JP).into(),
+        );
+        // Only use noto sans jp for anything that fails to render in a latin
+        // character subset.
+        for family_data in fonts.families.values_mut() {
+            family_data.push("NotoSansJP".to_owned());
         }
-    });
+        ctx.set_fonts(fonts);
+    }
+
+    if theme_changed {
+        // Re-apply the size bump on top of whichever built-in theme was just
+        // loaded; without this a light/dark switch resets sizes to egui
+        // defaults and it looks jank.
+        //
+        // We derive absolute target sizes from a fresh Style::default() so we
+        // don't just keep size going up when the theme changes back and forth.
+        let base = egui::Style::default();
+        ctx.style_mut(|style| {
+            for (text_style, font_id) in style.text_styles.iter_mut() {
+                if let Some(base_font) = base.text_styles.get(text_style) {
+                    font_id.size = base_font.size + 4.0;
+                }
+            }
+        });
+        *last_theme = Some(current_theme);
+    }
 
     Ok(())
 }
@@ -342,6 +365,7 @@ fn settings_ui(
             // the ordering stuff to the left aka Experiments goes after the
             // About definition.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                crate::ui::egui::egui::widgets::global_theme_preference_switch(ui);
                 ui.menu_button("About", |ui| {
                     ui.hyperlink_to("GitHub Repo", lib::build_info::GIT_REPO);
                     ui.separator();
@@ -374,18 +398,22 @@ fn settings_ui(
                 });
 
                 ui.menu_button("Experiments", |ui| {
-                    let mut line_graph_visible = plot_query
+                    let line_graph_visible = plot_query
                         .single()
                         .map(|v| *v != Visibility::Hidden)
                         .unwrap_or(false);
-                    if ui.checkbox(&mut line_graph_visible, "Line Graph").changed()
-                        && let Ok(mut vis) = plot_query.single_mut()
+                    if ui
+                        .selectable_label(line_graph_visible, "Line Graph")
+                        .clicked()
                     {
-                        *vis = if line_graph_visible {
-                            Visibility::Visible
-                        } else {
-                            Visibility::Hidden
-                        };
+                        if let Ok(mut vis) = plot_query.single_mut() {
+                            *vis = if line_graph_visible {
+                                Visibility::Hidden
+                            } else {
+                                Visibility::Visible
+                            };
+                        }
+                        ui.close();
                     }
                 });
             });
