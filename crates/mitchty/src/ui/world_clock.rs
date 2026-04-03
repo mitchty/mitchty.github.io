@@ -180,7 +180,7 @@ impl AlarmState {
                 month: zdt.month() as u8,
                 day: zdt.day() as u8,
                 hour: zdt.hour() as u8,
-                minute: 0,
+                minute: zdt.minute() as u8,
                 second: 0,
                 spawn_pos,
                 label: String::new(),
@@ -242,8 +242,9 @@ pub struct WorldClockState {
     /// History of all pinned timestamps the user has applied, oldest first.
     pub time_history: Vec<Timestamp>,
 
-    /// Index into `time_history` of the currently displayed pinned time.
-    /// Only meaningful when `pinned_time.is_some()`.
+    /// Index into `time_history` of the currently displayed pinned time. Only
+    /// meaningful when `pinned_time.is_some()`. Used for editing the optional
+    /// alarm text.
     pub history_cursor: usize,
 
     /// Active edit popup state. None = no popup open.
@@ -259,6 +260,13 @@ pub struct WorldClockState {
     /// Stores the `Timestamp` of the click so we can show a brief "✔ Copied!"
     /// label for about 2 seconds and then revert back to the normal label.
     pub copy_feedback_until: Option<Timestamp>,
+
+    /// Index of the alarm whose label is currently being edited inline.
+    /// None = no inline edit in progress.
+    pub editing_label: Option<usize>,
+
+    /// Scratch buffer for the inline label text edit.
+    pub label_edit_buf: String,
 }
 
 /// Resolve the IANA name of the system's local timezone.
@@ -312,6 +320,8 @@ impl Default for WorldClockState {
             alarms: Vec::new(),
             editing_alarm: None,
             copy_feedback_until: None,
+            editing_label: None,
+            label_edit_buf: String::new(),
         }
     }
 }
@@ -675,7 +685,7 @@ fn draw_alarm_popup(
                                 alarm.month = zdt.month() as u8;
                                 alarm.day = zdt.day() as u8;
                                 alarm.hour = zdt.hour() as u8;
-                                alarm.minute = 0;
+                                alarm.minute = zdt.minute() as u8;
                                 alarm.second = 0;
                             }
                         }
@@ -736,7 +746,15 @@ fn draw_alarm_popup(
                     .width(60.0)
                     .show_ui(ui, |ui| {
                         for m in 0u8..=59 {
-                            ui.selectable_value(&mut alarm.minute, m, format!("{:02}", m));
+                            let resp =
+                                ui.selectable_value(&mut alarm.minute, m, format!("{:02}", m));
+                            // Scroll the list so the pre-selected minute is
+                            // visible when the dropdown first opens. I got sick
+                            // of figuring out what minute it is to set an alarm
+                            // for the next minute.
+                            if m == alarm.minute {
+                                resp.scroll_to_me(Some(egui::Align::Center));
+                            }
                         }
                     });
             });
@@ -1080,6 +1098,7 @@ pub fn world_clock_window(
     // Apply sort if a sort is present.
     let sort_col = state.sort_col;
     let sort_dir = state.sort_dir;
+
     if sort_col != SortColumn::None {
         rows.sort_by(|a, b| {
             let ord = match sort_col {
@@ -1109,6 +1128,16 @@ pub fn world_clock_window(
         });
     }
 
+    let ctx = contexts.ctx_mut()?;
+
+    // `visuals.dark_mode` is the single source of truth egui sets after
+    // resolving the system preference, so this is correct for all three states
+    // of ThemePreference Light/Dark/System
+    //
+    // This is a hack and its getting late but this logic is jank so I need to
+    // probably figure out a better theming approach in general.
+    let is_light_mode = !ctx.style().visuals.dark_mode;
+
     let header_btn = |ui: &mut egui::Ui,
                       label: &str,
                       col: SortColumn,
@@ -1124,12 +1153,27 @@ pub fn world_clock_window(
         } else {
             " ⇅"
         };
+        let (active_color, inactive_color) = if is_light_mode {
+            // Dark indigo active, mid-grey inactive both readable on white background
+            // TODO: Future me should make constants too many magic numbers but
+            // I'm tired.
+            (
+                egui::Color32::from_rgb(60, 60, 180),
+                egui::Color32::from_rgb(90, 90, 90),
+            )
+        } else {
+            // Light-lavender palette works fine on dark background themes.
+            (
+                egui::Color32::from_rgb(220, 220, 255),
+                egui::Color32::from_rgb(150, 150, 210),
+            )
+        };
         let text = egui::RichText::new(format!("{label}{indicator}"))
             .strong()
             .color(if cur_col == col {
-                egui::Color32::from_rgb(220, 220, 255)
+                active_color
             } else {
-                egui::Color32::from_rgb(150, 150, 210)
+                inactive_color
             });
         ui.button(text).clicked()
     };
@@ -1140,6 +1184,10 @@ pub fn world_clock_window(
     let mut open_alarm_edit = false;
     let mut alarm_edit_pos = egui::Pos2::ZERO;
     let mut remove_alarm: Option<usize> = None;
+
+    let mut start_label_edit: Option<(usize, String)> = None;
+    let mut commit_label_edit: Option<(usize, String)> = None;
+    let mut cancel_label_edit = false;
 
     let mut go_live = false;
     let mut go_back = false;
@@ -1153,13 +1201,17 @@ pub fn world_clock_window(
 
     let mut open = true;
 
-    let ctx = contexts.ctx_mut()?;
-
     egui::Window::new("World Clock")
         .open(&mut open)
         .auto_sized()
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
+                let theme_text_color = if is_light_mode {
+                    egui::Color32::BLACK
+                } else {
+                    egui::Color32::WHITE
+                };
+
                 // Copy-link/command button is first for no raisin.
                 {
                     let now_ts = Timestamp::now();
@@ -1168,15 +1220,23 @@ pub fn world_clock_window(
                         .map(|until| now_ts < until)
                         .unwrap_or(false);
 
-                    let btn_label = if showing_feedback {
-                        egui::RichText::new("✔ Copied!")
-                            .color(egui::Color32::from_rgb(100, 220, 100))
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let copy_text = "📋 Copy Command";
+                    #[cfg(target_arch = "wasm32")]
+                    let copy_text = "📋 Copy Link";
+
+                    // During feedback the button background goes green so the
+                    // success is obvious regardless of theme; text still follows
+                    // the theme colour so it reads on both light and dark green.
+                    let copy_btn = if showing_feedback {
+                        egui::Button::new(egui::RichText::new("✔ Copied!").color(theme_text_color))
+                            .fill(if is_light_mode {
+                                egui::Color32::from_rgb(140, 210, 140)
+                            } else {
+                                egui::Color32::from_rgb(60, 160, 60)
+                            })
                     } else {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        let text = "📋 Copy Command";
-                        #[cfg(target_arch = "wasm32")]
-                        let text = "📋 Copy Link";
-                        egui::RichText::new(text).color(egui::Color32::from_rgb(150, 200, 255))
+                        egui::Button::new(egui::RichText::new(copy_text).color(theme_text_color))
                     };
 
                     #[cfg(not(target_arch = "wasm32"))]
@@ -1184,7 +1244,7 @@ pub fn world_clock_window(
                     #[cfg(target_arch = "wasm32")]
                     let hover = "Copy a shareable URL for this layout";
 
-                    let copy_resp = ui.button(btn_label).on_hover_text(hover);
+                    let copy_resp = ui.add(copy_btn).on_hover_text(hover);
 
                     if copy_resp.clicked() {
                         let link = build_share_string(
@@ -1205,10 +1265,7 @@ pub fn world_clock_window(
 
                 // Alarm button next.
                 let alarm_btn = ui
-                    .button(
-                        egui::RichText::new("🔔 Set Alarm")
-                            .color(egui::Color32::from_rgb(255, 220, 80)),
-                    )
+                    .button(egui::RichText::new("🔔 Set Alarm").color(theme_text_color))
                     .on_hover_text("Set a countdown alarm");
                 if alarm_btn.clicked() {
                     open_alarm_edit = true;
@@ -1223,14 +1280,14 @@ pub fn world_clock_window(
                     if is_pinned {
                         ui.label(
                             egui::RichText::new("🔒 Pinned time not live")
-                                .color(egui::Color32::from_rgb(255, 200, 60))
+                                .color(theme_text_color)
                                 .strong(),
                         );
                     } else {
                         // We have history but currently are in live mode.
                         ui.label(
                             egui::RichText::new("🕐 Live")
-                                .color(egui::Color32::from_rgb(100, 220, 100))
+                                .color(theme_text_color)
                                 .strong(),
                         );
                     }
@@ -1269,10 +1326,7 @@ pub fn world_clock_window(
                     // Go back to Live time.
                     if is_pinned
                         && ui
-                            .button(
-                                egui::RichText::new("↩ Go Live")
-                                    .color(egui::Color32::from_rgb(100, 220, 100)),
-                            )
+                            .button(egui::RichText::new("↩ Go Live").color(theme_text_color))
                             .on_hover_text("Return to live clock")
                             .clicked()
                     {
@@ -1281,10 +1335,7 @@ pub fn world_clock_window(
 
                     // Clear all history.
                     if ui
-                        .button(
-                            egui::RichText::new("🗑 Clear")
-                                .color(egui::Color32::from_rgb(220, 100, 100)),
-                        )
+                        .button(egui::RichText::new("🗑 Clear").color(theme_text_color))
                         .on_hover_text("Clear all pinned time history")
                         .clicked()
                     {
@@ -1377,17 +1428,37 @@ pub fn world_clock_window(
                                     );
                                 }
 
-                                ui.label(if is_local {
-                                    egui::RichText::new(format!("★ {}", row.name))
-                                        .strong()
-                                        .color(egui::Color32::WHITE)
+                                // Local timezone: gold star + bold text (black
+                                // in light, white in dark). Two labels inside a
+                                // horizontal span so we can color the star
+                                // independently from the name text.
+                                if is_local {
+                                    let text_color = if is_light_mode {
+                                        egui::Color32::BLACK
+                                    } else {
+                                        egui::Color32::WHITE
+                                    };
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("★")
+                                                .strong()
+                                                .color(egui::Color32::from_rgb(255, 210, 0)),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(row.name.as_str())
+                                                .strong()
+                                                .color(text_color),
+                                        );
+                                    });
                                 } else {
-                                    egui::RichText::new(row.name.as_str())
-                                });
+                                    ui.label(egui::RichText::new(row.name.as_str()));
+                                }
 
                                 if row.valid {
                                     let is_off_hours = row.hour < 8 || row.hour >= 17;
-                                    let (normal_color, local_color) = if is_off_hours {
+                                    let (normal_color, local_color) = if is_light_mode {
+                                        (egui::Color32::from_rgb(60, 60, 60), egui::Color32::BLACK)
+                                    } else if is_off_hours {
                                         (
                                             egui::Color32::from_rgb(100, 160, 255),
                                             egui::Color32::from_rgb(140, 200, 255),
@@ -1400,9 +1471,12 @@ pub fn world_clock_window(
                                     };
 
                                     let date_text = if is_local {
-                                        egui::RichText::new(&row.date)
-                                            .strong()
-                                            .color(egui::Color32::WHITE)
+                                        let text_color = if is_light_mode {
+                                            egui::Color32::BLACK
+                                        } else {
+                                            egui::Color32::WHITE
+                                        };
+                                        egui::RichText::new(&row.date).strong().color(text_color)
                                     } else {
                                         egui::RichText::new(&row.date)
                                     };
@@ -1590,27 +1664,59 @@ pub fn world_clock_window(
                     .spacing([8.0, 2.0])
                     .show(ui, |ui| {
                         for &idx in &sorted_indices {
-                            let alarm_entry = &state.alarms[idx];
-                            let is_expired = alarm_entry.target_ts <= live_now;
+                            // Copy out what we need before any mutable borrow of state happens.
+                            let (target_ts, label_tz, alarm_label) = {
+                                let e = &state.alarms[idx];
+                                (e.target_ts, e.label_tz.clone(), e.label.clone())
+                            };
+                            let alarm_entry_target_ts = target_ts;
+                            let alarm_entry_label_tz = label_tz;
+                            let alarm_entry_label = alarm_label;
+                            let is_expired = alarm_entry_target_ts <= live_now;
                             let status = if is_expired {
-                                format_elapsed(alarm_entry.target_ts, live_now)
+                                format_elapsed(alarm_entry_target_ts, live_now)
                             } else {
-                                format_countdown(alarm_entry.target_ts, live_now)
+                                format_countdown(alarm_entry_target_ts, live_now)
                             };
                             let color = if is_expired {
-                                egui::Color32::from_rgb(180, 80, 80)
+                                egui::Color32::GRAY
+                            } else if is_light_mode {
+                                egui::Color32::BLACK
                             } else {
-                                egui::Color32::from_rgb(255, 220, 80)
+                                egui::Color32::WHITE
                             };
-                            // Timezone + optional label.
-                            let tz_label = if let Some(lbl) = &alarm_entry.label {
-                                format!("{} ({})", lbl, alarm_entry.label_tz)
+                            // Timezone + optional label, clickable so I can edit the alarm text.
+                            if state.editing_label == Some(idx) {
+                                // Inline edit field.
+                                let edit_resp = ui.text_edit_singleline(&mut state.label_edit_buf);
+                                // Auto-focus when first opened.
+                                edit_resp.request_focus();
+                                let pressed_enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                let pressed_escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                if pressed_enter || edit_resp.lost_focus() && !pressed_escape {
+                                    commit_label_edit = Some((idx, state.label_edit_buf.clone()));
+                                } else if pressed_escape {
+                                    cancel_label_edit = true;
+                                }
                             } else {
-                                alarm_entry.label_tz.clone()
-                            };
-                            ui.label(egui::RichText::new(&tz_label).color(color));
+                                let tz_label = if let Some(lbl) = &alarm_entry_label {
+                                    format!("{} ({})", lbl, alarm_entry_label_tz)
+                                } else {
+                                    alarm_entry_label_tz.clone()
+                                };
+                                let resp = ui
+                                    .selectable_label(
+                                        false,
+                                        egui::RichText::new(&tz_label).color(color),
+                                    )
+                                    .on_hover_text("Click to edit label");
+                                if resp.clicked() {
+                                    start_label_edit =
+                                        Some((idx, alarm_entry_label.clone().unwrap_or_default()));
+                                }
+                            }
                             if let Some((time, date, ..)) =
-                                format_tz(alarm_entry.target_ts, &alarm_entry.label_tz)
+                                format_tz(alarm_entry_target_ts, &alarm_entry_label_tz)
                             {
                                 ui.label(
                                     egui::RichText::new(format!("{date}  {time}"))
@@ -1640,6 +1746,32 @@ pub fn world_clock_window(
         && idx < state.alarms.len()
     {
         state.alarms.remove(idx);
+    }
+
+    // Open inline label so a user can edit the clicked alarm optional text.
+    if let Some((idx, current)) = start_label_edit {
+        state.editing_label = Some(idx);
+        state.label_edit_buf = current;
+    }
+
+    // Commit inline label edits.
+    if let Some((idx, new_label)) = commit_label_edit
+        && idx < state.alarms.len()
+    {
+        let trimmed = new_label.trim().to_string();
+        state.alarms[idx].label = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        };
+        state.editing_label = None;
+        state.label_edit_buf = String::new();
+    }
+
+    // Cancel inline label edit.
+    if cancel_label_edit {
+        state.editing_label = None;
+        state.label_edit_buf = String::new();
     }
 
     if clear_history {
@@ -1821,7 +1953,7 @@ mod tests {
     fn parse_epoch_only_colon_prefix_empty() {
         // I think in this instance maybe we just default to UTC here?
         // TODO: future mitch brain on it longer
-        // ":1893456000" — prefix is empty string, tz would be "", which is
+        // ":1893456000" prefix is empty string, tz would be "", which is
         // technically Some("") but we still return it (callers validate the tz)
         let (epoch, tz, label) = parse_alarm_entry(":1893456000").unwrap();
         assert_eq!(epoch, 1893456000);
