@@ -174,19 +174,11 @@ jobs:
       - name: Configure Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@main
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Build dep graph and record sizes
+      - name: Run ci script to record pre-release binary sizes after downloading
+        # We'll abuse nix develop to run just to be sure we're running in the
+        # exact same env as I develop in not whatever ubuntu env in github.
         run: |
-          pugio_svg=$(nix build --no-link --print-out-paths .#ci-pugio-graph -L)/deps.svg
-          nix run .#ci-record-sizes -- \
-            artifacts/mitchty-wasm/mitchty_bg.wasm \
-            artifacts/mitchty-windows-x86_64/mitchty-windows-x86_64.exe \
-            artifacts/mitchty-darwin-aarch64/mitchty-darwin-aarch64 \
-            "$pugio_svg"
+          nix develop --command ./bin/ci-record-sizes.sh
 
       - name: Commit build metadata
         run: |

@@ -824,58 +824,6 @@
                 ${wasmBuild}/release-fast/mitchty.wasm
             '';
 
-        # mitchty-wasm =
-        #   let
-        #     wasmBuild = craneLibWasm.buildPackage (
-        #       commonArgsWasm
-        #       // nixEnvArgs
-        #       // devArgs
-        #       // {
-        #         pname = "mitchty-wasm";
-        #         version = version;
-        #         cargoArtifacts = cargoArtifactsWasmDebug;
-        #         cargoExtraArgs = "-p mitchty --features mitchty/webgl";
-        #         src = fileSetForCrate ./crates/mitchty;
-
-        #         STUPIDNIXFLAKEHACK = version;
-
-        #         # Don't run checks for WASM builds
-        #         doCheck = false;
-
-        #         # Don't install binaries - we'll handle WASM files specially
-        #         doInstallCargoArtifacts = false;
-        #         installPhase = ''
-        #           runHook preInstall
-        #           mkdir -p $out
-        #           cp -r target/wasm32-unknown-unknown/debug $out/
-        #           runHook postInstall
-        #         '';
-        #       }
-        #     );
-        #   in
-        #   pkgsWasm.runCommand "mitchty-wasm-bindgen"
-        #     {
-        #       nativeBuildInputs = [
-        #         wasmBindgenCli
-        #         pkgsWasm.binaryen
-        #       ];
-        #     }
-        #     ''
-        #       mkdir -p $out/wasm
-
-        #       # Run wasm-bindgen on the built WASM file
-        #       ${wasmBindgenCli}/bin/wasm-bindgen \
-        #         --out-dir $out/wasm \
-        #         --target web \
-        #         --no-typescript \
-        #         --debug \
-        #         --keep-debug \
-        #         ${wasmBuild}/debug/mitchty.wasm
-
-        #       # Skip wasm-opt for debug builds to preserve debug info
-        #       # The WASM file is already usable from wasm-bindgen
-        #     '';
-
         # Darwin release build (system libraries only, portable)
         mitchty-release-darwin =
           if pkgs.stdenv.isDarwin then
@@ -1012,74 +960,6 @@
             license = with licenses; [ mit ];
           };
         };
-
-        # Shell app for recording binary artifact sizes and dep graph data.
-        # Works both in CI (reads GITHUB_* env vars) and locally (falls back
-        # to git). Copies deps.svg path passed as 4th arg (obtained via
-        # nix build --no-link --print-out-paths .#ci-pugio-graph).
-        #
-        # Usage: nix run .#ci-record-sizes -- <wasm> <win> <mac> <deps.svg>
-        ci-record-sizes = pkgs.writeShellApplication {
-          name = "ci-record-sizes";
-          runtimeInputs = with pkgs; [
-            coreutils
-            git
-            jq
-          ];
-          text = builtins.readFile ./.ci-record-sizes.sh;
-        };
-
-        # Test CI derivation - simulates the CI workflow locally without committing
-        # Downloads pre-release binaries from GitHub and runs size recording
-        # Usage: nix build .#test-ci
-        #
-        # TODO: Doesn't work cause of sandboxing, here so I brain up a better
-        # way to test the gh action workflow.
-        test-ci =
-          pkgs.runCommand "test-ci"
-            {
-              buildInputs = with pkgs; [
-                curl
-                jq
-                coreutils
-              ];
-            }
-            ''
-              set -xeu
-              WORKSPACE=$(mktemp -d)
-              trap 'rm -rf "$WORKSPACE"' EXIT INT TERM QUIT
-              cd "$WORKSPACE"
-
-              # Run the pugio dep first so that we don't waste downloads of stuff later if this fails.
-              PUGIO_SVG="${ci-pugio-graph}/deps.svg"
-              cp "$PUGIO_SVG" ./deps.svg
-
-              # This mimics the github cli output dirs
-              echo "Download existing pre-release binaries"
-              mkdir -p artifacts/mitchty-wasm
-              mkdir -p artifacts/mitchty-windows-x86_64
-              mkdir -p artifacts/mitchty-darwin-aarch64
-
-              # Get the latest pre-release assets like the workflow will do
-              ASSETS=$(curl -s https://api.github.com/repos/mitchty/mitchty.github.io/releases | jq -r '.[0].assets[].browser_download_url')
-
-              curl -L $(echo "$ASSETS" | awk "/mitchty-wasm.tar.gz/") | tar -xzf - -C artifacts/mitchty-wasm
-              curl -L $(echo "$ASSETS" | awk "/mitchty-windows-x86_64.exe/") -o artifacts/mitchty-windows-x86_64/mitchty-windows-x86_64.exe
-              curl -L $(echo "$ASSETS" | awk "/mitchty-darwin-aarch64/") -o artifacts/mitchty-darwin-aarch64/mitchty-darwin-aarch64
-
-              # Use the existing ci-record-sizes package to record the data
-              ${ci-record-sizes}/bin/ci-record-sizes \
-                artifacts/mitchty-wasm/mitchty_bg.wasm \
-                artifacts/mitchty-windows-x86_64/mitchty-windows-x86_64.exe \
-                artifacts/mitchty-darwin-aarch64/mitchty-darwin-aarch64 \
-                deps.svg
-
-              # Copy results to output
-              mkdir -p "$out"
-              cp -r "$WORKSPACE/.build-meta" "$out/"
-              cp -r "$WORKSPACE/artifacts" "$out/"
-              cp deps.svg "$out/"
-            '';
       in
       {
         checks = {
@@ -1137,8 +1017,6 @@
             mitchty-lto
             ma
             ci-pugio-graph
-            ci-record-sizes
-            test-ci
             mitchty-wasm
             mitchty-wasm-lto
             pugio
@@ -1183,14 +1061,7 @@
             };
           };
           default = self.apps.${system}.mitchty;
-          ci-record-sizes = {
-            type = "app";
-            program = "${ci-record-sizes}/bin/ci-record-sizes";
-            meta = {
-              description = "Record binary artifact sizes and dep graph to .build-meta/";
-              mainProgram = "ci-record-sizes";
-            };
-          };
+
           build-all =
             let
               all-targets =
