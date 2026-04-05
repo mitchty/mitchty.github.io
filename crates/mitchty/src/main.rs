@@ -513,10 +513,13 @@ fn main() {
                 update_fps_display.run_if(bevy::time::common_conditions::on_timer(
                     std::time::Duration::from_secs_f32(0.5),
                 )),
+                // Using a tuple here keeps the overall tuple under Bevy's 20-item
+                // limit need to think about how to do all these system setups
+                // better. That is "a future mitch problem"
+                // TODO: Future sucker me figure it out or brain on it in bg.
                 sync_text3d_to_active_post.run_if(bevy::time::common_conditions::on_timer(
                     std::time::Duration::from_secs(1),
                 )),
-                respawn_text3d_on_content_change.after(sync_text3d_to_active_post),
             ),
         );
 
@@ -849,7 +852,7 @@ impl Default for Text3dContent {
     }
 }
 
-/// Sync the 3D text label once per second.
+/// Sync the 3D text label and update the entity backing it
 ///
 /// Priority order:
 /// 1. If the World Clock has at least one active (non-expired) alarm, show the
@@ -860,6 +863,10 @@ fn sync_text3d_to_active_post(
     active_post: Res<ui::ActivePost>,
     world_clock: Option<Res<ui::WorldClockState>>,
     mut text_content: ResMut<Text3dContent>,
+    asset_server: Res<AssetServer>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut commands: Commands,
+    existing_text: Query<(Entity, &mut Text3d)>,
 ) {
     use jiff::Timestamp;
 
@@ -895,7 +902,25 @@ fn sync_text3d_to_active_post(
     };
 
     if text_content.0 != new_text {
+        let new_text_clone = new_text.clone();
+
         text_content.0 = new_text;
+
+        // Despawn existing text entities
+        let entities_to_despawn: Vec<Entity> =
+            existing_text.iter().map(|(entity, _)| entity).collect();
+
+        for entity in entities_to_despawn {
+            commands.entity(entity).despawn();
+        }
+
+        // Spawn new text immediately after despawning for next tick
+        spawn_text3d(
+            &mut commands,
+            &asset_server,
+            &mut materials,
+            &new_text_clone,
+        );
     }
 }
 
@@ -947,31 +972,6 @@ fn setup_3d_text(
     mut materials: ResMut<Assets<StandardMaterial>>,
     text_content: Res<Text3dContent>,
 ) {
-    spawn_text3d(
-        &mut commands,
-        &asset_server,
-        &mut materials,
-        &text_content.0,
-    );
-}
-
-/// Despawns the old 3d text mesh and respawns with the new Resources string value
-// TODO: Should this be an event maybe? Note the geometry has to be generated at
-// spawn time for the text to update.
-fn respawn_text3d_on_content_change(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    text_content: Res<Text3dContent>,
-    existing: Query<Entity, With<Text3d>>,
-) {
-    if !text_content.is_changed() {
-        return;
-    }
-
-    for entity in existing.iter() {
-        commands.entity(entity).despawn();
-    }
     spawn_text3d(
         &mut commands,
         &asset_server,

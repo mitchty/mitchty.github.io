@@ -255,6 +255,15 @@ skip = [
   # rand and... wesl?bevy
   { name = "cpufeatures", version = "=0.2.17" },
   { name = "cpufeatures", version = "=0.3.0" },
+  # dark-light/bevy/burn
+  { name = "ahash", version = "=0.7.8" },
+  { name = "ahash", version = "=0.8.12" },
+  { name = "dirs-sys", version = "=0.3.7" },
+  { name = "dirs-sys", version = "=0.5.0" },
+  { name = "dirs", version = "=4.0.0" },
+  { name = "dirs", version = "=6.0.0" },
+  { name = "redox_users", version = "=0.4.6" },
+  { name = "redox_users", version = "=0.5.2" },
 ]
 skip-tree = []
 

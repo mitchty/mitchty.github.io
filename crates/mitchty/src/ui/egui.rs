@@ -1,14 +1,22 @@
 use crate::ai::infer::InferenceEngine;
 use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled};
-use crate::ui::config::UiConfig;
+use crate::ui::config::{ThemeChoice, UiConfig};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::ui::data_viewer::{DataViewerState, ShowDataViewer, data_viewer_window};
-use crate::ui::recognizer::{InferenceResult, RecognizerState};
+#[cfg(debug_assertions)]
+use crate::ui::recognizer::RasterSize;
+use crate::ui::recognizer::{BASE_BRUSH_R, InferenceResult, RecognizerState};
 use crate::ui::scroll_view::{ActivePost, POSTS};
 use crate::ui::world_clock::{ShowWorldClock, WorldClockState, world_clock_window};
 use crate::{ColorState, CubeRotation, FpsDisplay, HueAnimation};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+
+// Wasm js bridge types for dark/light changes.
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::closure::Closure;
 
 /// Resource to track if egui is currently using input, helps with accidental
 /// clicks not bleeding downwards to bevy.
@@ -25,6 +33,41 @@ pub struct ShowEgui;
 /// Marker component to track whether the Recognizer window is open
 #[derive(Component)]
 pub struct ShowRecognizer;
+
+/// Bevy message for when the outside theme has changed.
+///
+/// For native, a 1 second poll system fires the event on chage.
+/// For wasm `matchMedia` listener used by the `EguiPrimaryContextPass`
+#[derive(Debug, Clone, Copy)]
+pub struct ThemeChanged(pub dark_light::Mode);
+impl bevy::ecs::message::Message for ThemeChanged {}
+
+/// Resource for the last OS/browser theme seen.
+///
+/// Native only, wasm uses the listener directly.
+///
+/// Pre pump the value so first poll works. Defaults to `Mode::Default` if
+/// detection fails.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Resource)]
+pub struct LastKnownTheme(pub dark_light::Mode);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for LastKnownTheme {
+    fn default() -> Self {
+        Self(dark_light::detect())
+    }
+}
+
+/// Here to keep `matchMedia` closure and `MediaQueryList` alive for the apps
+/// lifetime otherwise we can't get data from the listeners as they unregister.
+#[cfg(target_arch = "wasm32")]
+pub struct WasmThemeListener {
+    /// The wasm_bindgen closure listener
+    _closure: Closure<dyn FnMut(web_sys::MediaQueryListEvent)>,
+    /// The MediaQueryList listener
+    _mql: web_sys::MediaQueryList,
+}
 
 /// Plugin for egui UI
 pub struct SettingsUiPlugin;
@@ -58,11 +101,27 @@ impl Plugin for SettingsUiPlugin {
             .init_resource::<EguiWantsInput>()
             .init_resource::<RecognizerState>()
             .init_resource::<InferenceResult>()
+            .add_message::<ThemeChanged>()
             .insert_non_send_resource(engine)
             .add_systems(Startup, setup_egui);
 
         #[cfg(not(target_arch = "wasm32"))]
-        let app = app.init_resource::<DataViewerState>();
+        let app = app
+            .init_resource::<LastKnownTheme>()
+            .init_resource::<DataViewerState>()
+            .add_systems(
+                Update,
+                poll_system_theme.run_if(bevy::time::common_conditions::on_timer(
+                    std::time::Duration::from_secs(1),
+                )),
+            );
+
+        // WASM: register the matchMedia listener at startup and drain its
+        // pending changes every frame.
+        #[cfg(target_arch = "wasm32")]
+        let app = app
+            .add_systems(Startup, setup_wasm_theme_listener)
+            .add_systems(Update, drain_wasm_theme_events);
 
         app.add_systems(
             EguiPrimaryContextPass,
@@ -77,6 +136,14 @@ impl Plugin for SettingsUiPlugin {
             )
                 .chain(),
         );
+
+        // apply_theme_change consumes ThemeChanged messages and updates egui
+        // visuals. Runs in the same pass but separately to avoid poisoning the
+        // chained tuple above with its different system signature.
+        app.add_systems(
+            EguiPrimaryContextPass,
+            apply_theme_change.after(configure_egui_style),
+        );
     }
 }
 
@@ -90,59 +157,233 @@ static DEFAULT_MODEL_CONFIG: &[u8] = include_bytes!("../assets/models/default/co
 /// Default model weights for ^^^
 static DEFAULT_MODEL_WEIGHTS: &[u8] = include_bytes!("../assets/models/default/model.mpk");
 
-/// Bump up egui text and register NotoSansJP as a CJK fallback.
+/// Native system poll `dark_light::detect()` once per second.
 ///
-/// Oneshot system, after insertion noto sans jp is inserted to the end of every
-/// fontfamily so that latin/ascii uses default font and other codepoints
+/// Emits `ThemeChanged` when the detected mode actually differs from the
+/// last seen value and the user didn't pick one manually.
+#[cfg(not(target_arch = "wasm32"))]
+fn poll_system_theme(
+    ui_config: Res<UiConfig>,
+    mut last: ResMut<LastKnownTheme>,
+    mut events: bevy::ecs::message::MessageWriter<ThemeChanged>,
+) {
+    // User choice wins always. Nothing to do.
+    if ui_config.theme != ThemeChoice::Auto {
+        return;
+    }
+
+    let current = dark_light::detect();
+    if current != last.0 {
+        last.0 = current;
+        events.write(ThemeChanged(current));
+    }
+}
+
+/// WASM system to register a `matchMedia` `change` listener at startup.
+///
+/// The listener writes the new mode into `WasmThemeListener::pending`. A
+/// separate per-frame system drains values into the Bevy event bus.
+/// Both the `Closure` and `MediaQueryList` listeners need to always be alive, hence the
+/// `NonSendMut` resource that owns them for the app's duration.
+#[cfg(target_arch = "wasm32")]
+fn setup_wasm_theme_listener(world: &mut World) {
+    use std::sync::{Arc, Mutex};
+
+    // Shared slot read by the drain system from the js closure interop.
+    let pending: Arc<Mutex<Option<dark_light::Mode>>> = Arc::new(Mutex::new(None));
+    let pending_clone = pending.clone();
+
+    // TODO: I have no idea wat to do on failures here. I barely understand wasm
+    // as it is js interop is veritable black magique.
+    let window = match web_sys::window() {
+        Some(w) => w,
+        None => {
+            bevy::log::warn!("setup_wasm_theme_listener: no window object, skipping");
+            return;
+        }
+    };
+
+    let mql = match window.match_media("(prefers-color-scheme: dark)") {
+        Ok(Some(mql)) => mql,
+        _ => {
+            bevy::log::warn!(
+                "setup_wasm_theme_listener: matchMedia not available, skipping listener"
+            );
+            return;
+        }
+    };
+
+    let closure: Closure<dyn FnMut(web_sys::MediaQueryListEvent)> =
+        Closure::wrap(Box::new(move |e: web_sys::MediaQueryListEvent| {
+            let mode = if e.matches() {
+                dark_light::Mode::Dark
+            } else {
+                dark_light::Mode::Light
+            };
+            if let Ok(mut slot) = pending_clone.lock() {
+                *slot = Some(mode);
+            }
+        }));
+
+    if let Err(err) =
+        mql.add_event_listener_with_callback("change", closure.as_ref().unchecked_ref())
+    {
+        bevy::log::warn!(
+            "setup_wasm_theme_listener: failed to add event listener: {:?}",
+            err
+        );
+        return;
+    }
+
+    // Insert as a NonSend resource so both closure and mql stay alive for the exec duration
+    world.insert_non_send_resource(WasmThemeListener {
+        _closure: closure,
+        _mql: mql,
+    });
+
+    // Store the Arc so the drain can read directly without an unsafe block.
+    world.insert_resource(WasmThemePending(pending));
+}
+
+/// Mutable Resource slot shared between the JS closure and the drain system.
+#[cfg(target_arch = "wasm32")]
+#[derive(Resource)]
+struct WasmThemePending(std::sync::Arc<std::sync::Mutex<Option<dark_light::Mode>>>);
+
+/// WASM-only system to drain the shared pending slot Resource Arc into a Bevy
+/// `ThemeChanged` event.
+#[cfg(target_arch = "wasm32")]
+fn drain_wasm_theme_events(
+    ui_config: Res<UiConfig>,
+    pending_res: Option<Res<WasmThemePending>>,
+    mut events: bevy::ecs::message::MessageWriter<ThemeChanged>,
+) {
+    // User choice wins always. Nothing to do.
+    if ui_config.theme != ThemeChoice::Auto {
+        return;
+    }
+
+    let Some(pending_res) = pending_res else {
+        return;
+    };
+
+    let Ok(mut slot) = pending_res.0.lock() else {
+        return;
+    };
+
+    if let Some(mode) = slot.take() {
+        events.write(ThemeChanged(mode));
+    }
+}
+
+/// Apply an incoming `ThemeChanged` event to the egui context visuals.
+///
+/// Runs in `EguiPrimaryContextPass` so the context is always valid.
+/// Skipped entirely when the user has set a `ThemeChoice` value of dark/light.
+fn apply_theme_change(
+    mut contexts: EguiContexts,
+    ui_config: Res<UiConfig>,
+    mut events: bevy::ecs::message::MessageReader<ThemeChanged>,
+) -> Result {
+    // User picked something, drain queue and call it a day.
+    if ui_config.theme != ThemeChoice::Auto {
+        for _ in events.read() {}
+        return Ok(());
+    }
+
+    // Consume all pending events; last one wins but only one should be there.
+    // Just being safe.
+    let mut new_visuals: Option<egui::Visuals> = None;
+    for ThemeChanged(mode) in events.read() {
+        new_visuals = Some(match mode {
+            dark_light::Mode::Dark => egui::Visuals::dark(),
+            dark_light::Mode::Light | dark_light::Mode::Default => egui::Visuals::light(),
+        });
+    }
+
+    if let Some(visuals) = new_visuals {
+        let ctx = contexts.ctx_mut()?;
+        ctx.set_visuals(visuals);
+    }
+
+    Ok(())
+}
+
+/// Resolve which egui visuals to apply at startup.
+///
+/// First to win checks:
+///   - User explicit `ThemeChoice::Dark` or `ThemeChoice::Light`
+///   - OS or browser preference via `dark-light`
+///   - Local time-of-day hack: 07:00–17:59 is Light, otherwise go for Dark
+///   - If all that crap failed Dark
+fn resolve_initial_theme(choice: ThemeChoice) -> egui::Visuals {
+    // User
+    match choice {
+        ThemeChoice::Dark => return egui::Visuals::dark(),
+        ThemeChoice::Light => return egui::Visuals::light(),
+        ThemeChoice::Auto => {}
+    }
+
+    // dark-light
+    match dark_light::detect() {
+        dark_light::Mode::Dark => return egui::Visuals::dark(),
+        dark_light::Mode::Light => return egui::Visuals::light(),
+        // Default = platform has no preference, fall through.
+        dark_light::Mode::Default => {}
+    }
+
+    // Hold my beer and use time of day to SWAG a guesstimate.
+    let hour = jiff::Zoned::now().hour();
+    let use_light = (7..18).contains(&hour);
+
+    if use_light {
+        return egui::Visuals::light();
+    }
+
+    // If we ever get here just go for Dark, its like the Rock of Roshambo for
+    // themes.
+    egui::Visuals::dark()
+}
+
+/// Bump up egui text, register NotoSansJP as a CJK fallback, and apply the
+/// resolved startup theme.
+///
+/// Oneshot system: after insertion noto sans jp is inserted to the end of every
+/// fontfamily so that latin/ascii uses the default font and other codepoints
 /// hopefully get hit with noto sans jp for kanji et al.
-///
-/// Runs every frame but only mutates when the egui theme has changed so that
-/// the +4 font-size bump is re-applied after a light/dark theme switch.
-/// `global_theme_preference_switch` resets the style to egui built-in
-/// defaults when the theme changes which basically resets everything.
-// TODO: Need a better way to deal with gooey colors/text this is ass to deal
-// with onesie twosie.
 fn configure_egui_style(
     mut contexts: EguiContexts,
-    mut last_theme: Local<Option<egui::ThemePreference>>,
+    ui_config: Res<UiConfig>,
+    mut done: Local<bool>,
 ) -> Result {
+    if *done {
+        return Ok(());
+    }
+    *done = true;
+
     let ctx = contexts.ctx_mut()?;
-    let current_theme = ctx.options(|o| o.theme_preference);
 
-    let first_run = last_theme.is_none();
-    let theme_changed = last_theme.is_none_or(|t| t != current_theme);
+    // Apply the startup theme before anything else so there is no flash of the
+    // wrong theme while fonts are being set up.
+    ctx.set_visuals(resolve_initial_theme(ui_config.theme));
 
-    if first_run {
-        let mut fonts = egui::FontDefinitions::default();
-        fonts.font_data.insert(
-            "NotoSansJP".to_owned(),
-            egui::FontData::from_static(NOTO_SANS_JP).into(),
-        );
-        // Only use noto sans jp for anything that fails to render in a latin
-        // character subset.
-        for family_data in fonts.families.values_mut() {
-            family_data.push("NotoSansJP".to_owned());
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "NotoSansJP".to_owned(),
+        egui::FontData::from_static(NOTO_SANS_JP).into(),
+    );
+
+    // Only use noto sans jp for anything that fails to render in a latin subset
+    for family_data in fonts.families.values_mut() {
+        family_data.push("NotoSansJP".to_owned());
+    }
+    ctx.set_fonts(fonts);
+
+    ctx.style_mut(|style| {
+        for font_id in style.text_styles.values_mut() {
+            font_id.size += 4.0;
         }
-        ctx.set_fonts(fonts);
-    }
-
-    if theme_changed {
-        // Re-apply the size bump on top of whichever built-in theme was just
-        // loaded; without this a light/dark switch resets sizes to egui
-        // defaults and it looks jank.
-        //
-        // We derive absolute target sizes from a fresh Style::default() so we
-        // don't just keep size going up when the theme changes back and forth.
-        let base = egui::Style::default();
-        ctx.style_mut(|style| {
-            for (text_style, font_id) in style.text_styles.iter_mut() {
-                if let Some(base_font) = base.text_styles.get(text_style) {
-                    font_id.size = base_font.size + 4.0;
-                }
-            }
-        });
-        *last_theme = Some(current_theme);
-    }
+    });
 
     Ok(())
 }
@@ -220,6 +461,7 @@ fn settings_ui(
     available_shaders: Res<AvailableShaders>,
     mut plot_query: Query<&mut Visibility, With<flan::PlotUiNode>>,
     mut commands: Commands,
+    mut ui_config: ResMut<UiConfig>,
 ) -> Result {
     if show_egui_query.is_empty() {
         return Ok(());
@@ -338,34 +580,29 @@ fn settings_ui(
                     }
                     ui.close();
                 }
-
-                ui.separator();
-                ui.label(egui::RichText::new("Abominable Intelligence").strong());
-
-                if ui.button("Recognizer").clicked() {
-                    if recognizer_query.is_empty() {
-                        commands.spawn(ShowRecognizer);
-                    } else if let Ok(entity) = recognizer_query.single() {
-                        commands.entity(entity).despawn();
-                    }
-                    ui.close();
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                if ui.button("Data Viewer").clicked() {
-                    if data_viewer_query.is_empty() {
-                        commands.spawn(ShowDataViewer);
-                    } else if let Ok(entity) = data_viewer_query.single() {
-                        commands.entity(entity).despawn();
-                    }
-                    ui.close();
-                }
             });
 
             // About and Experiments ar on the RHS of the menu bar. NOte due to
             // the ordering stuff to the left aka Experiments goes after the
             // About definition.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                crate::ui::egui::egui::widgets::global_theme_preference_switch(ui);
+                // 3-way theme toggle, Auto means heuristic pick for me,
+                // Dark/Light is user pref
+                let (label, next) = match ui_config.theme {
+                    ThemeChoice::Auto => ("🌓", ThemeChoice::Dark),
+                    ThemeChoice::Dark => ("🌙", ThemeChoice::Light),
+                    ThemeChoice::Light => ("☀", ThemeChoice::Auto),
+                };
+                if ui.button(label).clicked() {
+                    ui_config.theme = next;
+                    // Apply the new visuals immediately if clicked.
+                    let visuals = match next {
+                        ThemeChoice::Dark => egui::Visuals::dark(),
+                        ThemeChoice::Light => egui::Visuals::light(),
+                        ThemeChoice::Auto => resolve_initial_theme(ThemeChoice::Auto),
+                    };
+                    ui.ctx().set_visuals(visuals);
+                }
                 ui.menu_button("About", |ui| {
                     ui.hyperlink_to("GitHub Repo", lib::build_info::GIT_REPO);
                     ui.separator();
@@ -398,6 +635,31 @@ fn settings_ui(
                 });
 
                 ui.menu_button("Experiments", |ui| {
+                    ui.label(egui::RichText::new("Abominable Intelligence").strong());
+                    ui.separator();
+
+                    if ui.button("Recognizer").clicked() {
+                        if recognizer_query.is_empty() {
+                            commands.spawn(ShowRecognizer);
+                        } else if let Ok(entity) = recognizer_query.single() {
+                            commands.entity(entity).despawn();
+                        }
+                        ui.close();
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if ui.button("Data Viewer").clicked() {
+                        if data_viewer_query.is_empty() {
+                            commands.spawn(ShowDataViewer);
+                        } else if let Ok(entity) = data_viewer_query.single() {
+                            commands.entity(entity).despawn();
+                        }
+                        ui.close();
+                    }
+
+                    ui.separator();
+
+                    ui.label(egui::RichText::new("Flan Shaders").strong());
+
                     let line_graph_visible = plot_query
                         .single()
                         .map(|v| *v != Visibility::Hidden)
@@ -470,6 +732,57 @@ fn recognizer_window(
                     // Clear inference result alongside the canvas.
                     *inference_result = InferenceResult::default();
                 }
+
+                ui.separator();
+                // Stroke width changes will re-run classification inference on
+                // change. Seems to have helped me realize my training needs
+                // more stroke variability.
+                ui.label("Stroke:");
+                let before_scale = state.stroke_scale;
+                ui.add(
+                    egui::Slider::new(&mut state.stroke_scale, 0.5_f32..=4.0)
+                        .step_by(0.1)
+                        .fixed_decimals(1)
+                        .suffix("x"),
+                )
+                .on_hover_text(format!(
+                    "Brush radius: {:.2} grid px = (base {BASE_BRUSH_R} x scale x grid/28)",
+                    BASE_BRUSH_R * state.raster_size.pixels() as f32 / 28.0 * state.stroke_scale,
+                ));
+                if (state.stroke_scale - before_scale).abs() > f32::EPSILON
+                    && !state.strokes.is_empty()
+                {
+                    run_inference(&state, &engine, &mut inference_result);
+                }
+
+                ui.separator();
+                ui.checkbox(&mut state.debug_bbox, "Debug bbox")
+                    .on_hover_text(
+                        "Draw a red bounding box around the tight crop sent to the classifier",
+                    );
+
+                // Size picker: debug builds only, here to let me test models
+                // trained at different input resolutions without recompiling.
+                // Will rip this out eventually.
+                #[cfg(debug_assertions)]
+                {
+                    ui.separator();
+                    ui.label("Size:");
+                    let before = state.raster_size;
+                    egui::ComboBox::from_id_salt("raster_size")
+                        .selected_text(state.raster_size.label())
+                        .show_ui(ui, |ui| {
+                            //                            for &size in &[RasterSize::S128] { for later...
+                            {
+                                let &size = &RasterSize::S128;
+                                ui.selectable_value(&mut state.raster_size, size, size.label());
+                            }
+                        });
+                    if state.raster_size != before {
+                        state.clear();
+                        *inference_result = InferenceResult::default();
+                    }
+                }
             });
 
             ui.separator();
@@ -486,7 +799,8 @@ fn recognizer_window(
 
                 // Origin is the top-left of the canvas in screen space.
                 // All stroke points are stored relative to this origin so that
-                // moving the window doesn't shift previously drawn strokes.
+                // moving the window doesn't shift previously drawn strokes,
+                // that was a fun bug.
                 let origin = response.rect.min;
 
                 let pointer_pos = response.interact_pointer_pos();
@@ -517,7 +831,10 @@ fn recognizer_window(
                     run_inference(&state, &engine, &mut inference_result);
                 }
 
-                let stroke = egui::Stroke::new(2.0, egui::Color32::BLACK);
+                // Visual stroke width tracks the raster brush radius so what
+                // you see on the canvas matches what is sent to the classifier.
+                // Base 2.0 px at 1x scale for ref.
+                let stroke = egui::Stroke::new(2.0 * state.stroke_scale, egui::Color32::BLACK);
 
                 let to_screen = |p: egui::Pos2| p + origin.to_vec2();
 
@@ -531,6 +848,29 @@ fn recognizer_window(
                     for pair in current.windows(2) {
                         painter.line_segment([to_screen(pair[0]), to_screen(pair[1])], stroke);
                     }
+                }
+
+                // TODO: Keep this debug only? Its kinda useful
+                //
+                // Debug only, draw a red bounding-box overlay showing the crop
+                // that was sent to the classifier on the last inference run.
+                //
+                // If I need to change stuff with what I send to the classifier
+                // this helps with eyeballing if what I'm sending makes sense or
+                // not.
+                if state.debug_bbox
+                    && let Some((bx0, by0, bx1, by1)) = inference_result.bbox
+                {
+                    let bbox_rect = egui::Rect::from_min_max(
+                        to_screen(egui::pos2(bx0, by0)),
+                        to_screen(egui::pos2(bx1, by1)),
+                    );
+                    painter.rect_stroke(
+                        bbox_rect,
+                        0.0,
+                        egui::Stroke::new(1.5, egui::Color32::RED),
+                        egui::StrokeKind::Outside,
+                    );
                 }
 
                 ui.add_space(8.0);
@@ -558,11 +898,12 @@ fn run_inference(
         return;
     };
 
-    let canvas = InferenceEngine::rasterize(state);
+    let (canvas, bbox) = InferenceEngine::rasterize(state);
     let matches = engine.run(&canvas);
     *result = InferenceResult {
         canvas: Some(canvas),
         matches,
+        bbox,
     };
 }
 

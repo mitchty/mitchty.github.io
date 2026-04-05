@@ -6,6 +6,8 @@
     inputs.flake-utils.lib.eachDefaultSystem (
       system:
       let
+        githubRepo = "mitchty/mitchty.github.io";
+
         # DRY some of the meta definitions for apps/packages for this chungus amungus
         metaCommon = desc: {
           description = if desc == "" then "mitchty" else "mitchty " + desc;
@@ -130,13 +132,16 @@
         );
 
         # Constrained src fileset to ensure that cargo deps aren't rebuilt every
-        # change to crates.
+        # change to files that don't contribute to dependency chains. Only
+        # Cargo.lock, Cargo.toml files, and build.rs are needed here for cargo
+        # dependency rebuild detection.
         srcDeps = lib.fileset.toSource {
           root = ./.;
           fileset = lib.fileset.unions [
             ./Cargo.lock
             ./Cargo.toml
-            (lib.fileset.fileFilter (file: file.hasExt "toml") ./crates)
+            (lib.fileset.fileFilter (file: file.name == "Cargo.toml") ./crates)
+            (lib.fileset.fileFilter (file: file.name == "build.rs") ./crates)
           ];
         };
 
@@ -249,8 +254,6 @@
             pkg-config
           ];
 
-          BEVY_ASSET_PATH = ./crates/mitchty/src/assets;
-
           buildInputs =
             with pkgs;
             [ ]
@@ -283,7 +286,6 @@
 
           buildInputs = [ ];
 
-          BEVY_ASSET_PATH = ./crates/mitchty/src/assets;
           CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
         };
 
@@ -654,6 +656,7 @@
             cargoExtraArgs = "-p mitchty";
             src = fileSetForCrate ./crates/mitchty;
             doCheck = false;
+            BEVY_ASSET_PATH = ./crates/mitchty/src/assets;
           }
         );
 
@@ -675,11 +678,10 @@
           }
         );
 
-        # Pugio dep graph: runs pugio inside a crane derivation so the result
-        # is nix-cached and reuses cargoArtifactsRelease. Output is a single
-        # SVG showing the mitchty crate dep graph with cumulative size colouring.
-        # CARGO_NET_OFFLINE ensures pugio's internal cargo invocation uses the
-        # vendored sources crane already set up rather than hitting the network.
+        # This builds the mitchty derivation in release mode (I tried passing in
+        # the binary etc.. but no bueno pugio needs to build crap on its own
+        # laaaame). But this is here so I can get a deps svg out of the whole
+        # build for later nefarious shenanigans.
         ci-pugio-graph = craneLib.mkCargoDerivation (
           commonArgs
           // nixEnvArgs
@@ -732,6 +734,7 @@
                 cargoArtifacts = cargoArtifactsWasm;
                 cargoExtraArgs = "-p mitchty --features mitchty/webgl";
                 src = fileSetForCrate ./crates/mitchty;
+                BEVY_ASSET_PATH = ./crates/mitchty/src/assets;
 
                 # Don't run checks for WASM builds
                 doCheck = false;
@@ -792,6 +795,7 @@
                 cargoArtifacts = cargoArtifactsWasmFast;
                 cargoExtraArgs = "-p mitchty --features mitchty/webgl";
                 src = fileSetForCrate ./crates/mitchty;
+                BEVY_ASSET_PATH = ./crates/mitchty/src/assets;
 
                 doCheck = false;
                 doInstallCargoArtifacts = false;
@@ -921,6 +925,9 @@
         deny = craneLib.cargoDeny {
           inherit src;
           inherit (inputs) advisory-db;
+          # Here so if there are missing versions in the deny setup treat them
+          # as errors as well as other possible "mitch didn't run the full checks stuff"
+          cargoDenyChecks = "-D unmatched-skip -D unnecessary-skip -D unmatched-skip-root bans licenses sources";
         };
 
         # Hacky way to abuse crane's deny setup to generate graphviz dot files
@@ -1021,6 +1028,58 @@
           ];
           text = builtins.readFile ./.ci-record-sizes.sh;
         };
+
+        # Test CI derivation - simulates the CI workflow locally without committing
+        # Downloads pre-release binaries from GitHub and runs size recording
+        # Usage: nix build .#test-ci
+        #
+        # TODO: Doesn't work cause of sandboxing, here so I brain up a better
+        # way to test the gh action workflow.
+        test-ci =
+          pkgs.runCommand "test-ci"
+            {
+              buildInputs = with pkgs; [
+                curl
+                jq
+                coreutils
+              ];
+            }
+            ''
+              set -xeu
+              WORKSPACE=$(mktemp -d)
+              trap 'rm -rf "$WORKSPACE"' EXIT INT TERM QUIT
+              cd "$WORKSPACE"
+
+              # Run the pugio dep first so that we don't waste downloads of stuff later if this fails.
+              PUGIO_SVG="${ci-pugio-graph}/deps.svg"
+              cp "$PUGIO_SVG" ./deps.svg
+
+              # This mimics the github cli output dirs
+              echo "Download existing pre-release binaries"
+              mkdir -p artifacts/mitchty-wasm
+              mkdir -p artifacts/mitchty-windows-x86_64
+              mkdir -p artifacts/mitchty-darwin-aarch64
+
+              # Get the latest pre-release assets like the workflow will do
+              ASSETS=$(curl -s https://api.github.com/repos/mitchty/mitchty.github.io/releases | jq -r '.[0].assets[].browser_download_url')
+
+              curl -L $(echo "$ASSETS" | awk "/mitchty-wasm.tar.gz/") | tar -xzf - -C artifacts/mitchty-wasm
+              curl -L $(echo "$ASSETS" | awk "/mitchty-windows-x86_64.exe/") -o artifacts/mitchty-windows-x86_64/mitchty-windows-x86_64.exe
+              curl -L $(echo "$ASSETS" | awk "/mitchty-darwin-aarch64/") -o artifacts/mitchty-darwin-aarch64/mitchty-darwin-aarch64
+
+              # Use the existing ci-record-sizes package to record the data
+              ${ci-record-sizes}/bin/ci-record-sizes \
+                artifacts/mitchty-wasm/mitchty_bg.wasm \
+                artifacts/mitchty-windows-x86_64/mitchty-windows-x86_64.exe \
+                artifacts/mitchty-darwin-aarch64/mitchty-darwin-aarch64 \
+                deps.svg
+
+              # Copy results to output
+              mkdir -p "$out"
+              cp -r "$WORKSPACE/.build-meta" "$out/"
+              cp -r "$WORKSPACE/artifacts" "$out/"
+              cp deps.svg "$out/"
+            '';
       in
       {
         checks = {
@@ -1070,13 +1129,6 @@
               cargoNextestPartitionsExtraArgs = "--no-tests=pass";
             }
           );
-
-          # Disabled for now cause github ci is SLOOOOOW and this pushes
-          # inherit mitchty-lto mitchty-wasm-lto;
-          # parallel checks over time limits.
-          # }
-          # // lib.optionalAttrs pkgs.stdenv.isLinux {
-          #   inherit mitchty-release-windows;
         };
 
         packages = {
@@ -1086,6 +1138,7 @@
             ma
             ci-pugio-graph
             ci-record-sizes
+            test-ci
             mitchty-wasm
             mitchty-wasm-lto
             pugio
@@ -1325,6 +1378,10 @@
 
             shellHook = ''
               ${git-hooks-check.shellHook}
+              # For local devshell related via direnv builds with say cargo, be
+              # sure that the bevy asset loader can find the local assets at
+              # runtime.
+              export BEVY_ASSET_PATH="$PWD"
             '';
 
             # Make sure eglot+etc.. pick the right rust-src for eglot+lsp mode stuff using direnv

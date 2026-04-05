@@ -1,6 +1,22 @@
 use crate::ui::world_clock::{SortColumn, SortDir};
 use jiff::Timestamp;
 
+/// Auto chains as follows:
+///   - OS/Browser reports the "right" theme
+///   - Between 7-18 light, otherwise dark
+///   - If that fails somehow dark I guess.
+///
+/// Non Auto enum means just use that as the user picked it don't change it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemeChoice {
+    #[default]
+    Auto,
+    /// Always use dark.
+    Dark,
+    /// Always use light.
+    Light,
+}
+
 /// Identifies a toggleable UI window by name for arg parsing inputs on what to
 /// show at startup from clap or query params in wasm/web.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -73,6 +89,9 @@ pub struct UiConfig {
     /// If `Some`, the World Clock starts with the clock frozen at this UTC moment
     /// instead of showing live time.
     pub initial_pinned: Option<Timestamp>,
+
+    /// Which egui visual theme to apply on startup.
+    pub theme: ThemeChoice,
 }
 
 impl Default for UiConfig {
@@ -89,6 +108,7 @@ impl Default for UiConfig {
             initial_sort_col: SortColumn::None,
             initial_sort_dir: SortDir::Asc,
             initial_pinned: None,
+            theme: ThemeChoice::Auto,
         }
     }
 }
