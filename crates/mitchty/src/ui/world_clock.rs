@@ -732,13 +732,20 @@ fn draw_alarm_popup(
             ui.add_space(4.0);
 
             // Time row.
+            // Scroll the lists so the pre-selected minute/hour is visible when
+            // the dropdown first opens. I got sick of figuring out what
+            // hour/minute it currently is to set an alarm for the next minute
+            // or hour or whatever.
             ui.horizontal(|ui| {
                 egui::ComboBox::new("alarm_pick_hour", "Hour")
                     .selected_text(format!("{:02}", alarm.hour))
                     .width(60.0)
                     .show_ui(ui, |ui| {
                         for h in 0u8..=23 {
-                            ui.selectable_value(&mut alarm.hour, h, format!("{:02}", h));
+                            let resp = ui.selectable_value(&mut alarm.hour, h, format!("{:02}", h));
+                            if h == alarm.hour {
+                                resp.scroll_to_me(Some(egui::Align::Center));
+                            }
                         }
                     });
                 egui::ComboBox::new("alarm_pick_minute", "Min")
@@ -748,10 +755,6 @@ fn draw_alarm_popup(
                         for m in 0u8..=59 {
                             let resp =
                                 ui.selectable_value(&mut alarm.minute, m, format!("{:02}", m));
-                            // Scroll the list so the pre-selected minute is
-                            // visible when the dropdown first opens. I got sick
-                            // of figuring out what minute it is to set an alarm
-                            // for the next minute.
                             if m == alarm.minute {
                                 resp.scroll_to_me(Some(egui::Align::Center));
                             }

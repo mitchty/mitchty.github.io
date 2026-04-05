@@ -15,7 +15,6 @@ pub struct ColorState {
     pub color: Srgba,
 }
 
-// use bevy_old_tv_shader::prelude::*;
 use polars::prelude::*;
 use rand::RngExt;
 
@@ -728,42 +727,6 @@ fn update_fps_display(
         }
     }
 }
-
-// TODO: port over the tv effect shader or try making my own with the full
-// screen shaders now in 0.18? MORE FUTURE MITCH WORK!
-// /// Toggle TV effect on the main camera
-// /// t toggles on/off
-// fn toggle_tv_effect(
-//     keyboard: Res<ButtonInput<KeyCode>>,
-//     tv_effect_query: Query<Entity, With<TvEffectEnabled>>,
-//     mut commands: Commands,
-// ) {
-//     if keyboard.just_pressed(KeyCode::KeyT) {
-//         if let Ok(entity) = tv_effect_query.single() {
-//             commands.entity(entity).despawn();
-//         } else {
-//             commands.spawn(TvEffectEnabled);
-//         }
-//     }
-// }
-
-// /// Apply or remove TV effect toggle
-// fn apply_tv_effect(
-//     tv_effect_query: Query<(), With<TvEffectEnabled>>,
-//     camera_query: Query<(Entity, Has<OldTvSettings>), With<MainCamera>>,
-//     tv_settings: Res<TvSettingsResource>,
-//     mut commands: Commands,
-// ) {
-//     let tv_should_be_enabled = !tv_effect_query.is_empty();
-
-//     for (entity, has_tv_settings) in camera_query.iter() {
-//         if tv_should_be_enabled && !has_tv_settings {
-//             commands.entity(entity).insert(tv_settings.settings);
-//         } else if !tv_should_be_enabled && has_tv_settings {
-//             commands.entity(entity).remove::<OldTvSettings>();
-//         }
-//     }
-// }
 
 /// Toggle cube rotation marker
 /// c toggles on/off
