@@ -706,6 +706,8 @@
             FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = [ ]; };
 
             buildPhaseCargoCommand = ''
+              install -dm755 $out
+              install -m644 /dev/null $out/deps.svg
               export CARGO_NET_OFFLINE=true
               pugio --package mitchty \
                 --bin mitchty \
@@ -713,11 +715,8 @@
                 --scheme cum-sum \
                 --gradient blues \
                 --dark-mode \
-                -o "$TMPDIR/deps.svg"
-            '';
-
-            installPhaseCommand = ''
-              install -Dm644 "$TMPDIR/deps.svg" "$out/deps.svg"
+                --no-open \
+                --output "$out/deps.svg"
             '';
           }
         );
