@@ -26,8 +26,10 @@ fn line_sdf(d: vec2<f32>, p: vec2<f32>, q: vec2<f32>) -> f32 {
 
 // Draw a line through all provided data points.
 // Returns a coverage value in [0, 1] - 1 = fully on the line, 0 = fully off.
-// line_width controls the antialiased half-width in UV space.
-fn draw_line(uv: vec2<f32>, line_width: f32) -> f32 {
+// Antialiased half-width is read from params.line_width so each PlotUiMaterial
+// instance can specify an appropriate width for its pixel size without needing
+// entry-point shaders to import the bindings directly.
+fn draw_line(uv: vec2<f32>) -> f32 {
     let n = point_count();
     var min_dist: f32 = 1e9;
 
@@ -37,7 +39,7 @@ fn draw_line(uv: vec2<f32>, line_width: f32) -> f32 {
         min_dist = min(min_dist, line_sdf(uv, p0, p1));
     }
 
-    return 1.0 - smoothstep(0.0, line_width, min_dist);
+    return 1.0 - smoothstep(0.0, params.line_width, min_dist);
 }
 
 // Draw a regular grid with `divisions` cells along each axis.

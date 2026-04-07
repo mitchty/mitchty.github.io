@@ -18,6 +18,16 @@ pub const MAX_PLOT_POINTS: usize = 512;
 #[derive(Component)]
 pub struct PlotUiNode;
 
+/// Marker component for an fps sparkline plot, abusing flan for this idea to
+/// benchmark crap.
+///
+/// Callers spawn a `MaterialNode<PlotUiMaterial>` with this component attached
+/// and place it wherever they like. `flan` will sync data from
+/// [`SparklineDataFrame`] to every entity carrying this marker. All we do here
+/// is populate the dataframe with data.
+#[derive(Component)]
+pub struct SparklineUiNode;
+
 /// How many of the most-recent DataFrame rows are windowed and uploaded to the
 /// shader each sync. The DataFrame itself can be arbitrarily large; only the
 /// tail `PLOT_WINDOW_SIZE` rows are ever sent to the GPU.
@@ -46,6 +56,20 @@ pub struct PlotDataFrame {
 pub struct PlotDataUpdated;
 impl bevy::ecs::message::Message for PlotDataUpdated {}
 
+/// Backing DataFrame for the sparkline strip widget which for now is fps.
+/// If/when I do more future me problem on making a more complect approach.
+///
+/// Schema is a single `"y"` column of `Float32` values already normalized to
+/// `[0, 1]` by the caller. Null / `None` values are skipped during upload so
+/// the sparkline only draws the portion of the history that has real data so
+/// the plot doesn't look stupid with edge cases that likely aren't relevant.
+// TODO: This is all hold my beer approach. I think I need a plugin for flan to
+// cover how it can handle dataframes for us or something.
+#[derive(Resource)]
+pub struct SparklineDataFrame {
+    pub df: DataFrame,
+}
+
 pub struct PlotPlugin;
 
 impl Plugin for PlotPlugin {
@@ -65,11 +89,12 @@ impl Plugin for PlotPlugin {
                 Update,
                 (
                     animate_plot_time,
-                    // Sync whenever the caller sends PlotDataUpdated to
-                    // whatever is in the underlying dataframe.
+                    // Sync whenever the caller sends PlotDataUpdated.
                     sync_plot_data.run_if(
                         bevy::ecs::schedule::common_conditions::on_message::<PlotDataUpdated>,
                     ),
+                    // Sync sparkline df whenever SparklineDataFrame is mutated.
+                    sync_sparkline_data.run_if(resource_changed::<SparklineDataFrame>),
                 ),
             );
     }
@@ -108,8 +133,9 @@ fn setup_plot_ui(
             offset: Vec2::ZERO,
             count: points.len().min(MAX_PLOT_POINTS) as u32,
             time: 0.0,
+            line_width: 0.003, // TODO: I should make this dynamic somehow future me problem
             #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
-            _webgl2_padding: Vec2::ZERO,
+            _webgl2_padding: 0.0,
         },
         points: points_binding,
     });
@@ -134,12 +160,83 @@ fn setup_plot_ui(
     ));
 }
 
-/// Slice the tail `PLOT_WINDOW_SIZE` rows of the `"y"` column from a
-/// DataFrame and convert them to `Vec<Vec2>` with X ∈ [0, 1].
+/// Triggered by Bevy change detection whenever [`SparklineDataFrame`] is mutated.
 ///
-/// Rows are mapped oldest to newest left to right so the shader sees the expected
-/// scrolling-timeline layout.  Returns an empty Vec if the column is missing
-/// or the DataFrame is empty.
+/// Reads the `"y"` column, filters null rows, and uploads to every
+/// [`SparklineUiNode`] entity's shader buffer. Y values must already be
+/// normalised to `[0, 1]` by the caller.
+fn sync_sparkline_data(
+    sparkline_df: Res<SparklineDataFrame>,
+    node_query: Query<&MaterialNode<PlotUiMaterial>, With<SparklineUiNode>>,
+    mut ui_materials: ResMut<Assets<PlotUiMaterial>>,
+    #[cfg(not(feature = "webgl"))] mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
+) {
+    // Reuse the shared helper to strip nulls from the source dataframe.
+    let points = df_to_points(&sparkline_df.df);
+
+    for material_node in node_query.iter() {
+        let Some(mat) = ui_materials.get_mut(material_node) else {
+            continue;
+        };
+
+        #[cfg(not(feature = "webgl"))]
+        if let Some(buf) = buffers.get_mut(&mat.points) {
+            *buf = ShaderStorageBuffer::from(points.clone());
+        }
+
+        #[cfg(feature = "webgl")]
+        {
+            let mut data = [Vec4::ZERO; MAX_PLOT_POINTS];
+            for (i, p) in points.iter().enumerate().take(MAX_PLOT_POINTS) {
+                data[i] = Vec4::new(p.x, p.y, 0.0, 0.0);
+            }
+            mat.points = PlotPointsUniform { data };
+        }
+
+        mat.params.count = points.len().min(MAX_PLOT_POINTS) as u32;
+    }
+}
+
+/// Convert the `"y"` column of a DataFrame to `Vec<Vec2>` with X ∈ [0, 1].
+///
+/// Rows are mapped from oldest to newest, left to right. Null values are
+/// ignored so callers can use null rows as sentinels for "not yet filled" slots
+/// for... god knows why right now its mostly to not have the plot go weird for
+/// no reason. Its just an fps plot its not critical it be perfect. Returns an
+/// empty Vec if the column is missing or the DataFrame is empty which means
+/// likely a caller won't show anything.
+fn df_to_points(df: &DataFrame) -> Vec<Vec2> {
+    let Ok(series) = df.column("y") else {
+        return Vec::new();
+    };
+    let ca = series.cast(&DataType::Float32).ok();
+    let ca = ca.as_ref().and_then(|s| s.f32().ok());
+    let Some(ca) = ca else {
+        return Vec::new();
+    };
+
+    // Collect only non-null values, I can't see what purpose it would be to use
+    // them in a plot like this yet.
+    let values: Vec<f32> = ca.into_iter().flatten().collect();
+
+    // Bail early if there is nothing to show
+    let n = values.len();
+    if n == 0 {
+        return Vec::new();
+    }
+
+    let denom = (n - 1).max(1) as f32;
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(i, y)| Vec2::new(i as f32 / denom, y))
+        .collect()
+}
+
+/// Slice the tail `PLOT_WINDOW_SIZE` rows then delegate to [`df_to_points`].
+///
+/// Used by the main line-graph plot so the DataFrame the shader uses only sees
+/// the most recent window.
 fn df_tail_to_points(df: &DataFrame) -> Vec<Vec2> {
     let Ok(series) = df.column("y") else {
         return Vec::new();
@@ -150,21 +247,15 @@ fn df_tail_to_points(df: &DataFrame) -> Vec<Vec2> {
         return Vec::new();
     };
 
-    // Window to the last PLOT_WINDOW_SIZE values.
     let total = ca.len();
     let start = total.saturating_sub(PLOT_WINDOW_SIZE);
-    let slice = ca.slice(start as i64, PLOT_WINDOW_SIZE);
-
-    let n = slice.len();
-    if n == 0 {
-        return Vec::new();
-    }
-    let denom = (n - 1).max(1) as f32;
-    slice
-        .into_iter()
-        .enumerate()
-        .map(|(i, y)| Vec2::new(i as f32 / denom, y.unwrap_or(0.0)))
-        .collect()
+    let sliced_series = ca
+        .slice(start as i64, PLOT_WINDOW_SIZE)
+        .into_series()
+        .with_name("y".into());
+    let windowed =
+        DataFrame::new(sliced_series.len(), vec![Column::from(sliced_series)]).unwrap_or_default();
+    df_to_points(&windowed)
 }
 
 /// Triggered by `PlotDataUpdated` events fired by the caller.
@@ -240,8 +331,13 @@ pub struct PlotUniform {
     /// Elapsed time in seconds.  Upload `time.elapsed_secs()` here every
     /// frame so the shader can animate.
     pub time: f32,
+    /// Antialiased half-width of the polyline in UV space.
+    pub line_width: f32,
+    /// WebGL2 / std140 padding: keeps the struct at 48 bytes (multiple of 16).
+    /// `line_width` fills the 4 bytes that the old `Vec2` padding had left spare.
+    // God I can't wait until webgpu works so I can ditch all the webgl compat.
     #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
-    pub _webgl2_padding: Vec2,
+    pub _webgl2_padding: f32,
 }
 
 /// Points buffer used in WebGL2 builds (uniform buffer, WEBGL feature).

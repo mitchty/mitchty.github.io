@@ -4,6 +4,7 @@ mod fullscreen_effect;
 mod post_process;
 mod ui;
 
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 #[cfg(feature = "feathers")]
 use bevy::feathers::{FeathersPlugins, dark_theme::create_dark_theme, theme::UiTheme};
 use bevy::prelude::*;
@@ -449,6 +450,7 @@ fn main() {
 
     app.add_plugins(assets::create_default_plugins(enable_gamepad))
         .add_plugins(AssetConfigPlugin)
+        .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(ShadersPlugin)
         .add_plugins(FontMeshPlugin::<StandardMaterial>::default())
         .add_plugins(PostProcessPlugin)
@@ -457,6 +459,10 @@ fn main() {
         .insert_resource(flan::PlotDataFrame {
             df: initial_plot_df(),
         })
+        .insert_resource(flan::SparklineDataFrame {
+            df: DataFrame::empty(),
+        })
+        .init_resource::<FpsHistory>()
         .insert_resource(ClearColor(Color::srgb(0.5, 0.5, 0.5)))
         .insert_resource(ColorState {
             color: Srgba::gray(0.5),
@@ -482,11 +488,45 @@ fn main() {
     app.add_plugins(SettingsUiPlugin)
         .add_plugins(ScrollViewPlugin)
         .init_resource::<DragState>()
-        .add_systems(Startup, (setup, setup_fps_ui, setup_3d_text, spawn_camera))
+        .add_systems(
+            Startup,
+            (
+                setup,
+                setup_fps_ui,
+                setup_fps_sparkline_ui,
+                setup_3d_text,
+                spawn_camera,
+            ),
+        )
+        // Each timed system gets its own add_systems call so their on_timer
+        // closures hold completely independent Timer state and can never
+        // interfere with each other.
+        //
+        // Some weird stuff happens when run_if ... on_timer conditions hit the
+        // same durations. Mostly it seems like the systems start
+        // clobbering/shadowing each other.
+        .add_systems(
+            Update,
+            update_fps_ui.run_if(bevy::time::common_conditions::on_timer(
+                std::time::Duration::from_millis(500),
+            )),
+        )
         .add_systems(
             Update,
             tick_plot_data.run_if(bevy::time::common_conditions::on_timer(
                 std::time::Duration::from_millis(100),
+            )),
+        )
+        .add_systems(
+            Update,
+            sample_fps_history.run_if(bevy::time::common_conditions::on_timer(
+                std::time::Duration::from_millis(100),
+            )),
+        )
+        .add_systems(
+            Update,
+            sync_text3d_to_active_post.run_if(bevy::time::common_conditions::on_timer(
+                std::time::Duration::from_secs(1),
             )),
         )
         .add_systems(
@@ -509,16 +549,6 @@ fn main() {
                 manage_effect_settings,
                 update_effect_time,
                 send_scroll_events,
-                update_fps_display.run_if(bevy::time::common_conditions::on_timer(
-                    std::time::Duration::from_secs_f32(0.5),
-                )),
-                // Using a tuple here keeps the overall tuple under Bevy's 20-item
-                // limit need to think about how to do all these system setups
-                // better. That is "a future mitch problem"
-                // TODO: Future sucker me figure it out or brain on it in bg.
-                sync_text3d_to_active_post.run_if(bevy::time::common_conditions::on_timer(
-                    std::time::Duration::from_secs(1),
-                )),
             ),
         );
 
@@ -707,25 +737,206 @@ fn toggle_fps_display(
     }
 }
 
-/// System to update fps display when toggled
-fn update_fps_display(
-    time: Res<Time>,
-    mut fps_text_query: Query<&mut Text, With<FpsText>>,
+/// FPS overlay system sparkline and fps text bevy ui node.
+///
+/// When `FpsDisplay` marker is absent both are hidden, when present the text
+/// shows the current FPS and the sparkline strip is visible. Its dataframe is
+/// always updated.
+fn update_fps_ui(
+    diagnostics: Res<DiagnosticsStore>,
     fps_display_query: Query<(), With<FpsDisplay>>,
+    mut fps_text_query: Query<&mut Text, With<FpsText>>,
+    mut sparkline_query: Query<&mut Visibility, (With<flan::SparklineUiNode>, Without<FpsText>)>,
 ) {
-    if fps_display_query.is_empty() {
-        // Cheat, no text when the markers off
+    let show = !fps_display_query.is_empty();
+
+    let target_vis = if show {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut vis in sparkline_query.iter_mut() {
+        if *vis != target_vis {
+            *vis = target_vis;
+        }
+    }
+
+    if !show {
         for mut text in fps_text_query.iter_mut() {
             if !text.0.is_empty() {
                 text.0.clear();
             }
         }
-    } else {
-        let fps = 1.0 / time.delta_secs();
-        for mut text in fps_text_query.iter_mut() {
-            text.0 = format!("{:.1} fps", fps);
+        return;
+    }
+
+    let Some(fps) = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|d| d.value())
+    else {
+        return;
+    };
+
+    for mut text in fps_text_query.iter_mut() {
+        text.0 = format!("{:.1} fps", fps);
+    }
+}
+
+/// Number of FPS samples retained 100 samples x 100 ms is about 10 s of history
+/// which should be good enough for government work.
+const FPS_HISTORY_SAMPLES: usize = 100;
+
+/// Preallocated circular buffer of recent FPS measurements.
+///
+/// Slots start as `None` and fill in as samples arrive, so the sparkline only
+/// draws the portion of history that has actual data. Once all slots are filled
+/// the oldest sample is overwritten on each push like a circular buffer.
+#[derive(Resource)]
+struct FpsHistory {
+    data: [Option<f32>; FPS_HISTORY_SAMPLES],
+    /// Index of the *next* slot to write to
+    index: usize,
+}
+
+impl Default for FpsHistory {
+    fn default() -> Self {
+        Self {
+            data: [None; FPS_HISTORY_SAMPLES],
+            index: 0,
         }
     }
+}
+
+impl FpsHistory {
+    /// Write `fps` into the current slot and advance the write cursor, wrapping
+    /// around when the end of the buffer is reached so the dataframes like a
+    /// cicrular buffer. There is probably a more polars way to do this.
+    // TODO: future mitch learn polars better stop being a hack and using an index offset.
+    fn push(&mut self, fps: f32) {
+        self.data[self.index] = Some(fps);
+        self.index = (self.index + 1) % FPS_HISTORY_SAMPLES;
+    }
+
+    /// Return the filled samples in chronological order old to new with
+    /// normalized data so the maximum observed value maps to `1.0`, the shader
+    /// only knows of data from 0 to 1 anyway. This design isn't ideal, its me
+    /// being lazy.
+    ///
+    /// Slots holding `None` are skipped, so the returned slice only covers the
+    /// history that has actually been recorded so far. With weird errors being
+    /// ignored like an elephant in the room.
+    fn to_normalized_values(&self) -> Vec<f32> {
+        // Read starting at `index` into the dataframe and wrap around to `index - 1`
+        let raw: Vec<f32> = (0..FPS_HISTORY_SAMPLES)
+            .map(|offset| (self.index + offset) % FPS_HISTORY_SAMPLES)
+            .filter_map(|slot| self.data[slot])
+            .collect();
+
+        if raw.is_empty() {
+            return Vec::new();
+        }
+
+        // Peak fps observed for scaling the entire dataframe for shader display.
+        let max_fps = self
+            .data
+            .iter()
+            .filter_map(|v| *v)
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        let scale = if max_fps > 0.0 { max_fps } else { 1.0 };
+
+        // This is weird but bevys coord system is annoying, basically invert
+        // the y so bevy shows 60fps lower than 120fps.
+        raw.iter()
+            .map(|&fps| 1.0 - (fps / scale).clamp(0.0, 1.0))
+            .collect()
+    }
+}
+
+/// Spawn the FPS sparkline UI node.
+///
+/// This is a compact `PlotUiMaterial` as a bevy ui node.
+/// `sync_fps_sparkline_visibility` shows/hides it in step with `FpsDisplay`.
+fn setup_fps_sparkline_ui(
+    mut commands: Commands,
+    mut ui_materials: ResMut<Assets<flan::PlotUiMaterial>>,
+    #[cfg(not(feature = "webgl"))] mut buffers: ResMut<
+        Assets<bevy::render::storage::ShaderStorageBuffer>,
+    >,
+) {
+    #[cfg(not(feature = "webgl"))]
+    let points_binding = buffers.add(bevy::render::storage::ShaderStorageBuffer::from(
+        Vec::<Vec2>::new(),
+    ));
+
+    #[cfg(feature = "webgl")]
+    let points_binding = flan::PlotPointsUniform {
+        data: [Vec4::ZERO; flan::MAX_PLOT_POINTS],
+    };
+
+    let material = ui_materials.add(flan::PlotUiMaterial {
+        params: flan::PlotUniform {
+            min: Vec2::ZERO,
+            max: Vec2::ONE,
+            zoom: Vec2::ONE,
+            offset: Vec2::ZERO,
+            count: 0,
+            time: 0.0,
+            line_width: 0.01,
+            #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
+            _webgl2_padding: 0.0,
+        },
+        points: points_binding,
+    });
+
+    // Mirror the top offset used by the FPS text label.
+    #[cfg(feature = "egui")]
+    let top = Val::Px(40.0);
+    #[cfg(not(feature = "egui"))]
+    let top = Val::Px(10.0);
+
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            // Sit just to the left of the fps text.
+            // fps text: right:10px, ~90px wide → left edge ~100px from screen right.
+            // Sparkline: width 100px, with a small gap → right:110px.
+            right: Val::Px(140.0),
+            top,
+            width: Val::Px(100.0),
+            height: Val::Px(40.0),
+            ..default()
+        },
+        Visibility::Hidden,
+        MaterialNode(material),
+        flan::SparklineUiNode,
+    ));
+}
+
+/// Sample the current FPS into the `FpsHistory` circular buffer every 0.1 s.
+///
+/// Reads from `DiagnosticsStore` (fed by `FrameTimeDiagnosticsPlugin`) so no
+/// `Res<Time>` is needed — the `on_timer` run condition owns the 100 ms cadence.
+/// Skips quietly if diagnostics aren't populated yet (first few frames).
+fn sample_fps_history(
+    diagnostics: Res<DiagnosticsStore>,
+    mut fps_history: ResMut<FpsHistory>,
+    mut sparkline_df: ResMut<flan::SparklineDataFrame>,
+) {
+    let Some(fps) = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|d| d.value())
+    else {
+        return;
+    };
+
+    fps_history.push(fps as f32);
+
+    let values = fps_history.to_normalized_values();
+    let n = values.len();
+    // Mutating sparkline_df triggers Bevy change detection, which causes
+    // flan's sync_sparkline_data to run on the next frame automatically.
+    sparkline_df.df = DataFrame::new(n, vec![Column::new("y".into(), values)]).unwrap_or_default();
 }
 
 /// Toggle cube rotation marker
@@ -1160,19 +1371,14 @@ fn initial_plot_df() -> DataFrame {
         .expect("initial plot DataFrame construction failed")
 }
 
-/// Append a new random-walk row to the underlying plot DataFrame. Then notify
-/// `flan` vi a message event to resync the shader data.
-///
-/// Only at most `flan::PLOT_WINDOW_SIZE` pieces of data are ever yeeted to the
-/// plot shader.
+/// Append a new random-walk row to the plot DataFrame and cap it at
+/// `PLOT_WINDOW_SIZE` rows so it never grows beyond what the shader actually uses.
 fn tick_plot_data(
     mut plot_df: ResMut<flan::PlotDataFrame>,
     mut events: bevy::ecs::message::MessageWriter<flan::PlotDataUpdated>,
 ) {
     let mut rng = rand::rng();
 
-    // Grab the most recent Y so the random walk doesn't spike weirdly for now.
-    // TODO: Maybe have this be exponentially weighted against the edges of the plot?
     let last_y = plot_df
         .df
         .column("y")
@@ -1187,10 +1393,24 @@ fn tick_plot_data(
     let new_row = DataFrame::new(1, vec![Column::new("y".into(), vec![next_y])])
         .expect("new plot row construction failed");
 
-    plot_df.df = plot_df
+    let combined = plot_df
         .df
         .vstack(&new_row)
-        .expect("plot DataFrame vstack append failed");
+        .expect("plot DataFrame vstack failed");
+
+    // Trim to the window we actually use so the DataFrame never grows beyond
+    // PLOT_WINDOW_SIZE rows regardless of how long the app runs. No need to
+    // waste memory. Could probably make this whole dataframe smaller.
+    // TODO: mitch figure out ^^^
+    let len = combined.height();
+    plot_df.df = if len > flan::PLOT_WINDOW_SIZE {
+        combined.slice(
+            (len - flan::PLOT_WINDOW_SIZE) as i64,
+            flan::PLOT_WINDOW_SIZE,
+        )
+    } else {
+        combined
+    };
 
     events.write(flan::PlotDataUpdated);
 }

@@ -6,7 +6,7 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     let uv = in.uv;
 
     // Antialiased polyline coverage in [0,1] via smoothstep SDF.
-    let line_coverage = draw_line(uv, 0.003);
+    let line_coverage = draw_line(uv);
 
     // Bright green line composited over a fully transparent background.
     let line_color = vec4<f32>(0.1, 0.8, 0.1, line_coverage);

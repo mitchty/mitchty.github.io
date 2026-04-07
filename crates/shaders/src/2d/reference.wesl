@@ -14,8 +14,8 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     let grid_y = fract(uv.y * 10.0);
     let grid = f32(grid_x < 0.02 || grid_y < 0.02) * 0.15;
 
-    // Plot the polyline using the SDF helper
-    let line = draw_line(uv, 0.003);
+    // Plot the polyline using the SDF helper.
+    let line = draw_line(uv);
 
     let col = bg + vec3<f32>(grid)
             + vec3<f32>(0.1, 0.8, 0.1) * line;
