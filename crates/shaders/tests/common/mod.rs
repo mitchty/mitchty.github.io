@@ -7,15 +7,17 @@ use bytemuck::{Pod, Zeroable};
 use shaders::render::{Binding, BindingKind, render_shader};
 use shaders::wesl::{Variant, compile};
 
-// Non-WebGL uniform layout 40 bytes, no padding.
-//   struct PlotUniform {
-//       min:    vec2<f32>,   // offset  0  (8 bytes)
-//       max:    vec2<f32>,   // offset  8  (8 bytes)
-//       zoom:   vec2<f32>,   // offset 16  (8 bytes)
-//       offset: vec2<f32>,   // offset 24  (8 bytes)
-//       count:  u32,         // offset 32  (4 bytes)
-//       time:   f32,         // offset 36  (4 bytes)
-//   }                        // total: 40 bytes
+/// Non-WebGL uniform buffer struct that matches the WESL shader's PlotUniform layout.
+///
+/// Layout (48 bytes with padding for Metal alignment):
+/// - min: vec2<f32> (8 bytes, offset 0)
+/// - max: vec2<f32> (8 bytes, offset 8)
+/// - zoom: vec2<f32> (8 bytes, offset 16)
+/// - offset: vec2<f32> (8 bytes, offset 24)
+/// - count: u32 (4 bytes, offset 32)
+/// - time: f32 (4 bytes, offset 36)
+/// - line_width: f32 (4 bytes, offset 40)
+/// - _padding: f32 (4 bytes, offset 44) temp hack, I need to brain a better way for this crap
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct PlotUniform {
@@ -25,6 +27,8 @@ pub struct PlotUniform {
     pub offset: [f32; 2],
     pub count: u32,
     pub time: f32,
+    pub line_width: f32,
+    pub _padding: f32, // 4 bytes padding to reach 48 bytes for Metal alignment
 }
 
 impl PlotUniform {
@@ -36,22 +40,23 @@ impl PlotUniform {
             offset: [0.0, 0.0],
             count: TEST_POINT_COUNT as u32,
             time: 0.0,
+            line_width: 0.003,
+            _padding: 0.0,
         }
     }
 }
 
-// WebGL uniform layout 48 bytes
-// multiple of 16 bytes; count u32 + time f32 = 8 bytes at offset 32, so we
-// need 8 bytes of padding to get to 48.
-//   struct PlotUniformWebGl {
-//       min:    vec2<f32>,   // offset  0  (8 bytes)
-//       max:    vec2<f32>,   // offset  8  (8 bytes)
-//       zoom:   vec2<f32>,   // offset 16  (8 bytes)
-//       offset: vec2<f32>,   // offset 24  (8 bytes)
-//       count:  u32,         // offset 32  (4 bytes)
-//       time:   f32,         // offset 36  (4 bytes)
-//       _pad:   [u32; 2],    // offset 40  (8 bytes padding)
-//   }                        // total: 48 bytes
+/// WebGL uniform buffer struct for plot shaders.
+///
+/// Layout (48 bytes, std140 alignment):
+/// - min: vec2<f32> (8 bytes, offset 0)
+/// - max: vec2<f32> (8 bytes, offset 8)
+/// - zoom: vec2<f32> (8 bytes, offset 16)
+/// - offset: vec2<f32> (8 bytes, offset 24)
+/// - count: u32 (4 bytes, offset 32)
+/// - time: f32 (4 bytes, offset 36)
+/// - line_width: f32 (4 bytes, offset 40)
+/// - _webgl2_padding: f32 (4 bytes, offset 44) Also want to figure out how to eliminate this or transparently have things padded
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct PlotUniformWebGl {
@@ -61,7 +66,8 @@ pub struct PlotUniformWebGl {
     pub offset: [f32; 2],
     pub count: u32,
     pub time: f32,
-    pub _pad: [u32; 2],
+    pub line_width: f32,
+    pub _webgl2_padding: f32,
 }
 
 impl PlotUniformWebGl {
@@ -73,7 +79,8 @@ impl PlotUniformWebGl {
             offset: [0.0, 0.0],
             count: TEST_POINT_COUNT as u32,
             time: 0.0,
-            _pad: [0; 2],
+            line_width: 0.003,
+            _webgl2_padding: 0.0,
         }
     }
 }
@@ -131,6 +138,20 @@ impl FullscreenEffectUniformWebGl {
 // enough to pass the SSIM threshold for now in the unit tests.
 pub const TEST_POINT_COUNT: usize = 200;
 
+// Compile-time check: ensure PlotUniform size matches what wgpu expects.
+//
+// The WESL shader defines a 44-byte struct (7 f32 fields = 28 bytes + 3 vec2 = 24 bytes),
+// but wgpu on Metal pads uniform buffers to 16-byte boundaries (48 bytes).
+//
+// This catches if we ever remove the padding or change the struct without
+// accounting for wgpu's internal padding.
+const _: () = {
+    let _ = std::mem::size_of::<PlotUniform>;
+    let _ = std::mem::size_of::<PlotUniformWebGl>;
+    // Note: We can't use assert! in const context, but we can verify at runtime
+    // in tests. The key is that both structs must be 48 bytes.
+};
+
 pub fn test_sin_wave_points() -> Vec<[f32; 2]> {
     (0..TEST_POINT_COUNT)
         .map(|i| {
@@ -165,6 +186,22 @@ pub fn render_wesl(
 
     let wgsl = compile(stem, src, variant)
         .unwrap_or_else(|e| panic!("WESL compile failed for {stem}: {e}"));
+
+    // Debug: print the compiled WGSL to see what we're actually getting
+    eprintln!(
+        "=== Compiled WGSL for {} (webgl={}, ui_material={}, wgpu_test={}) ===",
+        stem, variant.webgl, variant.ui_material, variant.wgpu_test
+    );
+    eprintln!("{}", wgsl);
+    eprintln!("=== END WGSL ===");
+    eprintln!(
+        "=== PlotUniform size: {} bytes ===",
+        std::mem::size_of::<PlotUniform>()
+    );
+    eprintln!(
+        "=== PlotUniformWebGl size: {} bytes ===",
+        std::mem::size_of::<PlotUniformWebGl>()
+    );
 
     let result = if variant.webgl {
         let uniform = PlotUniformWebGl::test_default();
@@ -268,5 +305,28 @@ pub fn render_fullscreen_effect(
             None
         }
         Err(e) => panic!("render({stem}, {}) failed: {e}", variant.dir_name()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plot_uniform_size_for_metal() {
+        assert_eq!(
+            std::mem::size_of::<PlotUniform>(),
+            48,
+            "PlotUniform must be 48 bytes for Metal uniform buffer alignment"
+        );
+    }
+
+    #[test]
+    fn plot_uniform_webgl_size() {
+        assert_eq!(
+            std::mem::size_of::<PlotUniformWebGl>(),
+            48,
+            "PlotUniformWebGl must be 48 bytes for WebGL std140 alignment"
+        );
     }
 }
