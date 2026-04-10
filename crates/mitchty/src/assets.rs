@@ -95,6 +95,9 @@ impl Plugin for AssetConfigPlugin {
             embedded_asset!(_app, "assets/fonts/FiraMono-Medium.ttf");
             // Japanese font used by the egui Recognizer sidebar.
             embedded_asset!(_app, "assets/fonts/NotoSansJP-Regular.ttf");
+
+            // gltf model for testing abuse
+            embedded_asset!(_app, "assets/mitchty.glb");
         }
     }
 }

@@ -154,6 +154,7 @@
             (lib.fileset.fileFilter (file: file.hasExt "toml") ./crates)
             # This is stuff thats embedded beyond the bevy asset server
             (lib.fileset.fileFilter (file: file.hasExt "ttf") ./crates)
+            (lib.fileset.fileFilter (file: file.hasExt "glb") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "mpk") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "json") ./crates)
             ./deny.toml
@@ -442,7 +443,7 @@
               (lib.fileset.fileFilter (file: file.hasExt "toml") ./crates)
               (lib.fileset.fileFilter (file: file.hasExt "ktx2") ./.)
               (lib.fileset.fileFilter (file: file.hasExt "ttf") ./.)
-              (lib.fileset.fileFilter (file: file.hasExt "otf") ./.)
+              (lib.fileset.fileFilter (file: file.hasExt "glb") ./.)
               (lib.fileset.fileFilter (file: file.hasExt "wgsl") ./.)
               (lib.fileset.fileFilter (file: file.hasExt "wesl") ./.)
               (lib.fileset.fileFilter (file: file.hasExt "mpk") ./crates)

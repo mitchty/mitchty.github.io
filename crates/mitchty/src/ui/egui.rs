@@ -8,7 +8,7 @@ use crate::ui::recognizer::RasterSize;
 use crate::ui::recognizer::{BASE_BRUSH_R, InferenceResult, RecognizerState};
 use crate::ui::scroll_view::{ActivePost, POSTS};
 use crate::ui::world_clock::{ShowWorldClock, WorldClockState, world_clock_window};
-use crate::{ColorState, CubeRotation, FpsDisplay, HueAnimation};
+use crate::{CameraMode, ColorState, CubeRotation, FpsDisplay, HueAnimation, MainCamera};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
@@ -29,6 +29,20 @@ pub struct EguiWantsInput {
 /// Marker component for the egui ui display
 #[derive(Component)]
 pub struct ShowEgui;
+
+/// Message for when camera projection needs to change.
+///
+/// Bound to the M key and for now the egui menu item.
+/// `apply_camera_projection_toggle` handles the actual Projection swap on the
+/// camera.
+#[derive(Debug, Clone, Copy)]
+pub struct ToggleCameraProjection;
+impl bevy::ecs::message::Message for ToggleCameraProjection {}
+
+/// Marker...ish component to note we were tasked with toggling the camera
+/// projection.
+#[derive(Resource, Default)]
+pub struct CameraProjectionToggleRequested(pub bool);
 
 /// Marker component to track whether the Recognizer window is open
 #[derive(Component)]
@@ -102,8 +116,18 @@ impl Plugin for SettingsUiPlugin {
             .init_resource::<RecognizerState>()
             .init_resource::<InferenceResult>()
             .add_message::<ThemeChanged>()
+            .add_message::<ToggleCameraProjection>()
+            .init_resource::<CameraProjectionToggleRequested>()
             .insert_non_send_resource(engine)
-            .add_systems(Startup, setup_egui);
+            .add_systems(Startup, setup_egui)
+            .add_systems(
+                Update,
+                (
+                    send_camera_projection_toggle,
+                    apply_camera_projection_toggle,
+                )
+                    .chain(),
+            );
 
         #[cfg(not(target_arch = "wasm32"))]
         let app = app
@@ -345,6 +369,21 @@ fn resolve_initial_theme(choice: ThemeChoice) -> egui::Visuals {
     egui::Visuals::dark()
 }
 
+/// Returns the default background color for a given theme choice.
+// TODO: This is a good candidate for a theme kinda system maybe or plugin.
+fn theme_default_color(choice: ThemeChoice) -> bevy::color::Srgba {
+    let is_dark = match choice {
+        ThemeChoice::Dark => true,
+        ThemeChoice::Light => false,
+        ThemeChoice::Auto => resolve_initial_theme(ThemeChoice::Auto).dark_mode,
+    };
+    if is_dark {
+        bevy::color::Srgba::new(0.0, 0.0, 0.0, 1.0)
+    } else {
+        bevy::color::Srgba::new(1.0, 1.0, 1.0, 1.0)
+    }
+}
+
 /// Bump up egui text, register NotoSansJP as a CJK fallback, and apply the
 /// resolved startup theme.
 ///
@@ -445,23 +484,28 @@ fn setup_egui(
 
 /// Display the settings UI using egui as a top menu bar
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn settings_ui(
     mut contexts: EguiContexts,
     mut color_state: ResMut<ColorState>,
     mut effects_enabled: ResMut<EffectsEnabled>,
-    fps_query: Query<Entity, With<FpsDisplay>>,
-    cube_rotation_query: Query<Entity, With<CubeRotation>>,
-    hue_animation_query: Query<Entity, With<HueAnimation>>,
     show_egui_query: Query<(), With<ShowEgui>>,
-    recognizer_query: Query<Entity, With<ShowRecognizer>>,
+    // In ParamSet now to avoid 16 param system tuple limit in bevy.
+    mut marker_queries: ParamSet<(
+        Query<Entity, With<FpsDisplay>>,
+        Query<Entity, With<CubeRotation>>,
+        Query<Entity, With<HueAnimation>>,
+        Query<Entity, With<ShowRecognizer>>,
+        Query<Entity, With<ShowWorldClock>>,
+        Query<&mut Visibility, With<flan::PlotUiNode>>,
+    )>,
     #[cfg(not(target_arch = "wasm32"))] data_viewer_query: Query<Entity, With<ShowDataViewer>>,
-    world_clock_query: Query<Entity, With<ShowWorldClock>>,
     mut active_post: ResMut<ActivePost>,
     mut active_shader: ResMut<ActiveShader>,
     available_shaders: Res<AvailableShaders>,
-    mut plot_query: Query<&mut Visibility, With<flan::PlotUiNode>>,
     mut commands: Commands,
     mut ui_config: ResMut<UiConfig>,
+    mut proj_params: ParamSet<(Res<CameraMode>, ResMut<CameraProjectionToggleRequested>)>,
 ) -> Result {
     if show_egui_query.is_empty() {
         return Ok(());
@@ -479,7 +523,18 @@ fn settings_ui(
                 }
             });
 
-            ui.menu_button("Background", |ui| {
+            ui.menu_button("Gooey", |ui| {
+                ui.label(egui::RichText::new("Projection").strong());
+                let proj_label = match *proj_params.p0() {
+                    CameraMode::Perspective => "Perspective [M]",
+                    CameraMode::Orthographic => "Orthographic [M]",
+                };
+                if ui.button(proj_label).clicked() {
+                    proj_params.p1().0 = true;
+                }
+
+                ui.separator();
+
                 ui.label(egui::RichText::new("Effects").strong());
                 let mut fullscreen_enabled = effects_enabled.0;
                 if ui
@@ -506,43 +561,51 @@ fn settings_ui(
                 ui.separator();
 
                 ui.label(egui::RichText::new("Toggles").strong());
-                let mut fps_enabled = fps_query.single().is_ok();
+                let fps_entity = marker_queries.p0().single().ok();
+                let mut fps_enabled = fps_entity.is_some();
                 if ui.checkbox(&mut fps_enabled, "FPS Display [F]").changed() {
                     if fps_enabled {
                         commands.spawn(FpsDisplay);
-                    } else if let Ok(entity) = fps_query.single() {
+                    } else if let Some(entity) = fps_entity {
                         commands.entity(entity).despawn();
                     }
                 }
-                let mut cube_rotation_enabled = cube_rotation_query.single().is_ok();
+                let cube_entity = marker_queries.p1().single().ok();
+                let mut cube_rotation_enabled = cube_entity.is_some();
                 if ui
                     .checkbox(&mut cube_rotation_enabled, "Cube Rotation [C]")
                     .changed()
                 {
                     if cube_rotation_enabled {
                         commands.spawn(CubeRotation);
-                    } else if let Ok(entity) = cube_rotation_query.single() {
+                    } else if let Some(entity) = cube_entity {
                         commands.entity(entity).despawn();
                     }
                 }
-                let mut hue_animation_enabled = hue_animation_query.single().is_ok();
+                let hue_entity = marker_queries.p2().single().ok();
+                let mut hue_animation_enabled = hue_entity.is_some();
                 if ui
                     .checkbox(&mut hue_animation_enabled, "Hue Animation [H]")
                     .changed()
                 {
                     if hue_animation_enabled {
                         commands.spawn(HueAnimation);
-                    } else if let Ok(entity) = hue_animation_query.single() {
+                    } else if let Some(entity) = hue_entity {
                         commands.entity(entity).despawn();
                     }
                 }
+
                 ui.separator();
 
                 ui.label(egui::RichText::new("Background color").strong());
+                // Resolve the display color: user pick or theme default.
+                let display = color_state
+                    .color
+                    .unwrap_or_else(|| theme_default_color(ui_config.theme));
                 let mut color32 = egui::Color32::from_rgb(
-                    (color_state.color.red * 255.0) as u8,
-                    (color_state.color.green * 255.0) as u8,
-                    (color_state.color.blue * 255.0) as u8,
+                    (display.red * 255.0) as u8,
+                    (display.green * 255.0) as u8,
+                    (display.blue * 255.0) as u8,
                 );
                 if egui::color_picker::color_picker_color32(
                     ui,
@@ -550,10 +613,11 @@ fn settings_ui(
                     egui::color_picker::Alpha::Opaque,
                 ) {
                     let [r, g, b, _] = color32.to_normalized_gamma_f32();
-                    color_state.color = bevy::color::Srgba::rgb(r, g, b);
+                    color_state.color = Some(bevy::color::Srgba::rgb(r, g, b));
                 }
-                if ui.button("Reset to Grey").clicked() {
-                    color_state.color = bevy::color::Srgba::gray(0.5);
+                // Only show reset button when the user has overridden the theme default.
+                if color_state.color.is_some() && ui.button("Reset to default").clicked() {
+                    color_state.color = None;
                     ui.close();
                 }
             });
@@ -569,12 +633,11 @@ fn settings_ui(
             });
 
             ui.menu_button("Apps", |ui| {
-                let wc_open = !world_clock_query.is_empty();
+                let wc_entity = marker_queries.p4().single().ok();
+                let wc_open = wc_entity.is_some();
                 if ui.selectable_label(wc_open, "World Clock").clicked() {
-                    if wc_open {
-                        if let Ok(entity) = world_clock_query.single() {
-                            commands.entity(entity).despawn();
-                        }
+                    if let Some(entity) = wc_entity {
+                        commands.entity(entity).despawn();
                     } else {
                         commands.spawn(ShowWorldClock);
                     }
@@ -638,11 +701,12 @@ fn settings_ui(
                     ui.label(egui::RichText::new("Abominable Intelligence").strong());
                     ui.separator();
 
+                    let recognizer_entity = marker_queries.p3().single().ok();
                     if ui.button("Recognizer").clicked() {
-                        if recognizer_query.is_empty() {
-                            commands.spawn(ShowRecognizer);
-                        } else if let Ok(entity) = recognizer_query.single() {
+                        if let Some(entity) = recognizer_entity {
                             commands.entity(entity).despawn();
+                        } else {
+                            commands.spawn(ShowRecognizer);
                         }
                         ui.close();
                     }
@@ -660,7 +724,8 @@ fn settings_ui(
 
                     ui.label(egui::RichText::new("Flan Shaders").strong());
 
-                    let line_graph_visible = plot_query
+                    let line_graph_visible = marker_queries
+                        .p5()
                         .single()
                         .map(|v| *v != Visibility::Hidden)
                         .unwrap_or(false);
@@ -668,7 +733,7 @@ fn settings_ui(
                         .selectable_label(line_graph_visible, "Line Graph")
                         .clicked()
                     {
-                        if let Ok(mut vis) = plot_query.single_mut() {
+                        if let Ok(mut vis) = marker_queries.p5().single_mut() {
                             *vis = if line_graph_visible {
                                 Visibility::Hidden
                             } else {
@@ -978,4 +1043,55 @@ fn update_egui_input_state(
     egui_wants_input.wants_keyboard = ctx.wants_keyboard_input();
 
     Ok(())
+}
+
+/// Drains `CameraProjectionToggleRequested`/abuses the true bool into a
+/// `ToggleCameraProjection` message so that `apply_camera_projection_toggle`
+/// handles both the key and the button through the same code path.
+// TODO: Need to come up with a better hack this is ass.
+fn send_camera_projection_toggle(
+    mut requested: ResMut<CameraProjectionToggleRequested>,
+    mut events: MessageWriter<ToggleCameraProjection>,
+) {
+    if requested.0 {
+        requested.0 = false;
+        events.write(ToggleCameraProjection);
+    }
+}
+
+/// Shared handler for camera projection toggling.
+///
+/// Based on `ToggleCameraProjection` messages swaps the `Projection` component
+/// on the `MainCamera` entity in-place.
+pub fn apply_camera_projection_toggle(
+    mut events: MessageReader<ToggleCameraProjection>,
+    mut camera_mode: ResMut<CameraMode>,
+    mut projection_query: Query<&mut Projection, With<MainCamera>>,
+) {
+    for _ in events.read() {
+        let Ok(mut projection) = projection_query.single_mut() else {
+            continue;
+        };
+        let new_mode = match *camera_mode {
+            CameraMode::Perspective => {
+                *projection = Projection::Orthographic(OrthographicProjection {
+                    scale: 5.0,
+                    near: 0.1,
+                    far: 1000.0,
+                    scaling_mode: bevy::camera::ScalingMode::FixedVertical {
+                        viewport_height: 1.0,
+                    },
+                    viewport_origin: Vec2::new(0.5, 0.5),
+                    ..OrthographicProjection::default_3d()
+                });
+                CameraMode::Orthographic
+            }
+            CameraMode::Orthographic => {
+                *projection = Projection::Perspective(PerspectiveProjection::default());
+                CameraMode::Perspective
+            }
+        };
+        bevy::log::debug!("projection now {:?}", new_mode);
+        *camera_mode = new_mode;
+    }
 }

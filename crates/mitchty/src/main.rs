@@ -7,13 +7,23 @@ mod ui;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 #[cfg(feature = "feathers")]
 use bevy::feathers::{FeathersPlugins, dark_theme::create_dark_theme, theme::UiTheme};
+use bevy::light::EnvironmentMapLight;
 use bevy::prelude::*;
+
 use bevy_pretty_text::prelude::*;
 
-/// Resource to hold the current background color state
+use crate::post_process::{EffectsEnabled, PostProcessSettings};
+use mitchty::RenderLayers;
+
+// TODO: maybe a shared gooey lib?
+pub use mitchty::CameraMode;
+
+/// Resource to hold the current background color state.
+/// `None` is "whatever the dark/light theme uses"
+/// `Some(color)` means user color
 #[derive(Resource)]
 pub struct ColorState {
-    pub color: Srgba,
+    pub color: Option<Srgba>,
 }
 
 use polars::prelude::*;
@@ -22,12 +32,12 @@ use rand::RngExt;
 use assets::{AssetConfigPlugin, asset_path};
 use bevy_fontmesh::prelude::*;
 use fullscreen_effect::{
-    CameraConfig, CameraOrbit, manage_effect_settings, next_effect, previous_effect, spawn_camera,
+    CameraConfig, CameraOrbit, manage_effect_settings, next_effect, previous_effect,
     toggle_fullscreen_effect, update_effect_time,
 };
 use post_process::PostProcessPlugin;
 use shaders::ShadersPlugin;
-use ui::{ScrollViewPlugin, SettingsUiPlugin, send_scroll_events};
+use ui::{ScrollViewPlugin, SettingsUiPlugin, ToggleCameraProjection, send_scroll_events};
 
 /// Absolute rotation speed
 const SPEED: f32 = 2.25;
@@ -35,8 +45,9 @@ const SPEED: f32 = 2.25;
 const MIN_SPEED: f32 = -SPEED;
 /// Maximum rotation speed in radians per second
 const MAX_SPEED: f32 = SPEED;
-/// Golden angle for rotation calculations
-const GOLDEN_ANGLE: f32 = 137.507_77;
+// Retaining for future weekend abuse
+// Golden angle for rotation calculations
+//const GOLDEN_ANGLE: f32 = 137.507_77;
 
 /// Marker component for entities that should rotate
 #[derive(Component)]
@@ -463,10 +474,9 @@ fn main() {
             df: DataFrame::empty(),
         })
         .init_resource::<FpsHistory>()
-        .insert_resource(ClearColor(Color::srgb(0.5, 0.5, 0.5)))
-        .insert_resource(ColorState {
-            color: Srgba::gray(0.5),
-        })
+        .init_resource::<CameraMode>()
+        .insert_resource(ClearColor(Color::srgb(0.0, 0.0, 0.0)))
+        .insert_resource(ColorState { color: None })
         .insert_resource(ui_config)
         .init_resource::<CameraConfig>()
         .init_resource::<Text3dContent>();
@@ -549,6 +559,7 @@ fn main() {
                 manage_effect_settings,
                 update_effect_time,
                 send_scroll_events,
+                toggle_camera_projection,
             ),
         );
 
@@ -559,38 +570,70 @@ fn main() {
     app.run();
 }
 
-fn setup(
+/// Spawn the single scene camera.
+///
+/// Of note now, I tried keeping two cameras in sync. Oof was that ass never
+/// again. So just swap the Projection mode instead. Its waaaay simpler of a way
+/// to approach things. Migrated this from fullscreen_effect. Also probably
+/// about time for a refactor of stuff in general in this whole shebang.
+///
+// Also egui camera usage is... interesting in that it uses the cameras at
+// plugin initialization time in startup. Changing that after is... Yeah
+// probably not worth worrying about. Will be nice to do all this gooey code in
+// the bevy ecs once the bsn is up to snuff so all these weird edge cases are no
+// more.
+fn spawn_camera(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    config: Res<CameraConfig>,
+    asset_server: Res<AssetServer>,
+    effects_enabled: Res<EffectsEnabled>,
 ) {
-    // let diffuse_path = asset_path("environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2");
-    // let specular_path = asset_path("environment_maps/pisa_specular_rgb9e5_zstd.ktx2");
+    let diffuse_path = asset_path("environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2");
+    let specular_path = asset_path("environment_maps/pisa_specular_rgb9e5_zstd.ktx2");
+    let intensity = if effects_enabled.0 { 1.0 } else { 0.0 };
 
-    let cube = meshes.add(Cuboid::new(0.5, 0.5, 0.5));
+    commands.spawn((
+        Camera3d::default(),
+        Camera {
+            order: -1,
+            ..default()
+        },
+        config.transform,
+        EnvironmentMapLight {
+            diffuse_map: asset_server.load(&diffuse_path),
+            specular_map: asset_server.load(&specular_path),
+            intensity: 2_000.0,
+            ..default()
+        },
+        config.free_look,
+        config.orbit,
+        crate::MainCamera,
+        PostProcessSettings {
+            intensity,
+            time: 0.0,
+            #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
+            _webgl2_padding: Vec2::ZERO,
+        },
+        RenderLayers::layer(0),
+    ));
+}
 
-    let mut hsla = Hsla::hsl(0.0, 1.0, 0.5);
-    let mut rng = rand::rng();
+fn setup(asset_server: Res<AssetServer>, mut commands: Commands) {
+    // gltf model for testing abuse
+    let glb_path = asset_path("mitchty.glb");
+    // Use GltfAssetLabel::Scene(0) to load the first scene from the GLB/TF file
+    // TODO: I should make it so I can use dynamic assets from like the fs on
+    // native and uri on both at runtime. That would be wizard. Future me task!
+    let scene_handle = asset_server.load(GltfAssetLabel::Scene(0).from_asset(glb_path));
 
-    for x in -1..2 {
-        for z in -1..2 {
-            let base_speed = Vec3::new(
-                rng.random_range(MIN_SPEED..=MAX_SPEED),
-                rng.random_range(MIN_SPEED..=MAX_SPEED),
-                rng.random_range(MIN_SPEED..=MAX_SPEED),
-            );
-
-            commands.spawn((
-                Mesh3d(cube.clone()),
-                MeshMaterial3d(materials.add(Color::from(hsla))),
-                Transform::from_translation(Vec3::new(x as f32, 0.0, z as f32)),
-                Rotator { base_speed },
-                CubeRotationEnabled,
-                HueAnimationEnabled,
-            ));
-            hsla = hsla.rotate_hue(GOLDEN_ANGLE);
-        }
-    }
+    // Spawn the scene with a large scale to fit the view. I apparently have no
+    // dam idea what the right scale of exports should be in blender and "we'll
+    // fix it in post!" scaling works so.... whatever choose your battles this
+    // is a winter battle with hot cocoa.
+    commands.spawn((
+        SceneRoot(scene_handle),
+        Transform::from_scale(Vec3::splat(0.3)),
+    ));
 }
 
 /// Cube material animation system
@@ -608,6 +651,7 @@ fn animate_materials(
     }
 }
 
+// DEAD MAN WALKING! How much do I really want to keep this hack code?
 /// Cube random rotation system
 fn rotate_entities(
     mut query: Query<(&mut Transform, &mut Rotator), With<CubeRotationEnabled>>,
@@ -713,6 +757,23 @@ fn dismiss_help_on_input(
         for entity in help_query.iter() {
             commands.entity(entity).despawn();
         }
+    }
+}
+
+// TODO: Here too, I'm thinking its about time to remove some of the keybinding nonsense
+/// Send a `ToggleCameraProjection` message to toggle the camera projection
+/// m toggles perspective/orthographic
+fn toggle_camera_projection(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut events: MessageWriter<ToggleCameraProjection>,
+    #[cfg(feature = "egui")] egui_wants_input: Res<ui::EguiWantsInput>,
+) {
+    #[cfg(feature = "egui")]
+    if egui_wants_input.wants_keyboard {
+        return;
+    }
+    if keyboard.just_pressed(KeyCode::KeyM) {
+        events.write(ToggleCameraProjection);
     }
 }
 
@@ -1338,13 +1399,41 @@ fn cleanup_free_look_after_inactivity(
     }
 }
 
-/// Sync ColorState resource the background clear color
+/// Sync ColorState resource to the background clear color.
+/// When `color_state.color` is `None` the background follows the active theme
+/// dark/light setup. Cause why not.
 fn sync_color_state_to_clear_color(
     color_state: Res<ColorState>,
+    ui_config: Res<crate::ui::UiConfig>,
     mut clear_color: ResMut<ClearColor>,
 ) {
-    if color_state.is_changed() {
-        clear_color.0 = color_state.color.into();
+    if color_state.is_changed() || ui_config.is_changed() {
+        let resolved = match color_state.color {
+            Some(c) => c,
+            None => {
+                let is_dark = match ui_config.theme {
+                    crate::ui::ThemeChoice::Dark => true,
+                    crate::ui::ThemeChoice::Light => false,
+                    crate::ui::ThemeChoice::Auto => {
+                        // TODO: Theres DRY code in these here parts that I can refactor over weekend.
+                        match dark_light::detect() {
+                            dark_light::Mode::Dark => true,
+                            dark_light::Mode::Light => false,
+                            dark_light::Mode::Default => {
+                                let hour = jiff::Zoned::now().hour();
+                                !(7..18).contains(&hour)
+                            }
+                        }
+                    }
+                };
+                if is_dark {
+                    Srgba::new(0.0, 0.0, 0.0, 1.0)
+                } else {
+                    Srgba::new(1.0, 1.0, 1.0, 1.0)
+                }
+            }
+        };
+        clear_color.0 = resolved.into();
     }
 }
 
