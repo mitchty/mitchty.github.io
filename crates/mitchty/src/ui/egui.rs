@@ -69,7 +69,7 @@ pub struct LastKnownTheme(pub dark_light::Mode);
 #[cfg(not(target_arch = "wasm32"))]
 impl Default for LastKnownTheme {
     fn default() -> Self {
-        Self(dark_light::detect())
+        Self(dark_light::detect().unwrap_or(dark_light::Mode::Dark))
     }
 }
 
@@ -196,7 +196,7 @@ fn poll_system_theme(
         return;
     }
 
-    let current = dark_light::detect();
+    let current = dark_light::detect().unwrap_or(dark_light::Mode::Dark);
     if current != last.0 {
         last.0 = current;
         events.write(ThemeChanged(current));
@@ -321,7 +321,7 @@ fn apply_theme_change(
     for ThemeChanged(mode) in events.read() {
         new_visuals = Some(match mode {
             dark_light::Mode::Dark => egui::Visuals::dark(),
-            dark_light::Mode::Light | dark_light::Mode::Default => egui::Visuals::light(),
+            dark_light::Mode::Light | dark_light::Mode::Unspecified => egui::Visuals::light(),
         });
     }
 
@@ -348,12 +348,10 @@ fn resolve_initial_theme(choice: ThemeChoice) -> egui::Visuals {
         ThemeChoice::Auto => {}
     }
 
-    // dark-light
-    match dark_light::detect() {
+    match dark_light::detect().unwrap_or(dark_light::Mode::Unspecified) {
         dark_light::Mode::Dark => return egui::Visuals::dark(),
         dark_light::Mode::Light => return egui::Visuals::light(),
-        // Default = platform has no preference, fall through.
-        dark_light::Mode::Default => {}
+        dark_light::Mode::Unspecified => {}
     }
 
     // Hold my beer and use time of day to SWAG a guesstimate.

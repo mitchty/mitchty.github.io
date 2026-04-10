@@ -1416,13 +1416,9 @@ fn sync_color_state_to_clear_color(
                     crate::ui::ThemeChoice::Light => false,
                     crate::ui::ThemeChoice::Auto => {
                         // TODO: Theres DRY code in these here parts that I can refactor over weekend.
-                        match dark_light::detect() {
+                        match dark_light::detect().unwrap_or(dark_light::Mode::Unspecified) {
                             dark_light::Mode::Dark => true,
-                            dark_light::Mode::Light => false,
-                            dark_light::Mode::Default => {
-                                let hour = jiff::Zoned::now().hour();
-                                !(7..18).contains(&hour)
-                            }
+                            dark_light::Mode::Light | dark_light::Mode::Unspecified => false,
                         }
                     }
                 };

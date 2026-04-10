@@ -38,11 +38,11 @@ const_format = "~0.2"
 git-version = "~0.3"
 jiff = { version = "~0.2", default-features = false, features = ["std"] }
 rustc_version = "~0.4"
-zip = { version = "~8.3", default-features = false, features = ["deflate"] }
+zip = { version = "~8.5", default-features = false, features = ["deflate"] }
 tracing = "~0.1"
 tracing-subscriber = { version = "~0.3", features = ["env-filter"] }
 unicode_names2 = "~2.0"
-dark-light = "~1"
+dark-light = "~2.0"
 
 [workspace.metadata.crane]
 name = "mitchty"
