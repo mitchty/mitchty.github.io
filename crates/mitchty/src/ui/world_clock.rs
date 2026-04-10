@@ -157,13 +157,18 @@ pub struct AlarmState {
     pub year: i32,
     pub month: u8,
     pub day: u8,
-    pub hour: u8,
-    pub minute: u8,
+    pub hour: Option<u8>,
+    pub minute: Option<u8>,
     pub second: u8,
     /// Screen position where the popup is anchored.
     pub spawn_pos: egui::Pos2,
     /// Optional label for the alarm.
     pub label: String,
+    /// Set to true the first time the hour dropdown scrolls to the current
+    /// hour so we don't redraw back to the current hour every time.
+    pub hour_scrolled: bool,
+    /// Same as ^^^ but for the minute dropdown instead.
+    pub minute_scrolled: bool,
 }
 
 impl AlarmState {
@@ -179,11 +184,13 @@ impl AlarmState {
                 year: zdt.year() as i32,
                 month: zdt.month() as u8,
                 day: zdt.day() as u8,
-                hour: zdt.hour() as u8,
-                minute: zdt.minute() as u8,
+                hour: None,
+                minute: None,
                 second: 0,
                 spawn_pos,
                 label: String::new(),
+                hour_scrolled: false,
+                minute_scrolled: false,
             };
         }
         Self {
@@ -191,22 +198,37 @@ impl AlarmState {
             year: 2025,
             month: 1,
             day: 1,
-            hour: 0,
-            minute: 0,
+            hour: None,
+            minute: None,
             second: 0,
             spawn_pos,
             label: String::new(),
+            hour_scrolled: false,
+            minute_scrolled: false,
         }
     }
 
     /// Convert the current picker values to UTC `Timestamp`.
-    fn to_timestamp(&self) -> Option<Timestamp> {
+    fn to_timestamp(&self, now: Timestamp, tz: &str) -> Option<Timestamp> {
+        let (hour, minute) = match (self.hour, self.minute) {
+            (Some(h), Some(m)) => (h, m), // User selected hour or minute values
+            _ => {
+                if let Ok(jtz) = TimeZone::get(tz)
+                    && let Ok(zdt) = now.to_zoned(jtz).round(Unit::Second)
+                {
+                    (zdt.hour() as u8, zdt.minute() as u8)
+                } else {
+                    (0, 0) // Fallback to 0's I guess
+                }
+            }
+        };
+
         let dt = civil::DateTime::new(
             self.year as i16,
             self.month as i8,
             self.day as i8,
-            self.hour as i8,
-            self.minute as i8,
+            hour as i8,
+            minute as i8,
             self.second as i8,
             0,
         )
@@ -684,9 +706,11 @@ fn draw_alarm_popup(
                                 alarm.year = zdt.year() as i32;
                                 alarm.month = zdt.month() as u8;
                                 alarm.day = zdt.day() as u8;
-                                alarm.hour = zdt.hour() as u8;
-                                alarm.minute = zdt.minute() as u8;
+                                alarm.hour = None;
+                                alarm.minute = None;
                                 alarm.second = 0;
+                                alarm.hour_scrolled = false;
+                                alarm.minute_scrolled = false;
                             }
                         }
                     });
@@ -731,32 +755,64 @@ fn draw_alarm_popup(
 
             ui.add_space(4.0);
 
-            // Time row.
-            // Scroll the lists so the pre-selected minute/hour is visible when
-            // the dropdown first opens. I got sick of figuring out what
-            // hour/minute it currently is to set an alarm for the next minute
-            // or hour or whatever.
+            // Auto-follow current time when hour/minute are None.
+            // Scroll to the current value on the exact frame the popup first opened.
+            let (current_hour_display, current_minute_display, cur_h, cur_m) = if let Ok(jtz) =
+                TimeZone::get(&alarm.tz)
+                && let Ok(zdt) = now.to_zoned(jtz).round(Unit::Second)
+            {
+                let h = zdt.hour() as u8;
+                let m = zdt.minute() as u8;
+                (format!("{:02}", h), format!("{:02}", m), h, m)
+            } else {
+                ("--".to_string(), "--".to_string(), 0u8, 0u8)
+            };
+
+            // TODO: keep?
+            // ui.horizontal(|ui| {
+            //     ui.label("Current:");
+            //     ui.label(egui::RichText::new(format!("{}:{}", current_hour_display, current_minute_display)).strong());
+            // });
+            // ui.add_space(4.0);
+
             ui.horizontal(|ui| {
+                let hour_display = alarm
+                    .hour
+                    .map(|h| format!("{:02}", h))
+                    .unwrap_or_else(|| current_hour_display.clone());
+
                 egui::ComboBox::new("alarm_pick_hour", "Hour")
-                    .selected_text(format!("{:02}", alarm.hour))
+                    .selected_text(hour_display)
                     .width(60.0)
                     .show_ui(ui, |ui| {
                         for h in 0u8..=23 {
-                            let resp = ui.selectable_value(&mut alarm.hour, h, format!("{:02}", h));
-                            if h == alarm.hour {
+                            let resp =
+                                ui.selectable_value(&mut alarm.hour, Some(h), format!("{:02}", h));
+                            if !alarm.hour_scrolled && alarm.hour.is_none() && h == cur_h {
                                 resp.scroll_to_me(Some(egui::Align::Center));
+                                alarm.hour_scrolled = true;
                             }
                         }
                     });
+
+                let minute_display = alarm
+                    .minute
+                    .map(|m| format!("{:02}", m))
+                    .unwrap_or_else(|| current_minute_display.clone());
+
                 egui::ComboBox::new("alarm_pick_minute", "Min")
-                    .selected_text(format!("{:02}", alarm.minute))
+                    .selected_text(minute_display)
                     .width(60.0)
                     .show_ui(ui, |ui| {
                         for m in 0u8..=59 {
-                            let resp =
-                                ui.selectable_value(&mut alarm.minute, m, format!("{:02}", m));
-                            if m == alarm.minute {
+                            let resp = ui.selectable_value(
+                                &mut alarm.minute,
+                                Some(m),
+                                format!("{:02}", m),
+                            );
+                            if !alarm.minute_scrolled && alarm.minute.is_none() && m == cur_m {
                                 resp.scroll_to_me(Some(egui::Align::Center));
+                                alarm.minute_scrolled = true;
                             }
                         }
                     });
@@ -774,7 +830,7 @@ fn draw_alarm_popup(
             ui.add_space(4.0);
 
             // Preview.
-            let maybe_ts = alarm.to_timestamp();
+            let maybe_ts = alarm.to_timestamp(now, &alarm.tz);
             let is_future = maybe_ts.map(|ts| ts > now).unwrap_or(false);
             let preview_color = if is_future {
                 egui::Color32::from_rgb(120, 220, 120)
@@ -810,7 +866,7 @@ fn draw_alarm_popup(
                 if ui
                     .add_enabled(is_future, egui::Button::new("✔ Set Alarm"))
                     .clicked()
-                    && let Some(ts) = alarm.to_timestamp()
+                    && let Some(ts) = alarm.to_timestamp(now, &alarm.tz)
                 {
                     let label = alarm.label.trim().to_string();
                     confirmed = Some((
