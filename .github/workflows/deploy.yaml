@@ -18,8 +18,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  check:
-    name: Run flake checks
+  check-linux:
+    name: Run flake checks (Linux)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -32,6 +32,24 @@ jobs:
         # space for this to pass consistently.
       - name: Free some more disk space
         run: ./.github/workflows/free-disk-space.bash
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Configure Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Run flake check
+        run: nix flake check -L
+
+  check-macos:
+    name: Run flake checks (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -147,7 +165,7 @@ jobs:
 
   deploy-pages:
     name: Deploy to GitHub Pages
-    needs: [check, build-wasm-lto, build-windows, build-macos]
+    needs: [check-linux, check-macos, build-wasm-lto, build-windows, build-macos]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -188,14 +206,14 @@ jobs:
           if git diff --cached --quiet; then
             echo "no changes to commit"
           else
-            git pull --rebase origin "$GITHUB_REF_NAME"
             git commit -m "chore: record sizes and dep graph for ${GITHUB_SHA:0:7} [skip ci]"
+            git pull --rebase origin "$GITHUB_REF_NAME"
             git push origin "$GITHUB_REF_NAME"
           fi
 
   create-prerelease:
     name: Create Pre-Release
-    needs: [check, build-wasm-lto, build-windows, build-macos]
+    needs: [check-linux, check-macos, build-wasm-lto, build-windows, build-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
