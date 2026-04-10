@@ -3,6 +3,8 @@ use bevy::prelude::*;
 #[cfg(not(debug_assertions))]
 use bevy::asset::embedded_asset;
 
+use bevy::asset::io::web::WebAssetPlugin;
+
 /// Determine the base asset path for the AssetPlugin in debug builds.
 /// Returns the path based on BEVY_ASSET_PATH env var or a fallback path.
 ///
@@ -96,7 +98,7 @@ impl Plugin for AssetConfigPlugin {
             // Japanese font used by the egui Recognizer sidebar.
             embedded_asset!(_app, "assets/fonts/NotoSansJP-Regular.ttf");
 
-            // gltf model for testing abuse
+            // gltf model for default abuse loading
             embedded_asset!(_app, "assets/mitchty.glb");
         }
     }
@@ -111,37 +113,63 @@ impl Plugin for AssetConfigPlugin {
 /// Nothing yet.... in this supports it. More a wine bug when a gamepad is
 /// present as a usb device.
 pub fn create_default_plugins(enable_gamepad: bool) -> bevy::app::PluginGroupBuilder {
-    // In debug builds, configure AssetPlugin to load from the filesystem
+    // Need to register the http(s) plugin asset server before the DefaultPlugins.
+    let web_asset_plugin = WebAssetPlugin {
+        silence_startup_warning: true,
+    };
+
+    // In debug builds, configure AssetPlugin to auto reload from the
+    // filesystem. UnapprovedPathMode::Allow lets absolute paths pass through
+    // FileAssetReader without being blocked thats kinda the point for this app.
     #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
     let plugins = {
-        use bevy::asset::AssetPlugin;
+        use bevy::asset::{AssetPlugin, UnapprovedPathMode};
 
         let asset_base = get_asset_base_path(
             std::env::var("BEVY_ASSET_PATH").ok(),
             env!("CARGO_MANIFEST_DIR"),
         );
 
-        DefaultPlugins.set(AssetPlugin {
-            file_path: asset_base,
-            ..default()
-        })
+        DefaultPlugins
+            .set(AssetPlugin {
+                file_path: asset_base,
+                unapproved_path_mode: UnapprovedPathMode::Allow,
+                ..default()
+            })
+            .add_before::<AssetPlugin>(web_asset_plugin)
     };
 
-    // WASM-specific configuration, basically sets window equal to the container
-    // its in size wise
+    // WASM-specific configuration match the window and canvas size and register
+    // remote source asset loading stuff.
     #[cfg(target_arch = "wasm32")]
-    let plugins = DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window {
-            fit_canvas_to_parent: true,
-            prevent_default_event_handling: false,
-            ..default()
-        }),
-        ..default()
-    });
+    let plugins = {
+        use bevy::asset::AssetPlugin;
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    fit_canvas_to_parent: true,
+                    prevent_default_event_handling: false,
+                    ..default()
+                }),
+                ..default()
+            })
+            .add_before::<AssetPlugin>(web_asset_plugin)
+    };
 
-    // Default configuration for release native builds to abuse embedding of assets
+    // Release native builds embedded assets are registered via
+    // AssetConfigPlugin, but FileAssetReader is also setup so absolute local
+    // paths work too. UnapprovedPathMode::Allow is needed for crap that starts
+    // with a / or I think like C:\ on windows but not sure on that.
     #[cfg(all(not(debug_assertions), not(target_arch = "wasm32")))]
-    let plugins = DefaultPlugins.build();
+    let plugins = {
+        use bevy::asset::{AssetPlugin, UnapprovedPathMode};
+        DefaultPlugins
+            .set(AssetPlugin {
+                unapproved_path_mode: UnapprovedPathMode::Allow,
+                ..default()
+            })
+            .add_before::<AssetPlugin>(web_asset_plugin)
+    };
 
     // Need --with-gamepad anywhere for now for bevy_input to care about
     // gamepads. Future me problem for when/if I add support.

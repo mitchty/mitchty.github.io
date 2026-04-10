@@ -28,6 +28,8 @@ bevy = { version = "0.18.1", default-features = false, features = [
   "ui",
   "3d",
   "experimental_bevy_feathers",
+  "http",
+  "https",
 ] }
 
 lib = { path = "../lib" }

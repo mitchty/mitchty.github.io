@@ -9,8 +9,11 @@ use crate::ui::recognizer::{BASE_BRUSH_R, InferenceResult, RecognizerState};
 use crate::ui::scroll_view::{ActivePost, POSTS};
 use crate::ui::world_clock::{ShowWorldClock, WorldClockState, world_clock_window};
 use crate::{CameraMode, ColorState, CubeRotation, FpsDisplay, HueAnimation, MainCamera};
+use crate::{SceneConfig, SceneUrlState};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+#[cfg(not(target_arch = "wasm32"))]
+use egui_file_dialog::FileDialog;
 
 // Wasm js bridge types for dark/light changes.
 #[cfg(target_arch = "wasm32")]
@@ -29,6 +32,11 @@ pub struct EguiWantsInput {
 /// Marker component for the egui ui display
 #[derive(Component)]
 pub struct ShowEgui;
+
+/// Non-Send wrapper around `egui_file_dialog::FileDialog`, Resource needs to
+/// match Send to work.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct SceneFileDialog(pub FileDialog);
 
 /// Message for when camera projection needs to change.
 ///
@@ -133,6 +141,11 @@ impl Plugin for SettingsUiPlugin {
         let app = app
             .init_resource::<LastKnownTheme>()
             .init_resource::<DataViewerState>()
+            .insert_non_send_resource(SceneFileDialog(
+                FileDialog::new()
+                    .title("Load Scene")
+                    .add_file_filter_extensions("GLTF / GLB", vec!["gltf", "glb"]),
+            ))
             .add_systems(
                 Update,
                 poll_system_theme.run_if(bevy::time::common_conditions::on_timer(
@@ -480,6 +493,66 @@ fn setup_egui(
     commands.insert_resource(wc_state);
 }
 
+/// Draw the "Load Scene URL" popup window.
+///
+/// Validates that the input starts with `http://` or `https://` before the Load
+/// button can be used. Better error handling needs to happen at some point but
+/// thats a future thing.
+fn draw_scene_url_popup(ctx: &egui::Context, state: &mut SceneUrlState, config: &mut SceneConfig) {
+    if !state.open {
+        return;
+    }
+
+    let mut open = true;
+    egui::Window::new("Load Scene URL")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.label("Enter a URL to a .glb or .gltf file:");
+            ui.add_space(4.0);
+
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut state.buf)
+                    .hint_text("https://example.com/example.glb")
+                    .desired_width(360.0),
+            );
+            response.request_focus();
+
+            ui.add_space(6.0);
+
+            let url = state.buf.trim().to_string();
+            let valid = url.starts_with("http://") || url.starts_with("https://");
+
+            ui.horizontal(|ui| {
+                if ui.add_enabled(valid, egui::Button::new("Load")).clicked() {
+                    config.custom_scene = Some(url.clone());
+                    state.buf.clear();
+                    state.open = false;
+                }
+                if ui.button("Cancel").clicked() {
+                    state.buf.clear();
+                    state.open = false;
+                }
+            });
+
+            if !valid && !state.buf.is_empty() {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("URL must begin with http:// or https://")
+                        .small()
+                        .color(egui::Color32::from_rgb(220, 80, 80)),
+                );
+            }
+        });
+
+    if !open {
+        state.buf.clear();
+        state.open = false;
+    }
+}
+
 /// Display the settings UI using egui as a top menu bar
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
@@ -498,6 +571,9 @@ fn settings_ui(
         Query<&mut Visibility, With<flan::PlotUiNode>>,
     )>,
     #[cfg(not(target_arch = "wasm32"))] data_viewer_query: Query<Entity, With<ShowDataViewer>>,
+    #[cfg(not(target_arch = "wasm32"))] mut scene_file_dialog: NonSendMut<SceneFileDialog>,
+    mut scene_config: ResMut<SceneConfig>,
+    mut scene_url_state: ResMut<SceneUrlState>,
     mut active_post: ResMut<ActivePost>,
     mut active_shader: ResMut<ActiveShader>,
     available_shaders: Res<AvailableShaders>,
@@ -511,13 +587,51 @@ fn settings_ui(
 
     trace!("settings_ui running - ShowEgui exists");
 
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let ctx = contexts.ctx_mut()?;
+        scene_file_dialog.0.update(ctx);
+        if let Some(path) = scene_file_dialog.0.take_picked() {
+            scene_config.custom_scene = Some(path.to_string_lossy().into_owned());
+        }
+    }
+
+    // TODO: Maybe not be a popup? Future me problem.
+    draw_scene_url_popup(contexts.ctx_mut()?, &mut scene_url_state, &mut scene_config);
+
     egui::TopBottomPanel::top("menu_bar").show(contexts.ctx_mut()?, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
-            // File menu, for now its just for a quit menu item on non wasm targets
-            #[cfg(not(target_arch = "wasm32"))]
+            // File menu — shown on all platforms; individual items are gated below.
             ui.menu_button("File", |ui| {
-                if ui.button("Quit").clicked() {
-                    std::process::exit(0);
+                #[cfg(not(target_arch = "wasm32"))]
+                if ui.button("Load Scene").clicked() {
+                    scene_file_dialog.0.pick_file();
+                    ui.close();
+                }
+
+                // All platforms: URL input popup.
+                if ui.button("Load Scene URL").clicked() {
+                    scene_url_state.open = true;
+                    ui.close();
+                }
+
+                let has_custom = scene_config.custom_scene.is_some();
+                if ui
+                    .add_enabled(has_custom, egui::Button::new("Reset to Default"))
+                    .on_disabled_hover_text("This is already loaded, I can't do that Dave!")
+                    .clicked()
+                {
+                    scene_config.custom_scene = None;
+                    ui.close();
+                }
+
+                // Native-only quit option wasm makes no sense to keep this.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    ui.separator();
+                    if ui.button("Quit").clicked() {
+                        std::process::exit(0);
+                    }
                 }
             });
 

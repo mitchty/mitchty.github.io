@@ -26,6 +26,34 @@ pub struct ColorState {
     pub color: Option<Srgba>,
 }
 
+/// Marker component for the current GLTF/GLB scene entity so it can be
+/// despawned and respawned when a different file is picked.
+#[derive(Component)]
+pub struct LoadedScene;
+
+/// Tracks the loaded GLB/GLTF scene.
+///
+/// `custom_scene` holds whatever string the user supplied uri or what probably
+///  should be a Path. Either passed directly to `AssetServer::load`, which
+///  routes them to the correct `AssetSource` for me so I don't need to do
+///  anything special. Uses `FileAssetReader` for paths, `WebAssetReader` for
+///  URLs.
+///
+/// `None` here just means use the embedded at compile time GLB model.
+#[derive(Resource, Default)]
+pub struct SceneConfig {
+    pub custom_scene: Option<String>,
+}
+
+/// State for the Load Scene URL popup window.
+#[derive(Resource, Default)]
+pub struct SceneUrlState {
+    /// If the popup is currently open, might want to make this no blocking
+    pub open: bool,
+    /// Text buffer bound to the URL `TextEdit`.
+    pub buf: String,
+}
+
 use polars::prelude::*;
 use rand::RngExt;
 
@@ -481,6 +509,10 @@ fn main() {
         .init_resource::<CameraConfig>()
         .init_resource::<Text3dContent>();
 
+    app.init_resource::<SceneConfig>()
+        .init_resource::<SceneUrlState>()
+        .add_systems(Update, replace_scene);
+
     // Conditionally add UI-specific plugins
     #[cfg(feature = "egui")]
     {
@@ -622,17 +654,42 @@ fn setup(asset_server: Res<AssetServer>, mut commands: Commands) {
     // gltf model for testing abuse
     let glb_path = asset_path("mitchty.glb");
     // Use GltfAssetLabel::Scene(0) to load the first scene from the GLB/TF file
-    // TODO: I should make it so I can use dynamic assets from like the fs on
-    // native and uri on both at runtime. That would be wizard. Future me task!
     let scene_handle = asset_server.load(GltfAssetLabel::Scene(0).from_asset(glb_path));
 
-    // Spawn the scene with a large scale to fit the view. I apparently have no
-    // dam idea what the right scale of exports should be in blender and "we'll
-    // fix it in post!" scaling works so.... whatever choose your battles this
-    // is a winter battle with hot cocoa.
+    // Spawn the GLTF/GLB scene with a large scale to fit the view. Future work
+    // will make it possible to set some of this dynamically at load time.
     commands.spawn((
         SceneRoot(scene_handle),
         Transform::from_scale(Vec3::splat(0.3)),
+        LoadedScene,
+    ));
+}
+
+/// Watches `SceneConfig` for changes and swaps out the active scene.
+fn replace_scene(
+    config: Res<SceneConfig>,
+    asset_server: Res<AssetServer>,
+    mut commands: Commands,
+    scene_query: Query<Entity, With<LoadedScene>>,
+) {
+    if !config.is_changed() {
+        return;
+    }
+
+    for entity in scene_query.iter() {
+        commands.entity(entity).despawn();
+    }
+
+    let path = match &config.custom_scene {
+        Some(s) => s.clone(),
+        None => asset_path("mitchty.glb"),
+    };
+
+    let scene_handle = asset_server.load(GltfAssetLabel::Scene(0).from_asset(path));
+    commands.spawn((
+        SceneRoot(scene_handle),
+        Transform::from_scale(Vec3::splat(0.3)),
+        LoadedScene,
     ));
 }
 
