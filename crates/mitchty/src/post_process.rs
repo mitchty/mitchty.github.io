@@ -89,16 +89,16 @@ impl Default for AvailableShaders {
     fn default() -> Self {
         let shaders = vec![
             ShaderInfo {
+                name: "em-interference".to_string(),
+                display_name: "EM Interference".to_string(),
+            },
+            ShaderInfo {
                 name: "chromatic-aberration".to_string(),
                 display_name: "Chromatic Aberration".to_string(),
             },
             ShaderInfo {
                 name: "vhs-effect".to_string(),
                 display_name: "VHS Effect".to_string(),
-            },
-            ShaderInfo {
-                name: "em-interference".to_string(),
-                display_name: "EM Interference".to_string(),
             },
             ShaderInfo {
                 name: "oil-painting".to_string(),
