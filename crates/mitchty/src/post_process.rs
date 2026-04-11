@@ -1,4 +1,4 @@
-// Custom post-processing system that dynamically loads shaders from assets/shaders/fullscreen/
+// Custom post-processing system that dynamically loads shaders from flan/fullscreen/
 use bevy::{
     core_pipeline::core_3d::graph::{Core3d, Node3d},
     ecs::query::QueryItem,
@@ -208,8 +208,7 @@ impl FromWorld for PostProcessPipeline {
                 .load("embedded://bevy_core_pipeline/fullscreen_vertex_shader/fullscreen.wgsl");
 
             for shader_info in &available_shaders.shaders {
-                let embedded_path =
-                    format!("embedded://shaders/fullscreen/{}.wesl", shader_info.name);
+                let embedded_path = format!("embedded://flan/fullscreen/{}.wesl", shader_info.name);
                 let shader_handle: Handle<Shader> = asset_server.load(embedded_path);
                 shader_handles.push((
                     shader_info.name.clone(),

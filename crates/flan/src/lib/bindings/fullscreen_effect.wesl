@@ -4,7 +4,7 @@
 //   @group(0) @binding(1) = texture_sampler
 //   @group(0) @binding(2) = settings  (non-UI_MATERIAL)
 //   @group(1) @binding(0) = settings  (UI_MATERIAL only)
-import package::shaders::lib::types::fullscreen_effect::{FullscreenEffectSettings};
+import package::flan::shaders::lib::types::fullscreen_effect::{FullscreenEffectSettings};
 
 @if(WGPU_TEST)
 @group(0) @binding(0) var<uniform> settings: FullscreenEffectSettings;

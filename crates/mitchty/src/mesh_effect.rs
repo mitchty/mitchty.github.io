@@ -8,7 +8,6 @@
 
 use bevy::prelude::*;
 use bevy::render::render_resource::*;
-use bevy::shader::ShaderRef;
 use bevy_pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin};
 
 use crate::Text3d;
@@ -33,9 +32,13 @@ pub struct MeshEffectExtension {
 }
 
 impl MaterialExtension for MeshEffectExtension {
-    fn vertex_shader() -> ShaderRef {
-        "embedded://shaders/mesh/effect.wesl".into()
-    }
+    // No vertex_shader() override for now defaults to ShaderRef::Default which
+    // uses Bevy's standard mesh vertex pipeline. The custom WESL vertex shader
+    // is a passthrough that reproduced that behavior exactly, but WESL cannot
+    // import bevy_pbr naga_oil modules so it panicked at pipeline compile time.
+    // this experiment of vertex shaders sharing code with fragment via wesl
+    // modules etc... is a future problem once wesl is more fleshed out over
+    // naga_oil in bevy.
 }
 
 /// Swap every newly-added [`StandardMaterial`] mesh to the extended material we

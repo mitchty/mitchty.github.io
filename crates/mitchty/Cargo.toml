@@ -19,9 +19,9 @@ path = "src/main.rs"
 [features]
 default = ["egui"]
 webgl = ["bevy/webgl2", "flan/webgl"]
-webgpu = ["bevy/webgpu"]
+webgpu = ["bevy/webgpu", "flan/render"]
 egui = ["dep:bevy_egui"]
-feathers = []
+feathers = ["flan/render"]
 
 [dependencies]
 bevy = { version = "0.18.1", default-features = false, features = [
@@ -48,7 +48,6 @@ jiff = { version = "~0.2", features = ["tzdb-bundle-platform"] }
 humantime = "~2"
 jiff-tzdb = "~0.1"
 flan = { path = "../flan" }
-shaders = { path = "../shaders" }
 dark-light.workspace = true
 # console_error_panic_hook is here so that the web console for js? or whatever
 # dumps out backtraces.

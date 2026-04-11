@@ -1,7 +1,7 @@
-import package::shaders::lib::types::plot::{PlotUniform};
+import package::flan::shaders::lib::types::plot::{PlotUniform};
 
 @if(WEBGL)
-import package::shaders::lib::types::plot::{PlotPointsUniform};
+import package::flan::shaders::lib::types::plot::{PlotPointsUniform};
 
 @if(!WGPU_TEST && !UI_MATERIAL)
 @group(2) @binding(0) var<uniform> params: PlotUniform;

@@ -1,5 +1,5 @@
-import package::shaders::lib::helpers::plot::{draw_line, draw_grid};
-import package::shaders::lib::input::plot::{FragmentInput};
+import package::flan::shaders::lib::helpers::plot::{draw_line, draw_grid};
+import package::flan::shaders::lib::input::plot::{FragmentInput};
 
 @fragment
 fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {

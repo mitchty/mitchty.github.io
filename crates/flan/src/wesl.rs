@@ -86,11 +86,11 @@ fn mp(path: &str) -> ModulePath {
 /// Build a `VirtualResolver` with all lib wesl helpers registered under their
 /// absolute Bevy asset paths so things seem sane from a wesl shader pov.
 ///
-/// The keys use `from_path("/shaders/lib/...")` which yields:
-///   PathOrigin::Absolute, components: ["shaders", "lib", ...]
+/// The keys use `from_path("/flan/shaders/lib/...")` which yields:
+///   PathOrigin::Absolute, components: ["flan", "shaders", "lib", ...]
 ///
 /// This matches what the WESL grammar produces for:
-///   import package::shaders::lib::...::{...}
+///   import package::flan::shaders::lib::...::{...}
 fn make_resolver<'a>(top_level_stem: &str, top_level_src: &'a str) -> wesl::VirtualResolver<'a> {
     let mut r = wesl::VirtualResolver::new();
 
@@ -99,8 +99,8 @@ fn make_resolver<'a>(top_level_stem: &str, top_level_src: &'a str) -> wesl::Virt
     }
 
     // Register the top-level shader
-    // underneath "fullscreen/chromatic-aberration" -> path "/shaders/fullscreen/chromatic-aberration"
-    let top_path = format!("/shaders/{top_level_stem}");
+    // e.g. "fullscreen/chromatic-aberration" -> "/flan/shaders/fullscreen/chromatic-aberration"
+    let top_path = format!("/flan/shaders/{top_level_stem}");
     r.add_module(mp(&top_path), top_level_src.to_owned().into());
 
     r
@@ -109,34 +109,34 @@ fn make_resolver<'a>(top_level_stem: &str, top_level_src: &'a str) -> wesl::Virt
 /// Lib helpers to make the unit tests work close enough to how the bevy wesl stuff does.
 /// TODO: ALL THIS JUNK NEEDS TO BE DYNAMIC at some point. Future mitch problem.
 const HELPERS: &[(&str, &str)] = &[
-    ("/shaders/lib/types/plot", PLOT_TYPES_WESL),
-    ("/shaders/lib/bindings/plot", PLOT_BINDINGS_WESL),
-    ("/shaders/lib/input/plot", PLOT_INPUT_WESL),
-    ("/shaders/lib/helpers/plot", PLOT_HELPERS_WESL),
+    ("/flan/shaders/lib/types/plot", PLOT_TYPES_WESL),
+    ("/flan/shaders/lib/bindings/plot", PLOT_BINDINGS_WESL),
+    ("/flan/shaders/lib/input/plot", PLOT_INPUT_WESL),
+    ("/flan/shaders/lib/helpers/plot", PLOT_HELPERS_WESL),
     (
-        "/shaders/lib/types/fullscreen_effect",
+        "/flan/shaders/lib/types/fullscreen_effect",
         FULLSCREEN_EFFECT_TYPES_WESL,
     ),
     (
-        "/shaders/lib/bindings/fullscreen_effect",
+        "/flan/shaders/lib/bindings/fullscreen_effect",
         FULLSCREEN_EFFECT_BINDINGS_WESL,
     ),
     (
-        "/shaders/lib/input/fullscreen_effect",
+        "/flan/shaders/lib/input/fullscreen_effect",
         FULLSCREEN_EFFECT_INPUT_WESL,
     ),
 ];
 
 /// Compile a WESL shader to a WGSL string using the in-memory VirtualResolver.
 ///
-/// `stem` is the path relative to the shaders crate `src/` dir. That is:
+/// `stem` is the path relative to the flan crate `src/` dir. That is:
 /// `"fullscreen/chromatic-aberration"` , `"2d/plot"`. `src` is the raw WESL
 /// bytes for the specific shader after "compiling".
 ///
 /// Returns the compiled WGSL string or an error description if things go sideways.
 pub fn compile(stem: &str, src: &str, variant: Variant) -> Result<String, String> {
-    // The entry point is setup to look like what bevy apps use aka: "/shaders/<stem>"
-    let entry_path = format!("/shaders/{stem}");
+    // The entry point is setup to look like what bevy apps use aka: "/flan/shaders/<stem>"
+    let entry_path = format!("/flan/shaders/{stem}");
     let module_path = mp(&entry_path);
 
     let resolver = make_resolver(stem, src);

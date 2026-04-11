@@ -4703,10 +4703,16 @@ name = "flan"
 version = "0.0.15"
 dependencies = [
  "bevy",
+ "bytemuck",
  "getrandom 0.4.2",
+ "image",
+ "image-compare",
+ "naga 26.0.0",
  "polars",
+ "pollster",
  "rand 0.10.0",
- "shaders",
+ "wesl",
+ "wgpu 26.0.1",
 ]
 
 [[package]]
@@ -6755,7 +6761,6 @@ dependencies = [
  "polars",
  "rand 0.10.0",
  "serde_json",
- "shaders",
  "unicode_names2",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -9387,20 +9392,6 @@ checksum = "75872d278a8f37ef87fa0ddbda7802605cb18344497949862c0d4dcb291eba60"
 dependencies = [
  "digest",
  "keccak",
-]
-
-[[package]]
-name = "shaders"
-version = "0.0.15"
-dependencies = [
- "bevy",
- "bytemuck",
- "image",
- "image-compare",
- "naga 26.0.0",
- "pollster",
- "wesl",
- "wgpu 26.0.1",
 ]
 
 [[package]]

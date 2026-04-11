@@ -61,13 +61,13 @@ use rand::RngExt;
 
 use assets::{AssetConfigPlugin, asset_path};
 use bevy_fontmesh::prelude::*;
+use flan::shaders::ShadersPlugin;
 use fullscreen_effect::{
     CameraConfig, CameraOrbit, manage_effect_settings, next_effect, previous_effect,
     toggle_fullscreen_effect, update_effect_time,
 };
 use mesh_effect::MeshEffectPlugin;
 use post_process::PostProcessPlugin;
-use shaders::ShadersPlugin;
 use ui::{ScrollViewPlugin, SettingsUiPlugin, ToggleCameraProjection, send_scroll_events};
 
 /// Absolute rotation speed

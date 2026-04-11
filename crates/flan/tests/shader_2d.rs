@@ -1,16 +1,16 @@
 mod common;
 use common::*;
-use shaders::snapshot::{DEFAULT_SSIM_THRESHOLD, assert_snapshot, frame_to_image};
-use shaders::wesl::Variant;
+use flan::snapshot::{DEFAULT_SSIM_THRESHOLD, assert_snapshot, frame_to_image};
+use flan::wesl::Variant;
 
 const PLOT_WESL: &str = include_str!("../src/2d/plot.wesl");
 const REFERENCE_WESL: &str = include_str!("../src/2d/reference.wesl");
 
-fn render_plot(variant: Variant) -> Option<shaders::render::RenderedFrame> {
+fn render_plot(variant: Variant) -> Option<flan::render::RenderedFrame> {
     render_wesl("2d/plot", PLOT_WESL, variant)
 }
 
-fn render_reference(variant: Variant) -> Option<shaders::render::RenderedFrame> {
+fn render_reference(variant: Variant) -> Option<flan::render::RenderedFrame> {
     render_wesl("2d/reference", REFERENCE_WESL, variant)
 }
 
@@ -41,7 +41,7 @@ fn snapshot_reference_material() {
     assert_snapshot("reference_material", &frame, DEFAULT_SSIM_THRESHOLD);
 }
 
-/// Reference render for the reference shader  ui variant.
+/// Reference render for the reference shader ui variant.
 #[test]
 fn snapshot_reference_ui() {
     let Some(frame) = render_reference(Variant::TEST_UI) else {
@@ -50,7 +50,7 @@ fn snapshot_reference_ui() {
     assert_snapshot("reference_ui", &frame, DEFAULT_SSIM_THRESHOLD);
 }
 
-/// Material and UI variants of plot should be visually identical same shader
+/// Material and UI variants of plot should be visually identical — same shader
 /// logic, only the binding group differs which WGPU_TEST normalises to @group(0).
 #[test]
 fn plot_material_and_ui_are_visually_equivalent() {

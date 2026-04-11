@@ -1,11 +1,11 @@
 // Computes a surface normal from image luminance gradients and applies diffuse
 // and specular directional lighting and a vignette to give the impression of
 // thick oil-paint brushstrokes.
-import package::shaders::lib::bindings::fullscreen_effect::{settings};
-import package::shaders::lib::input::fullscreen_effect::{FragmentInput};
+import package::flan::shaders::lib::bindings::fullscreen_effect::{settings};
+import package::flan::shaders::lib::input::fullscreen_effect::{FragmentInput};
 
 @if(!WGPU_TEST)
-import package::shaders::lib::bindings::fullscreen_effect::{screen_texture, texture_sampler};
+import package::flan::shaders::lib::bindings::fullscreen_effect::{screen_texture, texture_sampler};
 
 @if(!WGPU_TEST)
 fn get_val(uv: vec2<f32>, res: vec2<f32>) -> f32 {

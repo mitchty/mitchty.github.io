@@ -1,10 +1,10 @@
 // Chromatic aberration effect shader, yeeted from bevy examples but it
 // basically splits RGB channels by a UV offset scaled to intensity.
-import package::shaders::lib::bindings::fullscreen_effect::{settings};
-import package::shaders::lib::input::fullscreen_effect::{FragmentInput};
+import package::flan::shaders::lib::bindings::fullscreen_effect::{settings};
+import package::flan::shaders::lib::input::fullscreen_effect::{FragmentInput};
 
 @if(!WGPU_TEST)
-import package::shaders::lib::bindings::fullscreen_effect::{screen_texture, texture_sampler};
+import package::flan::shaders::lib::bindings::fullscreen_effect::{screen_texture, texture_sampler};
 
 @if(WGPU_TEST)
 @fragment

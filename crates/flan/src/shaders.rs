@@ -1,15 +1,6 @@
-// For now this is its own crate separate from flan, but when I get things well
-// enough along it'll be smashed into flan. Actually now that I think about it
-// it might be easier to yeet this in there sooner rather than later.
+// Shaders plugin for flan - provides shader assets and management
 use bevy::app::{App, Plugin};
 use bevy::shader::Shader;
-
-#[cfg(feature = "render")]
-pub mod render;
-#[cfg(feature = "render")]
-pub mod snapshot;
-#[cfg(feature = "render")]
-pub mod wesl;
 
 pub struct ShadersPlugin;
 
@@ -19,8 +10,8 @@ impl Plugin for ShadersPlugin {
         // `ModulePath` works with `ShaderCashe::set_shader` output is
         // registered in a way the wesl imports expect in bevy.
         //
-        // e.g. package::shaders::lib::input::fullscreen_effect ->
-        // Absolute["shaders","lib","input","fullscreen_effect"]
+        // e.g. package::flan::shaders::lib::input::fullscreen_effect ->
+        // Absolute["flan","shaders","lib","input","fullscreen_effect"]
         //
         // TODO: see if there is way to use `load_internal_asset!` which can
         // prefix shaders to the `ModulePath`
@@ -35,31 +26,31 @@ impl Plugin for ShadersPlugin {
             for (source, path) in [
                 (
                     include_str!("lib/types/fullscreen_effect.wesl"),
-                    "shaders/lib/types/fullscreen_effect.wesl",
+                    "flan/shaders/lib/types/fullscreen_effect.wesl",
                 ),
                 (
                     include_str!("lib/bindings/fullscreen_effect.wesl"),
-                    "shaders/lib/bindings/fullscreen_effect.wesl",
+                    "flan/shaders/lib/bindings/fullscreen_effect.wesl",
                 ),
                 (
                     include_str!("lib/input/fullscreen_effect.wesl"),
-                    "shaders/lib/input/fullscreen_effect.wesl",
+                    "flan/shaders/lib/input/fullscreen_effect.wesl",
                 ),
                 (
                     include_str!("lib/types/plot.wesl"),
-                    "shaders/lib/types/plot.wesl",
+                    "flan/shaders/lib/types/plot.wesl",
                 ),
                 (
                     include_str!("lib/bindings/plot.wesl"),
-                    "shaders/lib/bindings/plot.wesl",
+                    "flan/shaders/lib/bindings/plot.wesl",
                 ),
                 (
                     include_str!("lib/input/plot.wesl"),
-                    "shaders/lib/input/plot.wesl",
+                    "flan/shaders/lib/input/plot.wesl",
                 ),
                 (
                     include_str!("lib/helpers/plot.wesl"),
-                    "shaders/lib/helpers/plot.wesl",
+                    "flan/shaders/lib/helpers/plot.wesl",
                 ),
             ] {
                 let id = bevy::asset::AssetId::Uuid {

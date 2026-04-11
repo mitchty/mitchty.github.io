@@ -1,11 +1,11 @@
 // VHS tape effect, vertical bar distortion, scanline noise, chromatic offsets.
 // Ported from the original WGSL/GLSL Shadertoy-inspired implementation but now
 // is single pass vs multiple with glsl.
-import package::shaders::lib::bindings::fullscreen_effect::{settings};
-import package::shaders::lib::input::fullscreen_effect::{FragmentInput};
+import package::flan::shaders::lib::bindings::fullscreen_effect::{settings};
+import package::flan::shaders::lib::input::fullscreen_effect::{FragmentInput};
 
 @if(!WGPU_TEST)
-import package::shaders::lib::bindings::fullscreen_effect::{screen_texture, texture_sampler};
+import package::flan::shaders::lib::bindings::fullscreen_effect::{screen_texture, texture_sampler};
 
 const RANGE: f32 = 0.05;
 const NOISE_QUALITY: f32 = 250.0;

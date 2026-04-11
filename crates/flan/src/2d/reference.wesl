@@ -1,6 +1,6 @@
-import package::shaders::lib::bindings::plot::{params, points, point_data};
-import package::shaders::lib::helpers::plot::{get_point, point_count, draw_line};
-import package::shaders::lib::input::plot::{FragmentInput};
+import package::flan::shaders::lib::bindings::plot::{params, points, point_data};
+import package::flan::shaders::lib::helpers::plot::{get_point, point_count, draw_line};
+import package::flan::shaders::lib::input::plot::{FragmentInput};
 
 @fragment
 fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {

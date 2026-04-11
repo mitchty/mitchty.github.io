@@ -4,8 +4,8 @@
 // warnings.
 #![allow(dead_code)]
 use bytemuck::{Pod, Zeroable};
-use shaders::render::{Binding, BindingKind, render_shader};
-use shaders::wesl::{Variant, compile};
+use flan::render::{Binding, BindingKind, render_shader};
+use flan::wesl::{Variant, compile};
 
 /// Non-WebGL uniform buffer struct that matches the WESL shader's PlotUniform layout.
 ///
@@ -138,20 +138,6 @@ impl FullscreenEffectUniformWebGl {
 // enough to pass the SSIM threshold for now in the unit tests.
 pub const TEST_POINT_COUNT: usize = 200;
 
-// Compile-time check: ensure PlotUniform size matches what wgpu expects.
-//
-// The WESL shader defines a 44-byte struct (7 f32 fields = 28 bytes + 3 vec2 = 24 bytes),
-// but wgpu on Metal pads uniform buffers to 16-byte boundaries (48 bytes).
-//
-// This catches if we ever remove the padding or change the struct without
-// accounting for wgpu's internal padding.
-const _: () = {
-    let _ = std::mem::size_of::<PlotUniform>;
-    let _ = std::mem::size_of::<PlotUniformWebGl>;
-    // Note: We can't use assert! in const context, but we can verify at runtime
-    // in tests. The key is that both structs must be 48 bytes.
-};
-
 pub fn test_sin_wave_points() -> Vec<[f32; 2]> {
     (0..TEST_POINT_COUNT)
         .map(|i| {
@@ -177,17 +163,12 @@ pub fn has_no_adapter(err: &str) -> bool {
 /// `stem` e.g. `"2d/plot"`.  `variant` must be a `TEST_*` variant.
 ///
 /// Returns `None` when no GPU adapter is found; panics on any other error.
-pub fn render_wesl(
-    stem: &str,
-    src: &str,
-    variant: Variant,
-) -> Option<shaders::render::RenderedFrame> {
+pub fn render_wesl(stem: &str, src: &str, variant: Variant) -> Option<flan::render::RenderedFrame> {
     assert!(variant.wgpu_test, "render_wesl requires a TEST_* variant");
 
     let wgsl = compile(stem, src, variant)
         .unwrap_or_else(|e| panic!("WESL compile failed for {stem}: {e}"));
 
-    // Debug: print the compiled WGSL to see what we're actually getting
     eprintln!(
         "=== Compiled WGSL for {} (webgl={}, ui_material={}, wgpu_test={}) ===",
         stem, variant.webgl, variant.ui_material, variant.wgpu_test
@@ -267,7 +248,7 @@ pub fn render_fullscreen_effect(
     stem: &str,
     src: &str,
     variant: Variant,
-) -> Option<shaders::render::RenderedFrame> {
+) -> Option<flan::render::RenderedFrame> {
     assert!(
         variant.wgpu_test,
         "render_fullscreen_effect requires a TEST_* variant"

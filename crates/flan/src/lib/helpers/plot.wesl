@@ -1,4 +1,4 @@
-import package::shaders::lib::bindings::plot::{params, points, point_data};
+import package::flan::shaders::lib::bindings::plot::{params, points, point_data};
 
 // Return the index-th sample from the point data buffer.
 // In WEBGL mode, point_data is a uniform array<vec4<f32>, 512> where .xy are the coordinates.

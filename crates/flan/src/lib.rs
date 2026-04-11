@@ -10,6 +10,15 @@ use polars::prelude::*;
 #[cfg(not(feature = "webgl"))]
 use bevy::render::storage::ShaderStorageBuffer;
 
+pub mod shaders;
+
+#[cfg(all(feature = "render", not(target_arch = "wasm32")))]
+pub mod render;
+#[cfg(all(feature = "render", not(target_arch = "wasm32")))]
+pub mod snapshot;
+#[cfg(all(feature = "render", not(target_arch = "wasm32")))]
+pub mod wesl;
+
 /// Maximum number of plot points stored in the WebGL2 uniform buffer.
 /// Must match the array size in the WESL shader source `array<vec4<f32>, 512>`.
 pub const MAX_PLOT_POINTS: usize = 512;
@@ -371,7 +380,7 @@ pub struct PlotMaterial {
 
 impl Material2d for PlotMaterial {
     fn fragment_shader() -> ShaderRef {
-        "embedded://shaders/2d/plot.wesl".into()
+        "embedded://flan/2d/plot.wesl".into()
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
@@ -420,7 +429,7 @@ pub struct PlotUiMaterial {
 
 impl UiMaterial for PlotUiMaterial {
     fn fragment_shader() -> ShaderRef {
-        "embedded://shaders/2d/plot.wesl".into()
+        "embedded://flan/2d/plot.wesl".into()
     }
 
     fn specialize(descriptor: &mut RenderPipelineDescriptor, _key: UiMaterialKey<Self>) {

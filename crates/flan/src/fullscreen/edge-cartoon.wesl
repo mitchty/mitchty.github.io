@@ -3,11 +3,11 @@
 //
 // Technique: Sobel or color-difference edge detection + luminance
 // quantization for a cel-shaded / inked cartoon look.
-import package::shaders::lib::bindings::fullscreen_effect::{settings};
-import package::shaders::lib::input::fullscreen_effect::{FragmentInput};
+import package::flan::shaders::lib::bindings::fullscreen_effect::{settings};
+import package::flan::shaders::lib::input::fullscreen_effect::{FragmentInput};
 
 @if(!WGPU_TEST)
-import package::shaders::lib::bindings::fullscreen_effect::{screen_texture, texture_sampler};
+import package::flan::shaders::lib::bindings::fullscreen_effect::{screen_texture, texture_sampler};
 
 const LINE_SIZE      : f32  = 1.2;
 const EDGE_THRESHOLD : f32  = 0.01;

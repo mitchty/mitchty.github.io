@@ -4,12 +4,8 @@
 //! us but with my hack wgpu test setup its not great. Note its not padding it
 //! just needs to be a multiple of 16.
 
-// TODO: Over weekend smash this stupid crate into flan, its time on this earth
-// has ended.
+use flan::wesl::{Variant, compile};
 
-use shaders::wesl::{Variant, compile};
-
-// AND THIS IS WHY ITS A DUPLICATE BUT WHATEVER
 #[repr(C)]
 #[allow(dead_code)]
 struct PlotUniform {
@@ -55,10 +51,10 @@ fn plot_uniform_rust_wgsl_size_match() {
 
     // The Rust struct should be >= WGSL size we add padding for Metal alignment transparently ish
     assert!(
-        size_of::<crate::PlotUniform>() >= wgsl_size,
+        size_of::<PlotUniform>() >= wgsl_size,
         "Rust PlotUniform ({} bytes) must be >= WGSL fields size ({} bytes). \
          Rust: {:?}, WGSL: {}",
-        size_of::<crate::PlotUniform>(),
+        size_of::<PlotUniform>(),
         wgsl_size,
         plot_uniform_lines,
         wgsl,
@@ -66,9 +62,9 @@ fn plot_uniform_rust_wgsl_size_match() {
 
     // And it should be a multiple of 16 for Metal alignment
     assert_eq!(
-        size_of::<crate::PlotUniform>() % 16,
+        size_of::<PlotUniform>() % 16,
         0,
         "Rust PlotUniform size ({} bytes) must be a multiple of 16 for Metal alignment",
-        size_of::<crate::PlotUniform>()
+        size_of::<PlotUniform>()
     );
 }

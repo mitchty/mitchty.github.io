@@ -12,7 +12,7 @@
 //   2 = uv_a     (@if(VERTEX_UVS_A))
 import bevy_pbr::{
     mesh_functions,
-    mesh_vertex_output::MeshVertexOutput,
+    forward_io::VertexOutput,
     view_transformations::position_world_to_clip,
 };
 
@@ -26,8 +26,8 @@ struct Vertex {
 };
 
 @vertex
-fn vertex(in: Vertex) -> MeshVertexOutput {
-    var out: MeshVertexOutput;
+fn vertex(in: Vertex) -> VertexOutput {
+    var out: VertexOutput;
 
     let world_from_local = mesh_functions::get_world_from_local(in.instance_index);
 
@@ -50,7 +50,10 @@ fn vertex(in: Vertex) -> MeshVertexOutput {
         out.uv = in.uv;
     }
 
-    out.instance_index = in.instance_index;
+    @if(VERTEX_OUTPUT_INSTANCE_INDEX)
+    {
+        out.instance_index = in.instance_index;
+    }
 
     return out;
 }

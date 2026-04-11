@@ -1,7 +1,7 @@
 mod common;
 use common::*;
-use shaders::snapshot::{DEFAULT_SSIM_THRESHOLD, assert_snapshot, frame_to_image};
-use shaders::wesl::Variant;
+use flan::snapshot::{DEFAULT_SSIM_THRESHOLD, assert_snapshot, frame_to_image};
+use flan::wesl::Variant;
 
 const CHROMATIC_ABERRATION_WESL: &str = include_str!("../src/fullscreen/chromatic-aberration.wesl");
 const VHS_EFFECT_WESL: &str = include_str!("../src/fullscreen/vhs-effect.wesl");
@@ -9,7 +9,7 @@ const EM_INTERFERENCE_WESL: &str = include_str!("../src/fullscreen/em-interferen
 const OIL_PAINTING_WESL: &str = include_str!("../src/fullscreen/oil-painting.wesl");
 const EDGE_CARTOON_WESL: &str = include_str!("../src/fullscreen/edge-cartoon.wesl");
 
-fn render_chromatic_aberration(variant: Variant) -> Option<shaders::render::RenderedFrame> {
+fn render_chromatic_aberration(variant: Variant) -> Option<flan::render::RenderedFrame> {
     render_fullscreen_effect(
         "fullscreen/chromatic-aberration",
         CHROMATIC_ABERRATION_WESL,
@@ -17,19 +17,19 @@ fn render_chromatic_aberration(variant: Variant) -> Option<shaders::render::Rend
     )
 }
 
-fn render_vhs_effect(variant: Variant) -> Option<shaders::render::RenderedFrame> {
+fn render_vhs_effect(variant: Variant) -> Option<flan::render::RenderedFrame> {
     render_fullscreen_effect("fullscreen/vhs-effect", VHS_EFFECT_WESL, variant)
 }
 
-fn render_em_interference(variant: Variant) -> Option<shaders::render::RenderedFrame> {
+fn render_em_interference(variant: Variant) -> Option<flan::render::RenderedFrame> {
     render_fullscreen_effect("fullscreen/em-interference", EM_INTERFERENCE_WESL, variant)
 }
 
-fn render_oil_painting(variant: Variant) -> Option<shaders::render::RenderedFrame> {
+fn render_oil_painting(variant: Variant) -> Option<flan::render::RenderedFrame> {
     render_fullscreen_effect("fullscreen/oil-painting", OIL_PAINTING_WESL, variant)
 }
 
-fn render_edge_cartoon(variant: Variant) -> Option<shaders::render::RenderedFrame> {
+fn render_edge_cartoon(variant: Variant) -> Option<flan::render::RenderedFrame> {
     render_fullscreen_effect("fullscreen/edge-cartoon", EDGE_CARTOON_WESL, variant)
 }
 

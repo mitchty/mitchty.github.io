@@ -1,5 +1,13 @@
-* Flan shader experiments
+#+STARTUP: inlineimages
+
+* Flan Shaders Library
 
 I was hungry when I named this before you ask about the name.
 
+#+ATTR_HTML: :align center
+#+ATTR_ORG: :align center
+[[./flan.png]]
+
 But this will eventually? be a shader crate for all my bevy/wgpu plot drawrings. For now this is all very how you doin.
+
+The eventual goal is to have a direct bridge from polars to "pretty graph" shaders. Interactivity at some point too but thats a future me problem.
