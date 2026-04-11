@@ -1,6 +1,7 @@
 mod ai;
 mod assets;
 mod fullscreen_effect;
+mod mesh_effect;
 mod post_process;
 mod ui;
 
@@ -64,6 +65,7 @@ use fullscreen_effect::{
     CameraConfig, CameraOrbit, manage_effect_settings, next_effect, previous_effect,
     toggle_fullscreen_effect, update_effect_time,
 };
+use mesh_effect::MeshEffectPlugin;
 use post_process::PostProcessPlugin;
 use shaders::ShadersPlugin;
 use ui::{ScrollViewPlugin, SettingsUiPlugin, ToggleCameraProjection, send_scroll_events};
@@ -500,6 +502,7 @@ fn main() {
         .add_plugins(ShadersPlugin)
         .add_plugins(FontMeshPlugin::<StandardMaterial>::default())
         .add_plugins(PostProcessPlugin)
+        .add_plugins(MeshEffectPlugin)
         .add_plugins(PrettyTextPlugin)
         .add_plugins(flan::PlotPlugin)
         .insert_resource(flan::PlotDataFrame {
@@ -680,7 +683,12 @@ fn replace_scene(
     mut commands: Commands,
     scene_query: Query<Entity, With<LoadedScene>>,
 ) {
-    if !config.is_changed() {
+    // Work around race type issues where GLTF mesh entities loading in the same frame/tick.
+    //
+    // `is_changed()` is true on the very first frame a resource is spawned
+    // otherwise the gltf loader which spawned in initial scene entities and
+    // removed them in the same frame can cause panic()s
+    if !config.is_changed() || config.is_added() {
         return;
     }
 

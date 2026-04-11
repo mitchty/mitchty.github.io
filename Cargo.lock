@@ -6738,6 +6738,7 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "bevy_fontmesh",
+ "bevy_pbr",
  "bevy_pretty_text",
  "burn",
  "clap",

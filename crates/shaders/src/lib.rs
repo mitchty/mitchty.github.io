@@ -78,5 +78,6 @@ impl Plugin for ShadersPlugin {
         bevy::asset::embedded_asset!(app, "fullscreen/em-interference.wesl");
         bevy::asset::embedded_asset!(app, "fullscreen/oil-painting.wesl");
         bevy::asset::embedded_asset!(app, "fullscreen/edge-cartoon.wesl");
+        bevy::asset::embedded_asset!(app, "mesh/effect.wesl");
     }
 }
