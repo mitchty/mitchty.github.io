@@ -210,18 +210,20 @@ impl AlarmState {
 
     /// Convert the current picker values to UTC `Timestamp`.
     fn to_timestamp(&self, now: Timestamp, tz: &str) -> Option<Timestamp> {
-        let (hour, minute) = match (self.hour, self.minute) {
-            (Some(h), Some(m)) => (h, m), // User selected hour or minute values
-            _ => {
-                if let Ok(jtz) = TimeZone::get(tz)
-                    && let Ok(zdt) = now.to_zoned(jtz).round(Unit::Second)
-                {
-                    (zdt.hour() as u8, zdt.minute() as u8)
-                } else {
-                    (0, 0) // Fallback to 0's I guess
-                }
-            }
+        // Resolve live time once so both components can fall back independently.
+        let (live_hour, live_minute) = if let Ok(jtz) = TimeZone::get(tz)
+            && let Ok(zdt) = now.to_zoned(jtz).round(Unit::Second)
+        {
+            (zdt.hour() as u8, zdt.minute() as u8)
+        } else {
+            (0, 0)
         };
+
+        // Each component uses the user-selected value when Some, otherwise
+        // falls back to live time. This means selecting only the
+        // hour or minute works as expected.
+        let hour = self.hour.unwrap_or(live_hour);
+        let minute = self.minute.unwrap_or(live_minute);
 
         let dt = civil::DateTime::new(
             self.year as i16,
