@@ -7,6 +7,7 @@ mod ui;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 #[cfg(feature = "feathers")]
 use bevy::feathers::{FeathersPlugins, dark_theme::create_dark_theme, theme::UiTheme};
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::light::EnvironmentMapLight;
 use bevy::prelude::*;
 
@@ -131,6 +132,12 @@ pub struct DragState {
     pub active_touch_id: Option<u64>,
     /// Previous position for calculating deltas between drags
     pub previous_pos: Option<Vec2>,
+    /// Second finger touch ID for two-finger zoom
+    pub secondary_touch_id: Option<u64>,
+    /// Current position of the second finger
+    pub secondary_touch_pos: Option<Vec2>,
+    /// Distance between the two fingers on the previous frame for pinch delta
+    pub previous_pinch_distance: Option<f32>,
 }
 
 /// Camera free-look component
@@ -578,6 +585,7 @@ fn main() {
                 track_input_drag,
                 free_look_camera,
                 cleanup_free_look_after_inactivity,
+                zoom_camera,
                 animate_materials.run_if(any_with_component::<HueAnimationEnabled>),
                 rotate_entities.run_if(any_with_component::<CubeRotationEnabled>),
                 toggle_fps_display,
@@ -1327,14 +1335,23 @@ fn track_input_drag(
     for event in touch_events.read() {
         match event.phase {
             bevy::input::touch::TouchPhase::Started => {
-                // Only track first touch
                 if drag_state.active_touch_id.is_none() {
+                    // First finger primary drag touch for panning
                     drag_state.is_dragging = true;
                     drag_state.drag_start = Some(event.position);
                     drag_state.current_pos = event.position;
                     drag_state.previous_pos = Some(event.position);
                     drag_state.drag_distance = 0.0;
                     drag_state.active_touch_id = Some(event.id);
+                } else if drag_state.secondary_touch_id.is_none()
+                    && Some(event.id) != drag_state.active_touch_id
+                {
+                    // Second finger down start pinch-to-zoom tracking for zoom in/out behavior
+                    drag_state.secondary_touch_id = Some(event.id);
+                    drag_state.secondary_touch_pos = Some(event.position);
+                    // Seed the distance so the first frame delta is zero.
+                    drag_state.previous_pinch_distance =
+                        Some(drag_state.current_pos.distance(event.position));
                 }
             }
             bevy::input::touch::TouchPhase::Moved => {
@@ -1344,6 +1361,8 @@ fn track_input_drag(
                     if let Some(start) = drag_state.drag_start {
                         drag_state.drag_distance = start.distance(drag_state.current_pos);
                     }
+                } else if Some(event.id) == drag_state.secondary_touch_id {
+                    drag_state.secondary_touch_pos = Some(event.position);
                 }
             }
             bevy::input::touch::TouchPhase::Ended | bevy::input::touch::TouchPhase::Canceled => {
@@ -1352,6 +1371,22 @@ fn track_input_drag(
                     drag_state.drag_start = None;
                     drag_state.previous_pos = None;
                     drag_state.active_touch_id = None;
+                    // If the primary finger lifts, promote secondary to primary touch
+                    if let Some(sec_id) = drag_state.secondary_touch_id {
+                        drag_state.active_touch_id = Some(sec_id);
+                        drag_state.current_pos = drag_state.secondary_touch_pos.unwrap_or_default();
+                        drag_state.previous_pos = drag_state.secondary_touch_pos;
+                        drag_state.drag_start = drag_state.secondary_touch_pos;
+                        drag_state.secondary_touch_id = None;
+                        drag_state.secondary_touch_pos = None;
+                        drag_state.previous_pinch_distance = None;
+                        drag_state.is_dragging = true;
+                    }
+                } else if Some(event.id) == drag_state.secondary_touch_id {
+                    // Secondary finger lifted means we stop zooming and will now start panning
+                    drag_state.secondary_touch_id = None;
+                    drag_state.secondary_touch_pos = None;
+                    drag_state.previous_pinch_distance = None;
                 }
             }
         }
@@ -1374,6 +1409,12 @@ fn free_look_camera(
     // Only apply free-look if dragging and moved more than threshold I pulled
     // out of my butt aka 5 px
     if !drag_state.is_dragging || drag_state.drag_distance < 5.0 {
+        return;
+    }
+
+    // Two fingers on screen means a zoom gesture so we stop roatating around
+    // the origin anymore.
+    if drag_state.secondary_touch_id.is_some() {
         return;
     }
 
@@ -1453,6 +1494,96 @@ fn cleanup_free_look_after_inactivity(
         if current_time - free_look.0 > INACTIVITY_THRESHOLD {
             commands.entity(entity).remove::<FreeLookActive>();
         }
+    }
+}
+
+/// Zoom the camera in/out.
+///
+/// Only two ways to zoom are scroll wheel/mouse on desktop and/or pinch to zoom
+/// on say mobile/touchscreens. Both seem the sanest options
+///
+/// **Perspective mode** zoom moves the camera along the orbital sphere by
+/// changing `CameraOrbit.radius`, then recomputes the translation from the
+/// current yaw/pitch. Nothing special but here cause I forget easy.
+///
+/// **Orthographic mode** moving the camera does nothing visually in the same
+/// way as perspective, so zoom adjusts `OrthographicProjection::scale` instead.
+fn zoom_camera(
+    mut wheel: MessageReader<MouseWheel>,
+    mut drag_state: ResMut<DragState>,
+    mut camera_query: Query<
+        (
+            &mut Transform,
+            &mut CameraOrbit,
+            &FreeLookCamera,
+            &mut Projection,
+        ),
+        With<MainCamera>,
+    >,
+    #[cfg(feature = "egui")] egui_wants_input: Res<ui::EguiWantsInput>,
+) {
+    #[cfg(feature = "egui")]
+    if egui_wants_input.wants_pointer {
+        return;
+    }
+
+    let Ok((mut transform, mut orbit, free_look, mut projection)) = camera_query.single_mut()
+    else {
+        return;
+    };
+
+    // Accumulate a signed zoom delta from inputs.
+    // Positive is zoom in via (shrink radius / scale), and negative = zoom out.
+    let mut zoom_delta: f32 = 0.0;
+
+    // Mouse wheel zoom option
+    for event in wheel.read() {
+        let scroll = match event.unit {
+            MouseScrollUnit::Line => event.y * 0.5,
+            MouseScrollUnit::Pixel => event.y * 0.005,
+        };
+        // Scrolling up (positive y) zooms in
+        zoom_delta += scroll;
+    }
+
+    // Pinch to zoom block
+    if let (Some(sec_pos), Some(prev_dist)) = (
+        drag_state.secondary_touch_pos,
+        drag_state.previous_pinch_distance,
+    ) {
+        let current_dist = drag_state.current_pos.distance(sec_pos);
+        // Spread fingers apart = zoom in (positive delta)
+        // pinch = zoom out or crush peoples heads if you load a head gltf
+        // never squash heads.
+        zoom_delta += (current_dist - prev_dist) * 0.01;
+        drag_state.previous_pinch_distance = Some(current_dist);
+    }
+
+    if zoom_delta == 0.0 {
+        return;
+    }
+
+    match *projection {
+        Projection::Perspective(_) => {
+            // The orbital radius controls the camera position. Note we clamp to
+            // 0 so we can't portal jump through the origin in perspective mode.
+            orbit.radius = (orbit.radius - zoom_delta).max(0.0);
+
+            let x = orbit.center.x + orbit.radius * free_look.yaw.cos() * free_look.pitch.cos();
+            let y = orbit.center.y + orbit.radius * free_look.pitch.sin();
+            let z = orbit.center.z + orbit.radius * free_look.yaw.sin() * free_look.pitch.cos();
+
+            transform.translation = Vec3::new(x, y, z);
+            *transform = transform.looking_at(orbit.center, Vec3::Y);
+        }
+        Projection::Orthographic(ref mut ortho) => {
+            // Adjust the orthographic scale, aka smaller is zoom in.
+            // Clamps to zero — negative scale mirrors/inverts the scene.
+            ortho.scale = (ortho.scale - zoom_delta).max(0.0);
+        }
+
+        // Future two finger move on the planar axis goes here
+        _ => {}
     }
 }
 

@@ -148,7 +148,10 @@ pub fn create_default_plugins(enable_gamepad: bool) -> bevy::app::PluginGroupBui
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     fit_canvas_to_parent: true,
-                    prevent_default_event_handling: false,
+                    // Call preventDefault() on all touch/pointer events so the
+                    // browser doesn't intercept them before Bevy can use them.
+                    // Otherwise ios/safari defaults happen.
+                    prevent_default_event_handling: true,
                     ..default()
                 }),
                 ..default()

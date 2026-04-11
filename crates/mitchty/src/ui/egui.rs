@@ -47,6 +47,11 @@ pub struct SceneFileDialog(pub FileDialog);
 pub struct ToggleCameraProjection;
 impl bevy::ecs::message::Message for ToggleCameraProjection {}
 
+/// Message to indicate the camera should be reset.
+#[derive(Debug, Clone, Copy)]
+pub struct ResetCamera;
+impl bevy::ecs::message::Message for ResetCamera {}
+
 /// Marker...ish component to note we were tasked with toggling the camera
 /// projection.
 #[derive(Resource, Default)]
@@ -125,6 +130,7 @@ impl Plugin for SettingsUiPlugin {
             .init_resource::<InferenceResult>()
             .add_message::<ThemeChanged>()
             .add_message::<ToggleCameraProjection>()
+            .add_message::<ResetCamera>()
             .init_resource::<CameraProjectionToggleRequested>()
             .insert_non_send_resource(engine)
             .add_systems(Startup, setup_egui)
@@ -133,6 +139,7 @@ impl Plugin for SettingsUiPlugin {
                 (
                     send_camera_projection_toggle,
                     apply_camera_projection_toggle,
+                    reset_camera,
                 )
                     .chain(),
             );
@@ -580,6 +587,7 @@ fn settings_ui(
     mut commands: Commands,
     mut ui_config: ResMut<UiConfig>,
     mut proj_params: ParamSet<(Res<CameraMode>, ResMut<CameraProjectionToggleRequested>)>,
+    mut reset_camera_events: MessageWriter<ResetCamera>,
 ) -> Result {
     if show_egui_query.is_empty() {
         return Ok(());
@@ -643,6 +651,11 @@ fn settings_ui(
                 };
                 if ui.button(proj_label).clicked() {
                     proj_params.p1().0 = true;
+                }
+
+                if ui.button("Reset Camera").clicked() {
+                    reset_camera_events.write(ResetCamera);
+                    ui.close();
                 }
 
                 ui.separator();
@@ -1174,20 +1187,55 @@ fn send_camera_projection_toggle(
 /// Shared handler for camera projection toggling.
 ///
 /// Based on `ToggleCameraProjection` messages swaps the `Projection` component
-/// on the `MainCamera` entity in-place.
+/// on the `MainCamera` entity in-place, preserving the apparent zoom level so
+/// the scene looks as similar as possible immediately after the switch between
+/// the projection types.
+///
+/// **Perspective to Orthographic**
+/// The orthographic `scale` is derived from the current orbit radius and the
+/// perspectives vertical FOV roughly:
+///   `ortho_scale = 2 * radius * tan(fov / 2)`
+/// This makes the orthographic viewport height match what the perspective
+/// camera was framing at the orbit center.
+///
+/// **Orthographic to Perspective**
+/// The inverse to perspective due to orthographic maths. the orbit radius is
+/// recomputed from the current ortho scale so the perspective camera lands at
+/// the matching distance, then the camera transform is repositioned on the
+/// sphere.
 pub fn apply_camera_projection_toggle(
     mut events: MessageReader<ToggleCameraProjection>,
     mut camera_mode: ResMut<CameraMode>,
-    mut projection_query: Query<&mut Projection, With<MainCamera>>,
+    mut camera_query: Query<
+        (
+            &mut Projection,
+            &mut crate::CameraOrbit,
+            &crate::FreeLookCamera,
+            &mut Transform,
+        ),
+        With<MainCamera>,
+    >,
 ) {
     for _ in events.read() {
-        let Ok(mut projection) = projection_query.single_mut() else {
+        let Ok((mut projection, mut orbit, free_look, mut transform)) = camera_query.single_mut()
+        else {
             continue;
         };
+
         let new_mode = match *camera_mode {
             CameraMode::Perspective => {
+                // Derive ortho scale from the current perspectives FOV and
+                // radius such that the scene appears at roughly the same zoom
+                // level after the switch. (haven't full validated the maths its
+                // late)
+                let fov = match *projection {
+                    Projection::Perspective(ref p) => p.fov,
+                    _ => PerspectiveProjection::default().fov,
+                };
+                let ortho_scale = 2.0 * orbit.radius * (fov / 2.0).tan();
+
                 *projection = Projection::Orthographic(OrthographicProjection {
-                    scale: 5.0,
+                    scale: ortho_scale,
                     near: 0.1,
                     far: 1000.0,
                     scaling_mode: bevy::camera::ScalingMode::FixedVertical {
@@ -1199,11 +1247,61 @@ pub fn apply_camera_projection_toggle(
                 CameraMode::Orthographic
             }
             CameraMode::Orthographic => {
+                // Derive the perspective orbit radius from the current ortho
+                // scale so the camera ends up at the matching distance from the
+                // scene origin.
+                let fov = PerspectiveProjection::default().fov;
+                let ortho_scale = match *projection {
+                    Projection::Orthographic(ref o) => o.scale,
+                    _ => 5.0,
+                };
+                orbit.radius = ortho_scale / (2.0 * (fov / 2.0).tan());
+
+                let x = orbit.center.x + orbit.radius * free_look.yaw.cos() * free_look.pitch.cos();
+                let y = orbit.center.y + orbit.radius * free_look.pitch.sin();
+                let z = orbit.center.z + orbit.radius * free_look.yaw.sin() * free_look.pitch.cos();
+                transform.translation = Vec3::new(x, y, z);
+                *transform = transform.looking_at(orbit.center, Vec3::Y);
+
                 *projection = Projection::Perspective(PerspectiveProjection::default());
                 CameraMode::Perspective
             }
         };
         bevy::log::debug!("projection now {:?}", new_mode);
         *camera_mode = new_mode;
+    }
+}
+
+/// Restore the camera to its default position in the case where you lose track
+/// where anything is or what you did. Which neeeever happens.
+pub fn reset_camera(
+    mut events: MessageReader<ResetCamera>,
+    mut camera_mode: ResMut<CameraMode>,
+    mut camera_query: Query<
+        (
+            &mut Transform,
+            &mut crate::CameraOrbit,
+            &mut crate::FreeLookCamera,
+            &mut Projection,
+        ),
+        With<MainCamera>,
+    >,
+) {
+    for _ in events.read() {
+        let Ok((mut transform, mut orbit, mut free_look, mut projection)) =
+            camera_query.single_mut()
+        else {
+            continue;
+        };
+
+        let defaults = crate::fullscreen_effect::CameraConfig::default();
+
+        *transform = defaults.transform;
+        *orbit = defaults.orbit;
+        *free_look = defaults.free_look;
+        *projection = Projection::Perspective(PerspectiveProjection::default());
+        *camera_mode = CameraMode::Perspective;
+
+        bevy::log::debug!("user reset camera to default");
     }
 }
