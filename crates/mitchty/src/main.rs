@@ -17,6 +17,7 @@ use bevy_pretty_text::prelude::*;
 
 use crate::post_process::{EffectsEnabled, PostProcessSettings};
 use mitchty::RenderLayers;
+use transform_gizmo_bevy::{GizmoDragStarted, GizmoDragging, prelude::*};
 
 // TODO: maybe a shared gooey lib?
 pub use mitchty::CameraMode;
@@ -46,6 +47,28 @@ pub struct LoadedScene;
 #[derive(Resource, Default)]
 pub struct SceneConfig {
     pub custom_scene: Option<String>,
+}
+
+/// Holds the full `Transform` applied to the loaded GLTF/GLB scene root entity.
+///
+/// Defaults to a uniform scale of `0.3` with no rotation or translation, which
+/// matches the original hardcoded value. Mutating this resource causes
+/// `apply_scene_transform` to write the new transform to the live `LoadedScene`
+/// entity on the next frame.
+///
+/// The `transform-gizmo-egui` gizmo works on a full `Transform` (scale,
+/// rotation, translation) so storing it this way is the cleanest representation.
+#[derive(Resource, Clone)]
+pub struct SceneTransformConfig {
+    pub transform: Transform,
+}
+
+impl Default for SceneTransformConfig {
+    fn default() -> Self {
+        Self {
+            transform: Transform::from_scale(Vec3::splat(0.3)),
+        }
+    }
 }
 
 /// State for the Load Scene URL popup window.
@@ -509,6 +532,7 @@ fn main() {
         .add_plugins(ShadersPlugin)
         .add_plugins(FontMeshPlugin::<StandardMaterial>::default())
         .add_plugins(PostProcessPlugin)
+        .add_plugins(TransformGizmoPlugin)
         .add_plugins(MeshEffectPlugin)
         .add_plugins(PrettyTextPlugin)
         .add_plugins(flan::PlotPlugin)
@@ -528,7 +552,16 @@ fn main() {
 
     app.init_resource::<SceneConfig>()
         .init_resource::<SceneUrlState>()
-        .add_systems(Update, replace_scene);
+        .init_resource::<SceneTransformConfig>()
+        .add_systems(Update, replace_scene)
+        .add_systems(Update, apply_scene_transform)
+        .add_systems(Update, sync_gizmo_target)
+        .add_systems(Update, touch_interact_gizmo)
+        .add_systems(Update, manage_post_process_for_gizmo)
+        .add_systems(
+            Update,
+            (sync_scene_config_from_gizmo, preserve_origin_on_scale).chain(),
+        );
 
     // Conditionally add UI-specific plugins
     #[cfg(feature = "egui")]
@@ -658,6 +691,7 @@ fn spawn_camera(
         config.free_look,
         config.orbit,
         crate::MainCamera,
+        GizmoCamera,
         PostProcessSettings {
             intensity,
             time: 0.0,
@@ -668,29 +702,39 @@ fn spawn_camera(
     ));
 }
 
-fn setup(asset_server: Res<AssetServer>, mut commands: Commands) {
+fn setup(
+    asset_server: Res<AssetServer>,
+    scene_transform: Res<SceneTransformConfig>,
+    mut commands: Commands,
+) {
     // gltf model for testing abuse
     let glb_path = asset_path("mitchty.glb");
     // Use GltfAssetLabel::Scene(0) to load the first scene from the GLB/TF file
     let scene_handle = asset_server.load(GltfAssetLabel::Scene(0).from_asset(glb_path));
 
-    // Spawn the GLTF/GLB scene with a large scale to fit the view. Future work
-    // will make it possible to set some of this dynamically at load time.
+    // Spawn the GLTF/GLB scene using the current SceneTransformConfig transform.
     commands
         .spawn((
             SceneRoot(scene_handle),
-            Transform::from_scale(Vec3::splat(0.3)),
+            scene_transform.transform,
             LoadedScene,
         ))
         .observe(on_scene_ready);
 }
 
 /// Watches `SceneConfig` for changes and swaps out the active scene.
+///
+/// Also resets `SceneTransformConfig` back to its defaults whenever a new
+/// scene is loaded so the sliders always start fresh for the incoming model,
+/// and ensures the Scene Config window is open so the user can immediately
+/// adjust scale/rotation for the newly loaded model.
 fn replace_scene(
     config: Res<SceneConfig>,
     asset_server: Res<AssetServer>,
     mut commands: Commands,
     scene_query: Query<Entity, With<LoadedScene>>,
+    mut scene_transform: ResMut<SceneTransformConfig>,
+    scene_cfg_window_query: Query<(), With<crate::ui::ShowSceneConfig>>,
 ) {
     // Work around race type issues where GLTF mesh entities loading in the same frame/tick.
     //
@@ -705,6 +749,15 @@ fn replace_scene(
         commands.entity(entity).despawn();
     }
 
+    // Reset scene transform to default so the new model starts at a sane scale.
+    *scene_transform = SceneTransformConfig::default();
+
+    // Auto-open the Scene Config window for every new load so the user can
+    // immediately tweak scale/rotation without hunting through menus.
+    if scene_cfg_window_query.is_empty() {
+        commands.spawn(crate::ui::ShowSceneConfig);
+    }
+
     let path = match &config.custom_scene {
         Some(s) => s.clone(),
         None => asset_path("mitchty.glb"),
@@ -714,10 +767,198 @@ fn replace_scene(
     commands
         .spawn((
             SceneRoot(scene_handle),
-            Transform::from_scale(Vec3::splat(0.3)),
+            scene_transform.transform,
             LoadedScene,
         ))
         .observe(on_scene_ready);
+}
+
+/// Adds or removes `GizmoTarget` from the `LoadedScene` entity based on
+/// whether the `ShowSceneConfig` marker is present.
+///
+/// When Scene Config is visible the user can drag the gizmo to manipulate the
+/// scene directly in 3D; the plugin writes back to the entity's `Transform`
+/// automatically. When the panel is hidden the gizmo target is removed so the
+/// gizmo handles don't stay visible.
+fn sync_gizmo_target(
+    scene_config_query: Query<(), With<crate::ui::ShowSceneConfig>>,
+    scene_query: Query<(Entity, Has<GizmoTarget>), With<LoadedScene>>,
+    mut commands: Commands,
+) {
+    let wants_gizmo = !scene_config_query.is_empty();
+    for (entity, has_target) in scene_query.iter() {
+        if wants_gizmo && !has_target {
+            commands.entity(entity).insert(GizmoTarget::default());
+        } else if !wants_gizmo && has_target {
+            commands.entity(entity).remove::<GizmoTarget>();
+        }
+    }
+}
+
+/// This system disables the fullscreen post-process effect(s) while the Scene Config panel is
+/// open, then restores the previous state when closed. The main reason why is I couldn't figure out a good way to pipeline or order the fragment shader in a way that doesn't hit the gadget layer in current use. It isn't a huge deal to not have the shaders running whilst doing shenanigans so its no big deal.
+///
+/// Uses `Added<ShowSceneConfig>` to detect the egui panel open and
+/// `RemovedComponents<ShowSceneConfig>` to detect it closing, or really hiding.
+/// The state before the panel was opened is stored in a `Local` value so it is
+/// correctly restored to what it was even if the user toggled effects off
+/// manually before opening the panel.
+fn manage_post_process_for_gizmo(
+    added: Query<(), Added<crate::ui::ShowSceneConfig>>,
+    mut removed: RemovedComponents<crate::ui::ShowSceneConfig>,
+    mut effects_enabled: ResMut<EffectsEnabled>,
+    mut was_enabled: Local<bool>,
+) {
+    if !added.is_empty() {
+        *was_enabled = effects_enabled.0;
+        effects_enabled.0 = false;
+    }
+    if removed.read().next().is_some() {
+        effects_enabled.0 = *was_enabled;
+    }
+}
+
+/// Keeps `SceneTransformConfig` in sync with what `TransformGizmoPlugin` and
+/// writes directly to the `LoadedScene` entity's `Transform` so that the gizmo
+/// changes are kept for the uniform scaling to not reset the origin point.
+///
+/// The gizmo plugin bypasses `SceneTransformConfig` entirely - it writes to the
+/// component directly stored in the `Last` value. We need to bridge what the
+/// egui scale "knows" with this Local. There is probably a better way than this
+/// but this is "make it work" level code not "make it right".
+///
+/// Uses `bypass_change_detection` so writing directly to `SceneTransformConfig`
+/// does not trigger `apply_scene_transform`, avoiding a feedback loop and...
+/// weird behavior.
+///
+/// For the gizmo `GizmoResult::Scale` deliberately do not sync the gizmo
+/// translation so that `preserve_origin_on_scale` which runs right after this
+/// has a stable reference translation to restore to. Lots of ins an outs with this.
+fn sync_scene_config_from_gizmo(
+    scene_query: Query<(&Transform, &GizmoTarget), With<LoadedScene>>,
+    mut scene_transform: ResMut<SceneTransformConfig>,
+) {
+    for (transform, gizmo_target) in scene_query.iter() {
+        if !gizmo_target.is_active() {
+            continue;
+        }
+        match gizmo_target.latest_result() {
+            Some(GizmoResult::Scale { .. }) => {
+                // Only pull scale and rotation leave the translation in the
+                // config as the "pinned" origin that preserve_origin_on_scale
+                // will enforce on the entity being modified.
+                scene_transform.bypass_change_detection().transform.scale = transform.scale;
+                scene_transform.bypass_change_detection().transform.rotation = transform.rotation;
+            }
+            Some(_) => {
+                // Ignore these transform changes so we don't get in a feedback
+                // loop while the user interacts with things.
+                scene_transform.bypass_change_detection().transform = *transform;
+            }
+            None => {}
+        }
+    }
+}
+
+/// Ensures a gizmo scale operation never displaces the scene root in world
+/// space.
+///
+/// `TransformGizmoPlugin` writes all three TRS components back to the entity
+/// each frame. For scale operations the underlying pivot math can introduce a
+/// small translation delta. This system reads the `GizmoResult` from the
+/// previous `Last` frame and, when it was a scale, resets the entity's
+/// translation to whatever `SceneTransformConfig` currently holds as the
+/// authoritative world position vs trying and failing to deal with possible
+/// drift due to f32 maths between the gizmo/scale/user change.
+///
+/// Runs in `Update` immediately after `sync_scene_config_from_gizmo` so that the config
+/// translation is always a stable reference point.
+fn preserve_origin_on_scale(
+    mut scene_query: Query<(&mut Transform, &GizmoTarget), With<LoadedScene>>,
+    scene_config: Res<SceneTransformConfig>,
+) {
+    for (mut transform, gizmo_target) in scene_query.iter_mut() {
+        if let Some(GizmoResult::Scale { .. }) = gizmo_target.latest_result() {
+            let pinned = scene_config.transform.translation;
+            if transform.translation != pinned {
+                transform.translation = pinned;
+            }
+        }
+    }
+}
+
+// TODO: This doesn't seem to work but I don't care it isn't critical that this
+// works on ipads or anything. Future me can figure out why. Past mitch has had
+// enough with web bs for the week.
+/// Bridges single-finger touch input into the `GizmoDragStarted` / `GizmoDragging`
+/// messages that `transform-gizmo-bevy`'s `update_gizmos` system expects.
+///
+/// The upstream gizmo `mouse_interaction` feature only wires
+/// `MouseButton::Left` there is no touch support in the crate for interaction.
+/// Bevy's winit backend does update `window.cursor_position()` from touch
+/// events in wasm builds, but the drag *state* messages are never written for
+/// touch, meaning the gizmo never activates on touch screens when a user tries
+/// to intact with the gizmo. At least thats how it seems, I don't have much
+/// time today to debug this and don't care that much its 80F out its time to go
+/// for an awesome spring walk and get some vitamin d or whatever I look like a
+/// ghost with less melanin lately.
+///
+/// This system attempted to bridge touch events to the events the gizmo uses.
+/// It tracks the **primary** touch finger, consistent with how
+/// `track_input_drag` works already. Messages are only written when a
+/// `GizmoTarget` so unless a scene config panel is open in egui this doesn't
+/// run.
+fn touch_interact_gizmo(
+    mut touch_events: MessageReader<TouchInput>,
+    mut drag_started: MessageWriter<GizmoDragStarted>,
+    mut dragging: MessageWriter<GizmoDragging>,
+    gizmo_target_query: Query<(), With<GizmoTarget>>,
+    drag_state: Res<DragState>,
+) {
+    if gizmo_target_query.is_empty() {
+        return;
+    }
+
+    for event in touch_events.read() {
+        // Only act on the primary finger event not secondary, if a user is trying to zoom I have no clue what woudl be right here.
+        let is_primary =
+            drag_state.active_touch_id.is_none() || drag_state.active_touch_id == Some(event.id);
+
+        if !is_primary {
+            continue;
+        }
+
+        match event.phase {
+            bevy::input::touch::TouchPhase::Started => {
+                drag_started.write_default();
+                dragging.write_default();
+            }
+            bevy::input::touch::TouchPhase::Moved => {
+                dragging.write_default();
+            }
+            // Stop gizmo message bridging, don't bother sending a message.
+            _ => {}
+        }
+    }
+}
+
+/// Watches `SceneTransformConfig` for changes and immediately writes the stored
+/// `Transform` to the live `LoadedScene` root entity.
+///
+/// Scale components are soft-clamped to `0.001` so a degenerate zero/negative
+/// scale from the gizmo or manual text entry can't confuse Bevy's renderer.
+fn apply_scene_transform(
+    scene_transform: Res<SceneTransformConfig>,
+    mut scene_query: Query<&mut Transform, With<LoadedScene>>,
+) {
+    if !scene_transform.is_changed() {
+        return;
+    }
+    let mut t = scene_transform.transform;
+    t.scale = t.scale.max(Vec3::splat(0.001));
+    for mut transform in scene_query.iter_mut() {
+        *transform = t;
+    }
 }
 
 /// Observer attached to each `SceneRoot` entity via `.observe()`. Fires every
@@ -1109,8 +1350,8 @@ fn setup_fps_sparkline_ui(
         Node {
             position_type: PositionType::Absolute,
             // Sit just to the left of the fps text.
-            // fps text: right:10px, ~90px wide → left edge ~100px from screen right.
-            // Sparkline: width 100px, with a small gap → right:110px.
+            // fps text: right:10px, ~90px wide -> left edge ~100px from screen right.
+            // Sparkline: width 100px, with a small gap -> right:110px.
             right: Val::Px(140.0),
             top,
             width: Val::Px(100.0),
@@ -1126,7 +1367,7 @@ fn setup_fps_sparkline_ui(
 /// Sample the current FPS into the `FpsHistory` circular buffer every 0.1 s.
 ///
 /// Reads from `DiagnosticsStore` (fed by `FrameTimeDiagnosticsPlugin`) so no
-/// `Res<Time>` is needed — the `on_timer` run condition owns the 100 ms cadence.
+/// `Res<Time>` is needed - the `on_timer` run condition owns the 100 ms cadence.
 /// Skips quietly if diagnostics aren't populated yet (first few frames).
 fn sample_fps_history(
     diagnostics: Res<DiagnosticsStore>,
@@ -1371,19 +1612,31 @@ fn track_input_drag(
     mut touch_events: MessageReader<TouchInput>,
     mut drag_state: ResMut<DragState>,
     interaction_query: Query<&Interaction>,
+    gizmo_target_query: Query<&GizmoTarget>,
     #[cfg(feature = "egui")] egui_wants_input: Res<ui::EguiWantsInput>,
 ) {
     let ui_is_interacted = interaction_query
         .iter()
         .any(|interaction| *interaction != Interaction::None);
 
-    // Check if egui is using the input
+    // Check if egui is using the input.
     #[cfg(feature = "egui")]
     let egui_is_using_input = egui_wants_input.wants_pointer;
     #[cfg(not(feature = "egui"))]
     let egui_is_using_input = false;
 
-    if ui_is_interacted || egui_is_using_input {
+    // Check if the transform gizmo is actively being dragged this frame.
+    // GizmoTarget::latest_result() is Some whenever the plugin processed an
+    // interaction, meaning the pointer is being consumed by the gizmo and must
+    // not also rotate the camera. Without this the camera rotation will also
+    // trigger and the scene will change orientation incorrectly. TODO: future
+    // mitch there is a lot of code around here and other areas here in egu that
+    // really needs some DRY'ing or at least probably unit tests.
+    let gizmo_is_active = gizmo_target_query
+        .iter()
+        .any(|t| t.latest_result().is_some());
+
+    if ui_is_interacted || egui_is_using_input || gizmo_is_active {
         drag_state.is_dragging = false;
         drag_state.drag_start = None;
         drag_state.active_touch_id = None;
@@ -1662,7 +1915,7 @@ fn zoom_camera(
         }
         Projection::Orthographic(ref mut ortho) => {
             // Adjust the orthographic scale, aka smaller is zoom in.
-            // Clamps to zero — negative scale mirrors/inverts the scene.
+            // Clamps to zero - negative scale mirrors/inverts the scene.
             ortho.scale = (ortho.scale - zoom_delta).max(0.0);
         }
 

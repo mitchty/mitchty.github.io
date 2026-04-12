@@ -41,6 +41,11 @@ zip.workspace = true
 clap.workspace = true
 bevy_fontmesh = "~0.3"
 bevy_egui = { version = "~0.39.1", optional = true }
+transform-gizmo-bevy = { version = "0.9", default-features = false, features = [
+  "mouse_interaction",
+  "gizmo_picking_backend",
+] }
+bevy_picking = { version = "0.18", default-features = false }
 bevy_pretty_text = "~0.4"
 bevy_pbr = "0.18.1"
 markdown = "1.0.0"

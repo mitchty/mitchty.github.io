@@ -261,6 +261,18 @@ skip = [
   { name = "async-channel", version = "=2.5.0" },
   { name = "event-listener", version = "=2.5.3" },
   { name = "event-listener", version = "=5.4.1" },
+  # Bevy and transform gizmo
+  { name = "glam", version = "=0.30.10" },
+  { name = "glam", version = "=0.32.1" },
+  # Egui and transform gizmo
+  { name = "epaint", version = "=0.33.3" },
+  { name = "epaint", version = "=0.34.1" },
+  { name = "ecolor", version = "=0.33.3" },
+  { name = "ecolor", version = "=0.34.1" },
+  { name = "emath", version = "=0.33.3" },
+  { name = "emath", version = "=0.34.1" },
+  { name = "epaint_default_fonts", version = "=0.33.3" },
+  { name = "epaint_default_fonts", version = "=0.34.1" },
 ]
 skip-tree = []
 

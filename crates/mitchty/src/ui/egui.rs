@@ -9,11 +9,12 @@ use crate::ui::recognizer::{BASE_BRUSH_R, InferenceResult, RecognizerState};
 use crate::ui::scroll_view::{ActivePost, POSTS};
 use crate::ui::world_clock::{ShowWorldClock, WorldClockState, world_clock_window};
 use crate::{CameraMode, ColorState, CubeRotation, FpsDisplay, HueAnimation, MainCamera};
-use crate::{SceneConfig, SceneUrlState};
+use crate::{SceneConfig, SceneTransformConfig, SceneUrlState};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 #[cfg(not(target_arch = "wasm32"))]
 use egui_file_dialog::FileDialog;
+use transform_gizmo_bevy::prelude::{GizmoMode, GizmoOptions, GizmoOrientation};
 
 // Wasm js bridge types for dark/light changes.
 #[cfg(target_arch = "wasm32")]
@@ -60,6 +61,10 @@ pub struct CameraProjectionToggleRequested(pub bool);
 /// Marker component to track whether the Recognizer window is open
 #[derive(Component)]
 pub struct ShowRecognizer;
+
+/// Marker component to track whether the Scene Config window is open
+#[derive(Component)]
+pub struct ShowSceneConfig;
 
 /// Bevy message for when the outside theme has changed.
 ///
@@ -173,9 +178,15 @@ impl Plugin for SettingsUiPlugin {
                 configure_egui_style,
                 settings_ui,
                 #[cfg(not(target_arch = "wasm32"))]
-                (recognizer_window, data_viewer_window, world_clock_window).chain(),
+                (
+                    recognizer_window,
+                    data_viewer_window,
+                    world_clock_window,
+                    scene_config_window,
+                )
+                    .chain(),
                 #[cfg(target_arch = "wasm32")]
-                (recognizer_window, world_clock_window).chain(),
+                (recognizer_window, world_clock_window, scene_config_window).chain(),
                 update_egui_input_state,
             )
                 .chain(),
@@ -568,6 +579,155 @@ fn draw_scene_url_popup(ctx: &egui::Context, state: &mut SceneUrlState) {
     }
 }
 
+/// System that renders the Scene Config left side panel when `ShowSceneConfig`
+/// is present.
+///
+/// The 3D gizmo itself is rendered by `TransformGizmoPlugin` directly into the
+/// Bevy scene - no egui matrix math required. This panel only controls
+/// `GizmoOptions` (orientation, active modes) and provides a numeric scale
+/// input and Reset button as a precision fallback alongside the gizmo.
+fn scene_config_window(
+    mut contexts: EguiContexts,
+    scene_config_query: Query<Entity, With<ShowSceneConfig>>,
+    mut scene_transform: ResMut<SceneTransformConfig>,
+    mut gizmo_options: ResMut<GizmoOptions>,
+    mut commands: Commands,
+) -> Result {
+    if scene_config_query.is_empty() {
+        return Ok(());
+    }
+
+    egui::SidePanel::left("scene_config_panel")
+        .resizable(true)
+        .default_width(240.0)
+        .show(contexts.ctx_mut()?, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Scene Config").strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Hide").clicked()
+                        && let Ok(entity) = scene_config_query.single()
+                    {
+                        commands.entity(entity).despawn();
+                    }
+                });
+            });
+            ui.separator();
+
+            ui.label(egui::RichText::new("Orientation").strong());
+            egui::ComboBox::from_id_salt("gizmo_orientation")
+                .selected_text(format!("{:?}", gizmo_options.gizmo_orientation))
+                .show_ui(ui, |ui| {
+                    for o in [GizmoOrientation::Global, GizmoOrientation::Local] {
+                        ui.selectable_value(
+                            &mut gizmo_options.gizmo_orientation,
+                            o,
+                            format!("{:?}", o),
+                        );
+                    }
+                });
+
+            ui.add_space(6.0);
+
+            ui.label(egui::RichText::new("Modes").strong());
+
+            egui::Grid::new("gizmo_modes_grid")
+                .num_columns(5)
+                .spacing([4.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label("");
+                    for label in ["X", "Y", "Z", "View/Uniform"] {
+                        ui.label(egui::RichText::new(label).small().strong());
+                    }
+                    ui.end_row();
+
+                    ui.label("Rotate");
+                    for mode in [
+                        GizmoMode::RotateX,
+                        GizmoMode::RotateY,
+                        GizmoMode::RotateZ,
+                        GizmoMode::RotateView,
+                    ] {
+                        let mut on = gizmo_options.gizmo_modes.contains(mode);
+                        if ui.checkbox(&mut on, "").changed() {
+                            if on {
+                                gizmo_options.gizmo_modes.insert(mode);
+                            } else {
+                                gizmo_options.gizmo_modes.remove(mode);
+                            }
+                        }
+                    }
+                    ui.end_row();
+
+                    ui.label("Translate");
+                    for mode in [
+                        GizmoMode::TranslateX,
+                        GizmoMode::TranslateY,
+                        GizmoMode::TranslateZ,
+                        GizmoMode::TranslateView,
+                    ] {
+                        let mut on = gizmo_options.gizmo_modes.contains(mode);
+                        if ui.checkbox(&mut on, "").changed() {
+                            if on {
+                                gizmo_options.gizmo_modes.insert(mode);
+                            } else {
+                                gizmo_options.gizmo_modes.remove(mode);
+                            }
+                        }
+                    }
+                    ui.end_row();
+
+                    ui.label("Scale");
+                    for mode in [
+                        GizmoMode::ScaleX,
+                        GizmoMode::ScaleY,
+                        GizmoMode::ScaleZ,
+                        GizmoMode::ScaleUniform,
+                    ] {
+                        let mut on = gizmo_options.gizmo_modes.contains(mode);
+                        if ui.checkbox(&mut on, "").changed() {
+                            if on {
+                                gizmo_options.gizmo_modes.insert(mode);
+                            } else {
+                                gizmo_options.gizmo_modes.remove(mode);
+                            }
+                        }
+                    }
+                    ui.end_row();
+                });
+
+            ui.add_space(6.0);
+            ui.separator();
+
+            ui.label(egui::RichText::new("Manual").strong());
+            egui::Grid::new("scene_cfg_manual")
+                .num_columns(2)
+                .spacing([8.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label("Scale (uniform):");
+                    let mut s = scene_transform.transform.scale.x;
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut s)
+                                .speed(0.01)
+                                .range(0.001_f32..=f32::MAX)
+                                .fixed_decimals(3),
+                        )
+                        .changed()
+                    {
+                        scene_transform.transform.scale = Vec3::splat(s.max(0.001));
+                    }
+                    ui.end_row();
+                });
+
+            ui.add_space(4.0);
+            if ui.button("Reset transform").clicked() {
+                *scene_transform = SceneTransformConfig::default();
+            }
+        });
+
+    Ok(())
+}
+
 /// Display the settings UI using egui as a top menu bar
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
@@ -584,6 +744,7 @@ fn settings_ui(
         Query<Entity, With<ShowRecognizer>>,
         Query<Entity, With<ShowWorldClock>>,
         Query<&mut Visibility, With<flan::PlotUiNode>>,
+        Query<Entity, With<ShowSceneConfig>>,
     )>,
     #[cfg(not(target_arch = "wasm32"))] data_viewer_query: Query<Entity, With<ShowDataViewer>>,
     #[cfg(not(target_arch = "wasm32"))] mut scene_file_dialog: NonSendMut<SceneFileDialog>,
@@ -626,7 +787,7 @@ fn settings_ui(
 
     egui::TopBottomPanel::top("menu_bar").show(contexts.ctx_mut()?, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
-            // File menu — shown on all platforms; individual items are gated below.
+            // File menu - shown on all platforms; individual items are gated below.
             ui.menu_button("File", |ui| {
                 #[cfg(not(target_arch = "wasm32"))]
                 if ui.button("Load Scene").clicked() {
@@ -647,6 +808,23 @@ fn settings_ui(
                     .clicked()
                 {
                     scene_config.custom_scene = None;
+                    ui.close();
+                }
+
+                ui.separator();
+
+                // Scene Config window toggle - lets the user adjust scale and
+                // Y-rotation for the current scene without a reload.
+                let scene_cfg_open = marker_queries.p6().single().is_ok();
+                if ui
+                    .selectable_label(scene_cfg_open, "Scene Config")
+                    .clicked()
+                {
+                    if let Ok(entity) = marker_queries.p6().single() {
+                        commands.entity(entity).despawn();
+                    } else {
+                        commands.spawn(ShowSceneConfig);
+                    }
                     ui.close();
                 }
 
