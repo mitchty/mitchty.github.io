@@ -148,10 +148,18 @@ pub fn create_default_plugins(enable_gamepad: bool) -> bevy::app::PluginGroupBui
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     fit_canvas_to_parent: true,
-                    // Call preventDefault() on all touch/pointer events so the
-                    // browser doesn't intercept them before Bevy can use them.
-                    // Otherwise ios/safari defaults happen.
-                    prevent_default_event_handling: true,
+                    // Ok so we *have* to leave default event handling off.
+                    // Bevy's setup here is all or nothing, so if I *want* pinch
+                    // to zoom, which I do, I can't ignore all events as
+                    // copy/paste as an example are in that category as well.
+                    // Soooo apparently we need to abuse the javascript bridge
+                    // to allow those to yeet in from the outside world.
+                    //
+                    // I swear the web is the most inconsistent platform in the
+                    // world. Why anyone likes to develop for it is beyond me.
+                    // This just reinforces my desire to never learn js/web
+                    // programming.
+                    prevent_default_event_handling: false,
                     ..default()
                 }),
                 ..default()

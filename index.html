@@ -81,6 +81,53 @@
     </div>
   </div>
 
+  <script>
+    // Prevent pointer/touch events from triggering browser scroll/zoom on the
+    // canvas without killing keyboard events.
+    //
+    // We look/observe for the browser canvas being added by wasm init so we can attach
+    // listeners to the right element even though it doesn't exist yet at
+    // parse time so that copy/paste into the wasm canvas element still works.
+    //
+    // TODO: How do I deal with updates to all this? I *WILL* forget that this
+    // bridge needs to exist.
+    const POINTER_EVENTS = ['pointerdown', 'pointermove', 'pointerup', 'pointercancel',
+                            'touchstart', 'touchmove', 'touchend', 'touchcancel'];
+
+    function attachCanvasPointerBlock(canvas) {
+      POINTER_EVENTS.forEach(type => {
+        canvas.addEventListener(type, e => e.preventDefault(), { passive: false });
+      });
+    }
+
+    // Watch for the canvas being inserted into the bevy-container div.
+    const observer = new MutationObserver(mutations => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node.tagName === 'CANVAS') {
+            attachCanvasPointerBlock(node);
+            observer.disconnect();
+            return;
+          }
+        }
+      }
+    });
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const container = document.getElementById('bevy-container');
+      if (container) {
+        // In case the canvas already exists somehow but safety first I guess I
+        // dunno.
+        const existing = container.querySelector('canvas');
+        if (existing) {
+          attachCanvasPointerBlock(existing);
+        } else {
+          observer.observe(container, { childList: true, subtree: true });
+        }
+      }
+    });
+  </script>
+
   <script type="module">
     function showError(detail) {
       document.getElementById('loading').style.display = 'none';
