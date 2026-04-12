@@ -505,7 +505,14 @@ fn setup_egui(
 /// Validates that the input starts with `http://` or `https://` before the Load
 /// button can be used. Better error handling needs to happen at some point but
 /// thats a future thing.
-fn draw_scene_url_popup(ctx: &egui::Context, state: &mut SceneUrlState, config: &mut SceneConfig) {
+/// Draw the "Load Scene URL" popup window.
+///
+/// Future mitch note, if we take a `&mut SceneConfig` in this popup for its
+/// duration we cause needless messages about changes to it every tick. Which is
+/// dum but its a behavior I never knew about with Resources/Components.
+///
+/// So this now does a 2 phase commit for the string data.
+fn draw_scene_url_popup(ctx: &egui::Context, state: &mut SceneUrlState) {
     if !state.open {
         return;
     }
@@ -534,7 +541,8 @@ fn draw_scene_url_popup(ctx: &egui::Context, state: &mut SceneUrlState, config: 
 
             ui.horizontal(|ui| {
                 if ui.add_enabled(valid, egui::Button::new("Load")).clicked() {
-                    config.custom_scene = Some(url.clone());
+                    // Just store the url the user entered here.
+                    state.confirmed_url = Some(url.clone());
                     state.buf.clear();
                     state.open = false;
                 }
@@ -605,7 +613,16 @@ fn settings_ui(
     }
 
     // TODO: Maybe not be a popup? Future me problem.
-    draw_scene_url_popup(contexts.ctx_mut()?, &mut scene_url_state, &mut scene_config);
+    //
+    // Right now this is a 2 phase commit, draw_scene_url_popup gets the url
+    // from the user, or its None if they hit say cancel.
+    draw_scene_url_popup(contexts.ctx_mut()?, &mut scene_url_state);
+
+    // Phase 2 actually takes the deref on the SceneConfig and that triggers
+    // observers, ONCE, not every tick.
+    if let Some(url) = scene_url_state.confirmed_url.take() {
+        scene_config.custom_scene = Some(url);
+    }
 
     egui::TopBottomPanel::top("menu_bar").show(contexts.ctx_mut()?, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {

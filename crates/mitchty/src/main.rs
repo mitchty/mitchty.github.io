@@ -11,6 +11,7 @@ use bevy::feathers::{FeathersPlugins, dark_theme::create_dark_theme, theme::UiTh
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::light::EnvironmentMapLight;
 use bevy::prelude::*;
+use bevy::scene::{SceneInstanceReady, SceneSpawner};
 
 use bevy_pretty_text::prelude::*;
 
@@ -48,12 +49,18 @@ pub struct SceneConfig {
 }
 
 /// State for the Load Scene URL popup window.
+//
+// TODO: the confirmed_url bits a hack. I need to think up a better
+// system/resource/component approach. Still learning best approaches to ecs
+// however.
 #[derive(Resource, Default)]
 pub struct SceneUrlState {
-    /// If the popup is currently open, might want to make this no blocking
+    /// Whether the popup window is currently open.
     pub open: bool,
     /// Text buffer bound to the URL `TextEdit`.
     pub buf: String,
+    /// Glorified oracle for updating SceneConfig
+    pub confirmed_url: Option<String>,
 }
 
 use polars::prelude::*;
@@ -669,11 +676,13 @@ fn setup(asset_server: Res<AssetServer>, mut commands: Commands) {
 
     // Spawn the GLTF/GLB scene with a large scale to fit the view. Future work
     // will make it possible to set some of this dynamically at load time.
-    commands.spawn((
-        SceneRoot(scene_handle),
-        Transform::from_scale(Vec3::splat(0.3)),
-        LoadedScene,
-    ));
+    commands
+        .spawn((
+            SceneRoot(scene_handle),
+            Transform::from_scale(Vec3::splat(0.3)),
+            LoadedScene,
+        ))
+        .observe(on_scene_ready);
 }
 
 /// Watches `SceneConfig` for changes and swaps out the active scene.
@@ -702,11 +711,78 @@ fn replace_scene(
     };
 
     let scene_handle = asset_server.load(GltfAssetLabel::Scene(0).from_asset(path));
-    commands.spawn((
-        SceneRoot(scene_handle),
-        Transform::from_scale(Vec3::splat(0.3)),
-        LoadedScene,
-    ));
+    commands
+        .spawn((
+            SceneRoot(scene_handle),
+            Transform::from_scale(Vec3::splat(0.3)),
+            LoadedScene,
+        ))
+        .observe(on_scene_ready);
+}
+
+/// Observer attached to each `SceneRoot` entity via `.observe()`. Fires every
+/// time a scene instantiates aka gltf load or more specifically `SceneInstanceReady`
+/// triggers. Uses `SceneSpawner::iter_instance_entities` to walk only the
+/// entities belonging to this exact instance and strips any embedded
+/// `Camera3d` / `Camera`, `PointLight`, `DirectionalLight`, and `SpotLight`.
+///
+/// This is a: I don't know of a better approach for now and just want gltf's to
+/// load. But their whole scene might have conflicting lights etc... so we rip
+/// em out wholesale. This whole things getting complect. Its about time for
+/// refactoring of this overall crate too. I was avoiding it and just
+/// implementing what I needed to.
+///
+/// Blender et al bake viewport camera and scene lights into the exported file.
+/// Bevy spawns those as actual `Camera3d` entities with default render `order:
+/// 0`, which is higher than `MainCamera`'s `order: -1`, producing an unlit
+/// rotated overlay on top of everything. But not always, it depends on the
+/// scenes content.
+// TODO: How should I unit test this?
+// https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/refs/heads/main/Models/Duck/glTF/Duck.gltf
+//
+// This is the file that has caused so much consternation.
+fn on_scene_ready(
+    trigger: On<SceneInstanceReady>,
+    scene_spawner: Res<SceneSpawner>,
+    mut commands: Commands,
+    cameras: Query<(), With<Camera3d>>,
+    point_lights: Query<(), With<PointLight>>,
+    dir_lights: Query<(), With<DirectionalLight>>,
+    spot_lights: Query<(), With<SpotLight>>,
+) {
+    for entity in scene_spawner.iter_instance_entities(trigger.event().instance_id) {
+        if cameras.contains(entity) {
+            bevy::log::debug!(
+                "on_scene_ready: removing embedded Camera3d from {:?}",
+                entity
+            );
+            commands
+                .entity(entity)
+                .remove::<Camera3d>()
+                .remove::<Camera>();
+        }
+        if point_lights.contains(entity) {
+            bevy::log::debug!(
+                "on_scene_ready: removing embedded PointLight from {:?}",
+                entity
+            );
+            commands.entity(entity).remove::<PointLight>();
+        }
+        if dir_lights.contains(entity) {
+            bevy::log::debug!(
+                "on_scene_ready: removing embedded DirectionalLight from {:?}",
+                entity
+            );
+            commands.entity(entity).remove::<DirectionalLight>();
+        }
+        if spot_lights.contains(entity) {
+            bevy::log::debug!(
+                "on_scene_ready: removing embedded SpotLight from {:?}",
+                entity
+            );
+            commands.entity(entity).remove::<SpotLight>();
+        }
+    }
 }
 
 /// Cube material animation system
