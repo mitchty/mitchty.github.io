@@ -548,7 +548,8 @@ fn main() {
         .insert_resource(ColorState { color: None })
         .insert_resource(ui_config)
         .init_resource::<CameraConfig>()
-        .init_resource::<Text3dContent>();
+        .init_resource::<Text3dContent>()
+        .init_resource::<Text3dDefaultPending>();
 
     app.init_resource::<SceneConfig>()
         .init_resource::<SceneUrlState>()
@@ -621,6 +622,16 @@ fn main() {
                 std::time::Duration::from_secs(1),
             )),
         )
+        .add_systems(Update, mark_pending_commit)
+        .add_systems(
+            Update,
+            commit_pending_default
+                .run_if(any_with_component::<Text3dCommitPending>.and(
+                    bevy::time::common_conditions::on_timer(std::time::Duration::from_millis(400)),
+                ))
+                .before(manage_text3d),
+        )
+        .add_systems(Update, manage_text3d)
         .add_systems(
             Update,
             (
@@ -1466,14 +1477,88 @@ fn apply_hue_animation(
     }
 }
 
-/// Resource that holds the string displayed as the 3D extruded text above the cubes.
-/// Mutate this from any system to change the label at runtime.
+/// Resource that holds the string displayed as 3d text, need to come up with
+/// more complex approaches here.
+///
+/// Mutation of this from any system is setup to sanely allow the text to be
+/// properly spawned.
+///
+/// `text`         the current string to be displayed... eventually
+/// `default_text` the user-configured fallback text if any if nothing currently in text
 #[derive(Resource)]
-pub struct Text3dContent(pub String);
+pub struct Text3dContent {
+    /// String that is intended to be displayed, updated per tick.
+    pub text: String,
+    /// Default text when nothing programmatically chosen.
+    pub default_text: String,
+}
 
 impl Default for Text3dContent {
     fn default() -> Self {
+        Self {
+            text: String::from("mitchty.github.io"),
+            default_text: String::from("mitchty.github.io"),
+        }
+    }
+}
+
+/// Stage 2 of the 2 phase commit approach to this dum problem of entities
+/// despawning before they are ready.
+///
+/// This allows for the ui to simply write the "text" on every keystroke or
+/// whatever so that the ui the field stays responsive and disconnected from the
+/// actual work to spawn the 3d text. A separate system flushes the value to
+/// `Text3dContent` only after a debounce period so mesh entities are not
+/// churned faster than `bevy_fontmesh` can finish its own computation and we
+/// panic() on a despawned entity. This is a workaround for now to see if there
+/// is another better approach later. Right now I got more crap to do than deal
+/// with silly panics in bevy's ecs. And honestly this approach seems fine, its
+/// just a glorified "copy from a to b every so often" approach to letting the 3d
+/// text to be spawned separately from the actual ui text as input.
+// Aka when I learn more about ECS I can apply it, until then old tricks and treachery
+#[derive(Resource)]
+pub struct Text3dDefaultPending(pub String);
+
+impl Default for Text3dDefaultPending {
+    fn default() -> Self {
         Self(String::from("mitchty.github.io"))
+    }
+}
+
+/// Marker component indicating there is text to be synced into the 3d text
+/// update system.
+#[derive(Component)]
+pub struct Text3dCommitPending;
+
+/// Watches `Text3dDefaultPending` for changes and spawns a
+/// `Text3dCommitPending` marker if one doesn't exist. Runs every frame but just
+/// looks for the marker component so that the pending system can catch it for
+/// updates later.
+fn mark_pending_commit(
+    pending: Res<Text3dDefaultPending>,
+    existing: Query<(), With<Text3dCommitPending>>,
+    mut commands: Commands,
+) {
+    if pending.is_changed() && existing.is_empty() {
+        commands.spawn(Text3dCommitPending);
+    }
+}
+
+/// Flushes the staged string into `Text3dContent` and removes the marker
+/// component. Only runs when `Text3dCommitPending` exists and the 400 ms (for
+/// now... I should benchmark this I just picked a high value but low enough to
+/// be not annoying) debounce timer fires, so `manage_text3d` never tries to
+/// operate off of invalid entity ids.
+fn commit_pending_default(
+    pending: Res<Text3dDefaultPending>,
+    mut content: ResMut<Text3dContent>,
+    marker: Query<Entity, With<Text3dCommitPending>>,
+    mut commands: Commands,
+) {
+    content.default_text = pending.0.clone();
+    content.text.clear();
+    for entity in marker.iter() {
+        commands.entity(entity).despawn();
     }
 }
 
@@ -1484,14 +1569,18 @@ impl Default for Text3dContent {
 ///    countdown to the soonest one, e.g. `"3h 25m 10s"`.
 /// 2. Otherwise, if a blog post is selected, show the post title.
 /// 3. Otherwise fall back to `"mitchty.github.io"`.
+///
+/// Updates the `Text3dContent` resource every second based on active alarms and
+/// selected posts and whatever the default might be. Does not touch any
+/// entities `manage_text3d` reacts to the resource change and handles all
+/// spawning of text. This is mostly just here to handle per second countdown of
+/// alarm text. It won't ever update in under a second so the reason for only
+/// running every second is... Well there won't be anything to update in what it
+/// gives a crap about.
 fn sync_text3d_to_active_post(
     active_post: Res<ui::ActivePost>,
     world_clock: Option<Res<ui::WorldClockState>>,
     mut text_content: ResMut<Text3dContent>,
-    asset_server: Res<AssetServer>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut commands: Commands,
-    existing_text: Query<(Entity, &mut Text3d)>,
 ) {
     use jiff::Timestamp;
 
@@ -1514,6 +1603,7 @@ fn sync_text3d_to_active_post(
             })
     });
 
+    let fallback = text_content.default_text.clone();
     let new_text = if let Some(cd) = countdown_str {
         cd
     } else {
@@ -1521,36 +1611,60 @@ fn sync_text3d_to_active_post(
             Some(idx) => ui::POSTS
                 .get(idx)
                 .map(|p| p.name.to_string())
-                .unwrap_or_else(|| String::from("mitchty.github.io")),
-            None => String::from("mitchty.github.io"),
+                .unwrap_or_else(|| fallback.clone()),
+            None => fallback,
         }
     };
 
-    if text_content.0 != new_text {
-        let new_text_clone = new_text.clone();
-
-        text_content.0 = new_text;
-
-        // Despawn existing text entities
-        let entities_to_despawn: Vec<Entity> =
-            existing_text.iter().map(|(entity, _)| entity).collect();
-
-        for entity in entities_to_despawn {
-            commands.entity(entity).despawn();
-        }
-
-        // Spawn new text immediately after despawning for next tick
-        spawn_text3d(
-            &mut commands,
-            &asset_server,
-            &mut materials,
-            &new_text_clone,
-        );
+    if text_content.text != new_text {
+        text_content.text = new_text;
     }
 }
 
+/// Every tick system that owns the `Text3d` entity lifecycle basically.
+///
+/// No `ShowText3d` = despawn any existing `Text3d` entities. ezpzlemonwhatever
+/// Any `ShowText3d` = spawn whenever `Text3dContent` changes or there is no entity already.
+fn manage_text3d(
+    show_query: Query<(), With<ShowText3d>>,
+    content: Res<Text3dContent>,
+    existing: Query<Entity, With<Text3d>>,
+    asset_server: Res<AssetServer>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut commands: Commands,
+) {
+    let should_show = !show_query.is_empty();
+    let existing_entities: Vec<Entity> = existing.iter().collect();
+    let has_text = !existing_entities.is_empty();
+
+    if !should_show {
+        for entity in existing_entities {
+            commands.entity(entity).despawn();
+        }
+        return;
+    }
+
+    // Spawn only when the resource changed or there is no entity as of yet aka
+    // mostly first startup or the enable checkbox got reclicked.
+    if content.is_changed() || !has_text {
+        for entity in existing_entities {
+            commands.entity(entity).despawn();
+        }
+        spawn_text3d(&mut commands, &asset_server, &mut materials, &content.text);
+    }
+}
+
+/// Marker component for the 3d text entities from the crate.
 #[derive(Component)]
 struct Text3d;
+
+/// Marker component controlling visibility of the 3D text output
+/// Spawn to show the text, despawn to hide it ezpzlemonwhatever simple
+// Note this means we don't despawn things, it will also let me handle turning
+// the text on/off at runtime for god knows what reason and not incur spawning
+// in and building the meshes again in those cases. I could see some value in that.
+#[derive(Component)]
+pub struct ShowText3d;
 
 // Spawn the 3d text with whatevers in the Resource string
 fn spawn_text3d(
@@ -1590,19 +1704,14 @@ fn spawn_text3d(
     ));
 }
 
-/// Setup default 3d text for startup
-fn setup_3d_text(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    text_content: Res<Text3dContent>,
-) {
-    spawn_text3d(
-        &mut commands,
-        &asset_server,
-        &mut materials,
-        &text_content.0,
-    );
+/// Startup system to spawn the `ShowText3d` marker so 3D text is visible by
+/// default... for now at least this may change in future. `manage_text3d`
+/// handles the actual mesh entity on the first Update system tick via
+/// `is_added()` and `is_changed()`. This all seems slightly overcomplicated
+/// maybe I can use .observe() to simplify at some point when I better grasp it
+/// like squidward right now i'm in patrick territory.
+fn setup_3d_text(mut commands: Commands) {
+    commands.spawn(ShowText3d);
 }
 
 /// Track mouse and touch drag state for distinguishing clicks from drags

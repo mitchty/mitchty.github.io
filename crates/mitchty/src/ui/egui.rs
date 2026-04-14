@@ -8,7 +8,10 @@ use crate::ui::recognizer::RasterSize;
 use crate::ui::recognizer::{BASE_BRUSH_R, InferenceResult, RecognizerState};
 use crate::ui::scroll_view::{ActivePost, POSTS};
 use crate::ui::world_clock::{ShowWorldClock, WorldClockState, world_clock_window};
-use crate::{CameraMode, ColorState, CubeRotation, FpsDisplay, HueAnimation, MainCamera};
+use crate::{
+    CameraMode, ColorState, CubeRotation, FpsDisplay, HueAnimation, MainCamera, ShowText3d,
+    Text3dContent, Text3dDefaultPending,
+};
 use crate::{SceneConfig, SceneTransformConfig, SceneUrlState};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
@@ -745,6 +748,7 @@ fn settings_ui(
         Query<Entity, With<ShowWorldClock>>,
         Query<&mut Visibility, With<flan::PlotUiNode>>,
         Query<Entity, With<ShowSceneConfig>>,
+        Query<Entity, With<ShowText3d>>,
     )>,
     #[cfg(not(target_arch = "wasm32"))] data_viewer_query: Query<Entity, With<ShowDataViewer>>,
     #[cfg(not(target_arch = "wasm32"))] mut scene_file_dialog: NonSendMut<SceneFileDialog>,
@@ -755,7 +759,14 @@ fn settings_ui(
     available_shaders: Res<AvailableShaders>,
     mut commands: Commands,
     mut ui_config: ResMut<UiConfig>,
-    mut proj_params: ParamSet<(Res<CameraMode>, ResMut<CameraProjectionToggleRequested>)>,
+    // TODO: I really need a better approach to this glorified global config
+    // thing for now hacks it is.
+    mut proj_params: ParamSet<(
+        Res<CameraMode>,
+        ResMut<CameraProjectionToggleRequested>,
+        ResMut<Text3dContent>,
+        ResMut<Text3dDefaultPending>,
+    )>,
     mut reset_camera_events: MessageWriter<ResetCamera>,
 ) -> Result {
     if show_egui_query.is_empty() {
@@ -940,6 +951,38 @@ fn settings_ui(
                     color_state.color = None;
                     ui.close();
                 }
+
+                ui.separator();
+
+                // TODO: I really need a refactor run on the ui/menu bits its all very how
+                // you doing right now as I have no taste nor idea what would be
+                // a good ui layout. Guess I'll just wing it and see what shakes out for now.
+                ui.label(egui::RichText::new("3D Text").strong());
+                let show_text3d_entity = marker_queries.p7().single().ok();
+                let show_text3d = show_text3d_entity.is_some();
+                if ui.selectable_label(show_text3d, "Show 3D Text").clicked() {
+                    if let Some(entity) = show_text3d_entity {
+                        commands.entity(entity).despawn();
+                    } else {
+                        commands.spawn(ShowText3d);
+                    }
+                }
+                // Bind the textbox to the ecs staging resource so the field is
+                // fully responsive and just writes to a dum af string from its
+                // pov. Spawning in tick was a baaaad idea and typing fast made
+                // things go boom needlessly.
+                let mut pending_buf = proj_params.p3().0.clone();
+                ui.horizontal(|ui| {
+                    ui.label("Default Text:");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut pending_buf)
+                            .hint_text("mitchty.github.io")
+                            .desired_width(160.0),
+                    );
+                    if resp.changed() {
+                        proj_params.p3().0 = pending_buf;
+                    }
+                });
             });
 
             ui.menu_button("Posts", |ui| {
