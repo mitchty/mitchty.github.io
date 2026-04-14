@@ -16,12 +16,6 @@ set "${SETOPTS:--eu}"
 PREFIX=$(mktemp -d)
 trap 'rm -rf "$PREFIX"' EXIT INT TERM QUIT
 
-# Build the dep graph first — fail fast before wasting time on downloads.
-echo "Building dependency graph..."
-svg=$(nix build --no-link --print-out-paths .#ci-pugio-graph)/deps.svg
-deps="${PREFIX}/deps.svg"
-install -m400 "${svg}" "${deps}"
-
 # Mirror the artifact dirs the gh workflow produces.
 mkdir -p "${PREFIX}/artifacts/mitchty-wasm"
 mkdir -p "${PREFIX}/artifacts/mitchty-windows-x86_64"
@@ -38,4 +32,4 @@ curl -fL "$(echo "$ASSETS" | awk '/mitchty-wasm\.tar\.gz/')" | tar -xzf - -C "${
 curl -fL "$(echo "$ASSETS" | awk '/mitchty-windows-x86_64\.exe/')" -o "${win}"
 curl -fL "$(echo "$ASSETS" | awk '/mitchty-darwin-aarch64/')" -o "${mac}"
 
-"${_dir}/record-sizes.sh" "${wasm}/mitchty_bg.wasm" "${win}" "${mac}" "${deps}"
+"${_dir}/record-sizes.sh" "${wasm}/mitchty_bg.wasm" "${win}" "${mac}"

@@ -5,18 +5,16 @@
 # write a step summary, and regenerate history.md.
 #
 # Usage:
-#   ci-record-sizes <wasm-file> <win-file> <mac-file> [deps.svg]
+#   ci-record-sizes <wasm-file> <win-file> <mac-file>
 #
-# Tested with: $ nix run .#ci-record-sizes -- artifacts/mitchty-wasm/mitchty_bg.wasm artifacts/mitchty-windows-x86_64/mitchty-windows-x86_64.exe artifacts/mitchty-darwin-aarch64/mitchty-darwin-aarch64 "$(nix build --no-link --print-out-paths .#ci-pugio-graph)/deps.svg"
+# Tested with: $ nix run .#ci-record-sizes -- artifacts/mitchty-wasm/mitchty_bg.wasm artifacts/mitchty-windows-x86_64/mitchty-windows-x86_64.exe artifacts/mitchty-darwin-aarch64/mitchty-darwin-aarch64
 set -eux
 
-WASM_FILE=${1:?'usage: ci-record-sizes <wasm-file> <win-file> <mac-file> [deps.svg]'}
+WASM_FILE=${1:?'usage: ci-record-sizes <wasm-file> <win-file> <mac-file>'}
 shift
-WIN_FILE=${1:?'usage: ci-record-sizes <wasm-file> <win-file> <mac-file> [deps.svg]'}
+WIN_FILE=${1:?'usage: ci-record-sizes <wasm-file> <win-file> <mac-file>'}
 shift
-MAC_FILE=${1:?'usage: ci-record-sizes <wasm-file> <win-file> <mac-file> [deps.svg]'}
-shift
-PUGIO_SVG=${1:-}
+MAC_FILE=${1:?'usage: ci-record-sizes <wasm-file> <win-file> <mac-file>'}
 
 HISTORY=".build-meta/sizes/history.json"
 HISTORY_MD=".build-meta/sizes/history.md"
@@ -81,11 +79,6 @@ wasm_delta=$(delta "$wasm_bytes" "$prev_wasm")
 win_delta=$(delta "$win_bytes" "$prev_win")
 mac_delta=$(delta "$mac_bytes" "$prev_mac")
 
-# Copy deps.svg into the detail dir if a path was supplied and exists.
-if [ -n "$PUGIO_SVG" ] && [ -f "$PUGIO_SVG" ]; then
-  install -m400 "$PUGIO_SVG" "$DETAIL_DIR/deps.svg"
-fi
-
 # Build and append the JSON entry for the build details.
 json_entry=$(jq -n \
   --arg version "$version" \
@@ -147,23 +140,12 @@ emit() {
     printf "**Commit:** \`%s\` | **Version:** \`%s\` | **Detail:** \`%s\`\n" \
       "$SHORT_SHA" "$version" "$DETAIL_DIR"
   fi
-  if [ -f "$DETAIL_DIR/deps.svg" ]; then
-    printf '\n'
-    if [ -n "${GITHUB_SERVER_URL:-}" ]; then
-      printf "**Dep graph:** [\`deps.svg\`](%s/%s/blob/%s/%s/deps.svg)\n" \
-        "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$DETAIL_DIR"
-    else
-      printf "**Dep graph:** \`%s/deps.svg\`\n" "$DETAIL_DIR"
-    fi
-  fi
 } | emit
 
 printf 'Sizes recorded for %s-%s -> %s\n' "$version" "$SHORT_SHA" "$HISTORY"
 
 # Regenerate history.md from history.json, with newest entry first. Delta vs the
-# prior older entry is folded into each size cell. SVG links are relative from
-# .build-meta/sizes/ to .build-meta/versions/ so should still work I think in
-# github ui.
+# prior older entry is folded into each size cell.
 TAB=$(printf '\t')
 
 # Format a size+delta cell: "9.3MiB +200KiB" / "9.3MiB n/a" / "9.3MiB ±0"
@@ -189,8 +171,8 @@ fmtcell() {
 {
   printf '# Build Size History\n\n'
   printf "Newest first. Generated from \`history.json\` by \`ci-record-sizes\`.\n\n"
-  printf '| Version | Commit | Date | WASM | Windows | macOS | Dep Graph |\n'
-  printf '|---------|--------|------|------|---------|-------|-----------|\n'
+  printf '| Version | Commit | Date | WASM | Windows | macOS |\n'
+  printf '|---------|--------|------|------|---------|-------|\n'
 
   # For each entry newest first, emit the delta vs the prior entry. jq index
   # math cause I can barely remember this crap when I do it: after reverse,
@@ -218,13 +200,8 @@ fmtcell() {
       win_cell=$(fmtcell "$win" "$win_d")
       mac_cell=$(fmtcell "$mac" "$mac_d")
       detail_base=$(basename "$detail")
-      if [ -f "$detail/deps.svg" ]; then
-        svg=$(printf '[svg](../versions/%s/deps.svg)' "$detail_base")
-      else
-        svg='—'
-      fi
-      printf "| \`%s\` | \`%s\` | %s | %s | %s | %s | %s |\n" \
-        "$ver" "$sha" "$date" "$wasm_cell" "$win_cell" "$mac_cell" "$svg"
+      printf "| \`%s\` | \`%s\` | %s | %s | %s | %s |\n" \
+        "$ver" "$sha" "$date" "$wasm_cell" "$win_cell" "$mac_cell"
     done
 } > "$HISTORY_MD"
 
