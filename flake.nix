@@ -841,6 +841,19 @@
                 # Don't check during cross-compilation
                 doCheck = false;
 
+                # abuse install_name_tool to rewrite the dynamic link to
+                # /nix/store to /usr/lib for iconv. Can't find an easy way to
+                # convince the rust toolchain to not do this in nix so whatever
+                # its FINE I think...
+                postInstall = ''
+                  for binary in $out/bin/*; do
+                    libiconv_path=$(otool -L "$binary" | awk '/\/nix\/store.*libiconv/ {print $1}' || true)
+                    if [ -n "$libiconv_path" ]; then
+                      install_name_tool -change "$libiconv_path" /usr/lib/libiconv.2.dylib "$binary"
+                    fi
+                  done
+                '';
+
                 meta = metaCommon "release macos build" // {
                   platforms = [
                     "x86_64-darwin"
