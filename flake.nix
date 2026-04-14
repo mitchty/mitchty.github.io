@@ -63,6 +63,12 @@
           };
         };
 
+        # For wine/steam and testing windows on linux.
+        pkgsUnfree = import inputs.nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+        };
+
         inherit (pkgs) lib;
 
         # Build wasm-bindgen-cli at the version used by Bevy for wasm builds
@@ -477,15 +483,17 @@
 
         # Function to build and run the Windows cross-compiled binary through
         # steam-run + wine on Linux. Both steam-run and wineWow64Packages.full
-        # are unfree so we can't pull them into the Nix sandbox directly;
-        # instead the generated script drops into a nix-shell at runtime,
-        # keeping the flake itself pure.
+        # are unfree; allowUnfree is set in pkgsUnfree so they can be pulled in
+        # directly as runtimeInputs without any nix-shell --impure dance.
         # WINEPREFIX can be overridden by the caller's environment.
         mkWineExecApp =
           name: windowsPackage:
           pkgs.writeShellApplication {
             inherit name;
-            runtimeInputs = [ pkgs.nix ];
+            runtimeInputs = [
+              pkgsUnfree.steam-run
+              pkgsUnfree.wineWow64Packages.full
+            ];
             text = ''
               EXE="${windowsPackage}/bin/mitchty.exe"
 
@@ -495,12 +503,7 @@
               echo "running $EXE via steam-run + wine"
               echo "  WINEPREFIX = $WINEPREFIX"
 
-              NIXPKGS_ALLOW_UNFREE=1 \
-                ${pkgs.nix}/bin/nix-shell \
-                  --impure \
-                  -p steam-run \
-                  -p wineWow64Packages.full \
-                  --run "steam-run wine $EXE $*"
+              steam-run wine "$EXE" "$@"
             '';
           };
 
@@ -1045,6 +1048,8 @@
         }
         // lib.optionalAttrs pkgs.stdenv.isLinux {
           inherit mitchty-release-windows;
+          wine = pkgsUnfree.wineWow64Packages.full;
+          steam-run = pkgsUnfree.steam-run;
         }
         // lib.optionalAttrs pkgs.stdenv.isDarwin {
           mitchty-release = mitchty-release-darwin;
