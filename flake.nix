@@ -1266,6 +1266,13 @@
     );
 
   inputs = {
+    # Must use
+    #   nix run git+https://github.com/mitchty/mitchty.github.io#mitchty-lto
+    # rather than:
+    #   nix run github:mitchty/mitchty.github.io#mitchty-lto
+    # for lfs to work and this to build correctly.
+    self.lfs = true;
+
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     crane.url = "github:ipetkov/crane";

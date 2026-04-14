@@ -30,8 +30,28 @@ jobs:
 
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Generate LFS file list
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+
+      - name: Restore LFS cache
+        uses: actions/cache/restore@v4
+        id: lfs-cache
         with:
-          lfs: true
+          path: .git/lfs
+          key: lfs-${{ runner.os }}-${{ hashFiles('.lfs-assets-id') }}
+          restore-keys: |
+            lfs-${{ runner.os }}-
+
+      - name: Pull LFS objects
+        run: git lfs pull
+
+      - name: Save LFS cache
+        uses: actions/cache/save@v4
+        if: steps.lfs-cache.outputs.cache-hit != 'true'
+        with:
+          path: .git/lfs
+          key: lfs-${{ runner.os }}-${{ hashFiles('.lfs-assets-id') }}
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -54,8 +74,28 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Generate LFS file list
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+
+      - name: Restore LFS cache
+        uses: actions/cache/restore@v4
+        id: lfs-cache
         with:
-          lfs: true
+          path: .git/lfs
+          key: lfs-${{ runner.os }}-${{ hashFiles('.lfs-assets-id') }}
+          restore-keys: |
+            lfs-${{ runner.os }}-
+
+      - name: Pull LFS objects
+        run: git lfs pull
+
+      - name: Save LFS cache
+        uses: actions/cache/save@v4
+        if: steps.lfs-cache.outputs.cache-hit != 'true'
+        with:
+          path: .git/lfs
+          key: lfs-${{ runner.os }}-${{ hashFiles('.lfs-assets-id') }}
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -81,8 +121,28 @@ jobs:
 
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Generate LFS file list
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+
+      - name: Restore LFS cache
+        uses: actions/cache/restore@v4
+        id: lfs-cache
         with:
-          lfs: true
+          path: .git/lfs
+          key: lfs-${{ runner.os }}-${{ hashFiles('.lfs-assets-id') }}
+          restore-keys: |
+            lfs-${{ runner.os }}-
+
+      - name: Pull LFS objects
+        run: git lfs pull
+
+      - name: Save LFS cache
+        uses: actions/cache/save@v4
+        if: steps.lfs-cache.outputs.cache-hit != 'true'
+        with:
+          path: .git/lfs
+          key: lfs-${{ runner.os }}-${{ hashFiles('.lfs-assets-id') }}
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -131,8 +191,28 @@ jobs:
 
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Generate LFS file list
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+
+      - name: Restore LFS cache
+        uses: actions/cache/restore@v4
+        id: lfs-cache
         with:
-          lfs: true
+          path: .git/lfs
+          key: lfs-${{ runner.os }}-${{ hashFiles('.lfs-assets-id') }}
+          restore-keys: |
+            lfs-${{ runner.os }}-
+
+      - name: Pull LFS objects
+        run: git lfs pull
+
+      - name: Save LFS cache
+        uses: actions/cache/save@v4
+        if: steps.lfs-cache.outputs.cache-hit != 'true'
+        with:
+          path: .git/lfs
+          key: lfs-${{ runner.os }}-${{ hashFiles('.lfs-assets-id') }}
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -168,8 +248,28 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Generate LFS file list
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+
+      - name: Restore LFS cache
+        uses: actions/cache/restore@v4
+        id: lfs-cache
         with:
-          lfs: true
+          path: .git/lfs
+          key: lfs-${{ runner.os }}-${{ hashFiles('.lfs-assets-id') }}
+          restore-keys: |
+            lfs-${{ runner.os }}-
+
+      - name: Pull LFS objects
+        run: git lfs pull
+
+      - name: Save LFS cache
+        uses: actions/cache/save@v4
+        if: steps.lfs-cache.outputs.cache-hit != 'true'
+        with:
+          path: .git/lfs
+          key: lfs-${{ runner.os }}-${{ hashFiles('.lfs-assets-id') }}
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -199,33 +299,6 @@ jobs:
           path: dist/mitchty-darwin-aarch64
           if-no-files-found: error
 
-  build-pugio-graph:
-    name: Build pugio dependency graph (SVG)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Free disk space
-        uses: insightsengineering/disk-space-reclaimer@v1
-
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          lfs: true
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Configure Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
-      - name: Configure Cachix binary cache
-        uses: cachix/cachix-action@v15
-        with:
-          name: ${{ env.CACHIX_CACHE_NAME }}
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      - name: Build pugio dependency graph
-        run: nix build .#ci-pugio-graph -L
-
   deploy-pages:
     name: Deploy to GitHub Pages
     needs: [check-linux, check-macos, build-wasm-lto, build-windows, build-macos]
@@ -239,15 +312,36 @@ jobs:
         uses: actions/deploy-pages@v4
 
   record-sizes:
-    name: Record Binary Sizes and Dep Graphs
-    needs: [create-prerelease, build-pugio-graph]
+    name: Record Binary Sizes
+    needs: [create-prerelease]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          lfs: true
           token: ${{ github.token }}
+
+      - name: Generate LFS file list
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+
+      - name: Restore LFS cache
+        uses: actions/cache/restore@v4
+        id: lfs-cache
+        with:
+          path: .git/lfs
+          key: lfs-${{ runner.os }}-${{ hashFiles('.lfs-assets-id') }}
+          restore-keys: |
+            lfs-${{ runner.os }}-
+
+      - name: Pull LFS objects
+        run: git lfs pull
+
+      - name: Save LFS cache
+        uses: actions/cache/save@v4
+        if: steps.lfs-cache.outputs.cache-hit != 'true'
+        with:
+          path: .git/lfs
+          key: lfs-${{ runner.os }}-${{ hashFiles('.lfs-assets-id') }}
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -340,7 +434,7 @@ jobs:
           \`\`\`
 
           **Windows (x86_64):**
-          Download \`mitchty-windows-x86_64.exe\` and run it.
+          Download \`mitchty-windows-x86_64.exe\` and run it... somehow?
 
           ---
           ⚠️ **Note:** These are automated builds from the main development branch, they could be sus.
