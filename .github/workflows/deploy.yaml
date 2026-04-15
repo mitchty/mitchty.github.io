@@ -65,16 +65,8 @@ jobs:
           name: ${{ env.CACHIX_CACHE_NAME }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Configure netrc for Nix LFS
-        # nix's git LFS fetcher uses its own libcurl HTTP client, not git's
-        # credential helper that actions/checkout sets up. Without this, nix's
-        # LFS batch requests are unauthenticated and GitHub returns 422.
-        run: |
-          echo "machine github.com login x-access-token password ${{ github.token }}" >> ~/.netrc
-          chmod 600 ~/.netrc
-
       - name: Run flake check
-        run: nix flake check -L
+        run: nix flake check path:. -L
 
   check-macos:
     name: Run flake checks (macOS)
@@ -117,13 +109,8 @@ jobs:
           name: ${{ env.CACHIX_CACHE_NAME }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Configure netrc for Nix LFS
-        run: |
-          echo "machine github.com login x-access-token password ${{ github.token }}" >> ~/.netrc
-          chmod 600 ~/.netrc
-
       - name: Run flake check
-        run: nix flake check -L
+        run: nix flake check path:. -L
 
   build-wasm-lto:
     name: Build WASM (LTO)
