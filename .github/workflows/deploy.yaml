@@ -66,7 +66,8 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Run flake check
-        run: nix flake check -L
+        # Restrict to x86_64-linux checks only to try to work around gh runner issues evaluating all systems.
+        run: nix flake check -L --system x86_64-linux
 
   check-macos:
     name: Run flake checks (macOS)
@@ -110,7 +111,8 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Run flake check
-        run: nix flake check -L
+        # Restrict to aarch64-darwin only ref linux for y
+        run: nix flake check -L --system aarch64-darwin
 
   build-wasm-lto:
     name: Build WASM (LTO)
