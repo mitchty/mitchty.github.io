@@ -9,8 +9,8 @@ use crate::ui::recognizer::{BASE_BRUSH_R, InferenceResult, RecognizerState};
 use crate::ui::scroll_view::{ActivePost, POSTS};
 use crate::ui::world_clock::{ShowWorldClock, WorldClockState, world_clock_window};
 use crate::{
-    CameraMode, ColorState, CubeRotation, FpsDisplay, HueAnimation, MainCamera, ShowText3d,
-    Text3dContent, Text3dDefaultPending,
+    CameraMode, ColorState, FpsDisplay, HueAnimation, MainCamera, ShowText3d, Text3dContent,
+    Text3dDefaultPending,
 };
 use crate::{SceneConfig, SceneTransformConfig, SceneUrlState};
 use bevy::prelude::*;
@@ -475,7 +475,6 @@ fn setup_egui(
     effects_enabled.0 = true;
 
     // Always-on markers
-    commands.spawn(CubeRotation);
     commands.spawn(HueAnimation);
     commands.spawn(FpsDisplay);
 
@@ -742,7 +741,6 @@ fn settings_ui(
     // In ParamSet now to avoid 16 param system tuple limit in bevy.
     mut marker_queries: ParamSet<(
         Query<Entity, With<FpsDisplay>>,
-        Query<Entity, With<CubeRotation>>,
         Query<Entity, With<HueAnimation>>,
         Query<Entity, With<ShowRecognizer>>,
         Query<Entity, With<ShowWorldClock>>,
@@ -826,12 +824,12 @@ fn settings_ui(
 
                 // Scene Config window toggle - lets the user adjust scale and
                 // Y-rotation for the current scene without a reload.
-                let scene_cfg_open = marker_queries.p6().single().is_ok();
+                let scene_cfg_open = marker_queries.p5().single().is_ok();
                 if ui
                     .selectable_label(scene_cfg_open, "Scene Config")
                     .clicked()
                 {
-                    if let Ok(entity) = marker_queries.p6().single() {
+                    if let Ok(entity) = marker_queries.p5().single() {
                         commands.entity(entity).despawn();
                     } else {
                         commands.spawn(ShowSceneConfig);
@@ -901,19 +899,8 @@ fn settings_ui(
                         commands.entity(entity).despawn();
                     }
                 }
-                let cube_entity = marker_queries.p1().single().ok();
-                let mut cube_rotation_enabled = cube_entity.is_some();
-                if ui
-                    .checkbox(&mut cube_rotation_enabled, "Cube Rotation [C]")
-                    .changed()
-                {
-                    if cube_rotation_enabled {
-                        commands.spawn(CubeRotation);
-                    } else if let Some(entity) = cube_entity {
-                        commands.entity(entity).despawn();
-                    }
-                }
-                let hue_entity = marker_queries.p2().single().ok();
+
+                let hue_entity = marker_queries.p1().single().ok();
                 let mut hue_animation_enabled = hue_entity.is_some();
                 if ui
                     .checkbox(&mut hue_animation_enabled, "Hue Animation [H]")
@@ -958,7 +945,7 @@ fn settings_ui(
                 // you doing right now as I have no taste nor idea what would be
                 // a good ui layout. Guess I'll just wing it and see what shakes out for now.
                 ui.label(egui::RichText::new("3D Text").strong());
-                let show_text3d_entity = marker_queries.p7().single().ok();
+                let show_text3d_entity = marker_queries.p6().single().ok();
                 let show_text3d = show_text3d_entity.is_some();
                 if ui.selectable_label(show_text3d, "Show 3D Text").clicked() {
                     if let Some(entity) = show_text3d_entity {
@@ -996,7 +983,7 @@ fn settings_ui(
             });
 
             ui.menu_button("Apps", |ui| {
-                let wc_entity = marker_queries.p4().single().ok();
+                let wc_entity = marker_queries.p3().single().ok();
                 let wc_open = wc_entity.is_some();
                 if ui.selectable_label(wc_open, "World Clock").clicked() {
                     if let Some(entity) = wc_entity {
@@ -1088,7 +1075,7 @@ fn settings_ui(
                     ui.label(egui::RichText::new("Flan Shaders").strong());
 
                     let line_graph_visible = marker_queries
-                        .p5()
+                        .p4()
                         .single()
                         .map(|v| *v != Visibility::Hidden)
                         .unwrap_or(false);
@@ -1096,7 +1083,7 @@ fn settings_ui(
                         .selectable_label(line_graph_visible, "Line Graph")
                         .clicked()
                     {
-                        if let Ok(mut vis) = marker_queries.p5().single_mut() {
+                        if let Ok(mut vis) = marker_queries.p4().single_mut() {
                             *vis = if line_graph_visible {
                                 Visibility::Hidden
                             } else {

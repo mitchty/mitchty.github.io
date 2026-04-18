@@ -100,31 +100,6 @@ use mesh_effect::MeshEffectPlugin;
 use post_process::PostProcessPlugin;
 use ui::{ScrollViewPlugin, SettingsUiPlugin, ToggleCameraProjection, send_scroll_events};
 
-/// Absolute rotation speed
-const SPEED: f32 = 2.25;
-/// Minimum rotation speed in radians per second
-const MIN_SPEED: f32 = -SPEED;
-/// Maximum rotation speed in radians per second
-const MAX_SPEED: f32 = SPEED;
-// Retaining for future weekend abuse
-// Golden angle for rotation calculations
-//const GOLDEN_ANGLE: f32 = 137.507_77;
-
-/// Marker component for entities that should rotate
-#[derive(Component)]
-struct Rotator {
-    /// Base rotation speed in radians per second for each axis (x, y, z)
-    base_speed: Vec3,
-}
-
-/// Marker component to indicate cube rotation is enabled (on cube entities)
-#[derive(Component)]
-pub struct CubeRotationEnabled;
-
-/// Marker component separate from cube entities to control rotation
-#[derive(Component, Default)]
-pub struct CubeRotation;
-
 /// Marker component to indicate hue animation is enabled (on cube entities)
 #[derive(Component)]
 pub struct HueAnimationEnabled;
@@ -641,14 +616,11 @@ fn main() {
                 cleanup_free_look_after_inactivity,
                 zoom_camera,
                 animate_materials.run_if(any_with_component::<HueAnimationEnabled>),
-                rotate_entities.run_if(any_with_component::<CubeRotationEnabled>),
                 toggle_fps_display,
-                toggle_cube_rotation,
                 toggle_hue_animation,
                 toggle_fullscreen_effect,
                 next_effect,
                 previous_effect,
-                apply_cube_rotation,
                 apply_hue_animation,
                 manage_effect_settings,
                 update_effect_time,
@@ -1037,7 +1009,7 @@ fn on_scene_ready(
     }
 }
 
-/// Cube material animation system
+/// Hue material animation system.
 fn animate_materials(
     material_handles: Query<&MeshMaterial3d<StandardMaterial>, With<HueAnimationEnabled>>,
     time: Res<Time>,
@@ -1049,50 +1021,6 @@ fn animate_materials(
         {
             *hsla = hsla.rotate_hue(time.delta_secs() * 100.0);
         }
-    }
-}
-
-// DEAD MAN WALKING! How much do I really want to keep this hack code?
-/// Cube random rotation system
-fn rotate_entities(
-    mut query: Query<(&mut Transform, &mut Rotator), With<CubeRotationEnabled>>,
-    time: Res<Time>,
-) {
-    let mut rng = rand::rng();
-    let delta = time.delta_secs();
-
-    for (mut transform, mut rotator) in &mut query {
-        let change_x = rng.random_range(-0.1..=0.1);
-        let change_y = rng.random_range(-0.1..=0.1);
-        let change_z = rng.random_range(-0.1..=0.1);
-
-        rotator.base_speed.x += change_x;
-        rotator.base_speed.y += change_y;
-        rotator.base_speed.z += change_z;
-
-        if rotator.base_speed.x > MAX_SPEED {
-            rotator.base_speed.x = MAX_SPEED - (rotator.base_speed.x - MAX_SPEED);
-        }
-        if rotator.base_speed.y > MAX_SPEED {
-            rotator.base_speed.y = MAX_SPEED - (rotator.base_speed.y - MAX_SPEED);
-        }
-        if rotator.base_speed.z > MAX_SPEED {
-            rotator.base_speed.z = MAX_SPEED - (rotator.base_speed.z - MAX_SPEED);
-        }
-
-        if rotator.base_speed.x < MIN_SPEED {
-            rotator.base_speed.x = MIN_SPEED + (MIN_SPEED - rotator.base_speed.x);
-        }
-        if rotator.base_speed.y < MIN_SPEED {
-            rotator.base_speed.y = MIN_SPEED + (MIN_SPEED - rotator.base_speed.y);
-        }
-        if rotator.base_speed.z < MIN_SPEED {
-            rotator.base_speed.z = MIN_SPEED + (MIN_SPEED - rotator.base_speed.z);
-        }
-
-        transform.rotate_x(rotator.base_speed.x * delta);
-        transform.rotate_y(rotator.base_speed.y * delta);
-        transform.rotate_z(rotator.base_speed.z * delta);
     }
 }
 
@@ -1401,43 +1329,6 @@ fn sample_fps_history(
     sparkline_df.df = DataFrame::new(n, vec![Column::new("y".into(), values)]).unwrap_or_default();
 }
 
-/// Toggle cube rotation marker
-/// c toggles on/off
-fn toggle_cube_rotation(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    rotation_query: Query<Entity, With<CubeRotation>>,
-    mut commands: Commands,
-    #[cfg(feature = "egui")] egui_wants_input: Res<ui::EguiWantsInput>,
-) {
-    #[cfg(feature = "egui")]
-    if egui_wants_input.wants_keyboard {
-        return;
-    }
-    if keyboard.just_pressed(KeyCode::KeyC) {
-        if let Ok(entity) = rotation_query.single() {
-            commands.entity(entity).despawn();
-        } else {
-            commands.spawn(CubeRotation);
-        }
-    }
-}
-
-fn apply_cube_rotation(
-    rotation_marker: Query<(), With<CubeRotation>>,
-    cube_query: Query<(Entity, Has<CubeRotationEnabled>), With<Rotator>>,
-    mut commands: Commands,
-) {
-    let should_rotate = !rotation_marker.is_empty();
-
-    for (entity, has_rotation) in cube_query.iter() {
-        if should_rotate && !has_rotation {
-            commands.entity(entity).insert(CubeRotationEnabled);
-        } else if !should_rotate && has_rotation {
-            commands.entity(entity).remove::<CubeRotationEnabled>();
-        }
-    }
-}
-
 /// Toggle hue animation
 /// h toggles on/off
 fn toggle_hue_animation(
@@ -1462,13 +1353,12 @@ fn toggle_hue_animation(
 /// Apply or remove HueAnimationEnabled component toggle
 fn apply_hue_animation(
     hue_marker: Query<(), With<HueAnimation>>,
-    cube_query: Query<(Entity, Has<HueAnimationEnabled>), With<Rotator>>,
     text3d_query: Query<(Entity, Has<HueAnimationEnabled>), With<Text3d>>,
     mut commands: Commands,
 ) {
     let should_animate = !hue_marker.is_empty();
 
-    for (entity, has_animation) in cube_query.iter().chain(text3d_query.iter()) {
+    for (entity, has_animation) in text3d_query.iter() {
         if should_animate && !has_animation {
             commands.entity(entity).insert(HueAnimationEnabled);
         } else if !should_animate && has_animation {

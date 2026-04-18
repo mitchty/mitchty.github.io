@@ -351,7 +351,6 @@
         # Using dev profile by default for better debug info on panics
         cargoArtifacts = craneLib.buildDepsOnly (
           commonArgs
-          // nixEnvArgs
           // devArgs
           // {
             src = srcDeps;
@@ -361,7 +360,6 @@
         # Cargo artifacts for release builds
         cargoArtifactsRelease = craneLib.buildDepsOnly (
           commonArgs
-          // nixEnvArgs
           // releaseArgs
           // {
             src = srcDeps;
@@ -374,7 +372,6 @@
         # feature but this is a future sucker mitch task.
         cargoArtifactsWasm = craneLibWasm.buildDepsOnly (
           commonArgsWasm
-          // nixEnvArgs
           // releaseArgs
           // {
             src = srcDeps;
@@ -385,7 +382,6 @@
         # Cargo artifacts for WASM release-fast builds no lto or codegen unit restrictions
         cargoArtifactsWasmFast = craneLibWasm.buildDepsOnly (
           commonArgsWasm
-          // nixEnvArgs
           // releaseFastArgs
           // {
             src = srcDeps;
@@ -410,7 +406,6 @@
           if pkgs.stdenv.isDarwin then
             craneLibDarwin.buildDepsOnly (
               commonArgsDarwin
-              // nixEnvArgs
               // releaseArgs
               // {
                 src = srcDeps;
@@ -421,7 +416,6 @@
 
         cargoArtifactsWindows = craneLibWindows.buildDepsOnly (
           commonArgsWindows
-          // nixEnvArgs
           // releaseArgs
           // {
             src = srcDeps;
@@ -587,6 +581,11 @@
             '';
           };
 
+        # TODO: While this is now fixed for the dep caches, I need to probably also make the builds be deterministic so that say:
+        # mitchty --version
+        # mitchty 0.0.16 3717e04 debug rustc 1.94.0 built 2026-04-17 01:09:06 UTC
+        # has a constant SOURCE_DATE_EPOCH, or maybe even drop it entirely. This
+        # is, as is tradition a future mitch problem.
         nixEnvArgs = {
           NIX_GIT_REV = version;
           # Clippy lints can be set in source via attributes instead
@@ -1284,13 +1283,6 @@
     );
 
   inputs = {
-    # Must use
-    #   nix run git+https://github.com/mitchty/mitchty.github.io#mitchty-lto
-    # rather than:
-    #   nix run github:mitchty/mitchty.github.io#mitchty-lto
-    # for lfs to work and this to build correctly.
-    self.lfs = true;
-
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     crane.url = "github:ipetkov/crane";
