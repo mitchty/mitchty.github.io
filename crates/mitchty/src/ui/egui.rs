@@ -9,8 +9,7 @@ use crate::ui::recognizer::{BASE_BRUSH_R, InferenceResult, RecognizerState};
 use crate::ui::scroll_view::{ActivePost, POSTS};
 use crate::ui::world_clock::{ShowWorldClock, WorldClockState, world_clock_window};
 use crate::{
-    CameraMode, ColorState, FpsDisplay, HueAnimation, MainCamera, ShowText3d, Text3dContent,
-    Text3dDefaultPending,
+    CameraMode, ColorState, FpsDisplay, HueAnimation, MainCamera, ShowText3d, Text3dDefaultPending,
 };
 use crate::{SceneConfig, SceneTransformConfig, SceneUrlState};
 use bevy::prelude::*;
@@ -158,7 +157,7 @@ impl Plugin for SettingsUiPlugin {
             .init_resource::<DataViewerState>()
             .insert_non_send_resource(SceneFileDialog(
                 FileDialog::new()
-                    .title("Load Scene")
+                    .title("Load Scene GLTF")
                     .add_file_filter_extensions("GLTF / GLB", vec!["gltf", "glb"]),
             ))
             .add_systems(
@@ -588,31 +587,63 @@ fn draw_scene_url_popup(ctx: &egui::Context, state: &mut SceneUrlState) {
 /// Bevy scene - no egui matrix math required. This panel only controls
 /// `GizmoOptions` (orientation, active modes) and provides a numeric scale
 /// input and Reset button as a precision fallback alongside the gizmo.
+#[allow(clippy::too_many_arguments)]
 fn scene_config_window(
     mut contexts: EguiContexts,
     scene_config_query: Query<Entity, With<ShowSceneConfig>>,
+    show_text3d_query: Query<Entity, With<ShowText3d>>,
     mut scene_transform: ResMut<SceneTransformConfig>,
     mut gizmo_options: ResMut<GizmoOptions>,
+    mut text3d_pending: ResMut<Text3dDefaultPending>,
+    mut scene_config: ResMut<SceneConfig>,
+    mut scene_url_state: ResMut<SceneUrlState>,
+    #[cfg(not(target_arch = "wasm32"))] mut scene_file_dialog: NonSendMut<SceneFileDialog>,
     mut commands: Commands,
 ) -> Result {
     if scene_config_query.is_empty() {
         return Ok(());
     }
 
+    // Drive the file dialog update and pick result every frame, native only obviously.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let ctx = contexts.ctx_mut()?;
+        scene_file_dialog.0.update(ctx);
+        if let Some(path) = scene_file_dialog.0.take_picked() {
+            scene_config.custom_scene = Some(path.to_string_lossy().into_owned());
+        }
+    }
+
+    // URL popup + 2-phase commit logic for the scene load setup.
+    draw_scene_url_popup(contexts.ctx_mut()?, &mut scene_url_state);
+    if let Some(url) = scene_url_state.confirmed_url.take() {
+        scene_config.custom_scene = Some(url);
+    }
+
     egui::SidePanel::left("scene_config_panel")
         .resizable(true)
         .default_width(240.0)
         .show(contexts.ctx_mut()?, |ui| {
+            ui.label(egui::RichText::new("GLTF Config").strong());
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Scene Config").strong());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Hide").clicked()
-                        && let Ok(entity) = scene_config_query.single()
-                    {
-                        commands.entity(entity).despawn();
-                    }
-                });
+                #[cfg(not(target_arch = "wasm32"))]
+                if ui.button("📂 Load File").clicked() {
+                    scene_file_dialog.0.pick_file();
+                }
+                if ui.button("🌐 Load URL").clicked() {
+                    scene_url_state.open = true;
+                }
+                let has_custom = scene_config.custom_scene.is_some();
+                if ui
+                    .add_enabled(has_custom, egui::Button::new("↩ Reset"))
+                    .on_disabled_hover_text("This is already loaded, I can't do that Dave!")
+                    .clicked()
+                {
+                    scene_config.custom_scene = None;
+                }
             });
+
+            ui.add_space(6.0);
             ui.separator();
 
             ui.label(egui::RichText::new("Orientation").strong());
@@ -725,6 +756,36 @@ fn scene_config_window(
             if ui.button("Reset transform").clicked() {
                 *scene_transform = SceneTransformConfig::default();
             }
+
+            ui.add_space(6.0);
+            ui.separator();
+
+            ui.label(egui::RichText::new("3D Text").strong());
+            let show_text3d_entity = show_text3d_query.single().ok();
+            let show_text3d = show_text3d_entity.is_some();
+            if ui.selectable_label(show_text3d, "Show 3D Text").clicked() {
+                if let Some(entity) = show_text3d_entity {
+                    commands.entity(entity).despawn();
+                } else {
+                    commands.spawn(ShowText3d);
+                }
+            }
+            // Bind the textbox to the ecs staging resource so the field is
+            // fully responsive and just writes to a dum af string from its
+            // pov. Spawning in tick was a baaaad idea and typing fast made
+            // things go boom needlessly.
+            let mut pending_buf = text3d_pending.0.clone();
+            ui.horizontal(|ui| {
+                ui.label("Default Text:");
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut pending_buf)
+                        .hint_text("mitchty.github.io")
+                        .desired_width(160.0),
+                );
+                if resp.changed() {
+                    text3d_pending.0 = pending_buf;
+                }
+            });
         });
 
     Ok(())
@@ -746,12 +807,8 @@ fn settings_ui(
         Query<Entity, With<ShowWorldClock>>,
         Query<&mut Visibility, With<flan::PlotUiNode>>,
         Query<Entity, With<ShowSceneConfig>>,
-        Query<Entity, With<ShowText3d>>,
     )>,
     #[cfg(not(target_arch = "wasm32"))] data_viewer_query: Query<Entity, With<ShowDataViewer>>,
-    #[cfg(not(target_arch = "wasm32"))] mut scene_file_dialog: NonSendMut<SceneFileDialog>,
-    mut scene_config: ResMut<SceneConfig>,
-    mut scene_url_state: ResMut<SceneUrlState>,
     mut active_post: ResMut<ActivePost>,
     mut active_shader: ResMut<ActiveShader>,
     available_shaders: Res<AvailableShaders>,
@@ -759,12 +816,7 @@ fn settings_ui(
     mut ui_config: ResMut<UiConfig>,
     // TODO: I really need a better approach to this glorified global config
     // thing for now hacks it is.
-    mut proj_params: ParamSet<(
-        Res<CameraMode>,
-        ResMut<CameraProjectionToggleRequested>,
-        ResMut<Text3dContent>,
-        ResMut<Text3dDefaultPending>,
-    )>,
+    mut proj_params: ParamSet<(Res<CameraMode>, ResMut<CameraProjectionToggleRequested>)>,
     mut reset_camera_events: MessageWriter<ResetCamera>,
 ) -> Result {
     if show_egui_query.is_empty() {
@@ -773,79 +825,25 @@ fn settings_ui(
 
     trace!("settings_ui running - ShowEgui exists");
 
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let ctx = contexts.ctx_mut()?;
-        scene_file_dialog.0.update(ctx);
-        if let Some(path) = scene_file_dialog.0.take_picked() {
-            scene_config.custom_scene = Some(path.to_string_lossy().into_owned());
-        }
-    }
-
-    // TODO: Maybe not be a popup? Future me problem.
-    //
-    // Right now this is a 2 phase commit, draw_scene_url_popup gets the url
-    // from the user, or its None if they hit say cancel.
-    draw_scene_url_popup(contexts.ctx_mut()?, &mut scene_url_state);
-
-    // Phase 2 actually takes the deref on the SceneConfig and that triggers
-    // observers, ONCE, not every tick.
-    if let Some(url) = scene_url_state.confirmed_url.take() {
-        scene_config.custom_scene = Some(url);
-    }
-
     egui::TopBottomPanel::top("menu_bar").show(contexts.ctx_mut()?, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
-            // File menu - shown on all platforms; individual items are gated below.
+            // File menu - native only now (just Quit remains; scene loading moved to Scene sidebar).
+            #[cfg(not(target_arch = "wasm32"))]
             ui.menu_button("File", |ui| {
-                #[cfg(not(target_arch = "wasm32"))]
-                if ui.button("Load Scene").clicked() {
-                    scene_file_dialog.0.pick_file();
-                    ui.close();
-                }
-
-                // All platforms: URL input popup.
-                if ui.button("Load Scene URL").clicked() {
-                    scene_url_state.open = true;
-                    ui.close();
-                }
-
-                let has_custom = scene_config.custom_scene.is_some();
-                if ui
-                    .add_enabled(has_custom, egui::Button::new("Reset to Default"))
-                    .on_disabled_hover_text("This is already loaded, I can't do that Dave!")
-                    .clicked()
-                {
-                    scene_config.custom_scene = None;
-                    ui.close();
-                }
-
-                ui.separator();
-
-                // Scene Config window toggle - lets the user adjust scale and
-                // Y-rotation for the current scene without a reload.
-                let scene_cfg_open = marker_queries.p5().single().is_ok();
-                if ui
-                    .selectable_label(scene_cfg_open, "Scene Config")
-                    .clicked()
-                {
-                    if let Ok(entity) = marker_queries.p5().single() {
-                        commands.entity(entity).despawn();
-                    } else {
-                        commands.spawn(ShowSceneConfig);
-                    }
-                    ui.close();
-                }
-
-                // Native-only quit option wasm makes no sense to keep this.
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    ui.separator();
-                    if ui.button("Quit").clicked() {
-                        std::process::exit(0);
-                    }
+                if ui.button("Quit").clicked() {
+                    std::process::exit(0);
                 }
             });
+
+            // Scene menu simply (de)toggles the Scene Config side panel.
+            let scene_cfg_open = marker_queries.p5().single().is_ok();
+            if ui.selectable_label(scene_cfg_open, "Scene").clicked() {
+                if let Ok(entity) = marker_queries.p5().single() {
+                    commands.entity(entity).despawn();
+                } else {
+                    commands.spawn(ShowSceneConfig);
+                }
+            }
 
             ui.menu_button("Gooey", |ui| {
                 ui.label(egui::RichText::new("Projection").strong());
@@ -938,38 +936,6 @@ fn settings_ui(
                     color_state.color = None;
                     ui.close();
                 }
-
-                ui.separator();
-
-                // TODO: I really need a refactor run on the ui/menu bits its all very how
-                // you doing right now as I have no taste nor idea what would be
-                // a good ui layout. Guess I'll just wing it and see what shakes out for now.
-                ui.label(egui::RichText::new("3D Text").strong());
-                let show_text3d_entity = marker_queries.p6().single().ok();
-                let show_text3d = show_text3d_entity.is_some();
-                if ui.selectable_label(show_text3d, "Show 3D Text").clicked() {
-                    if let Some(entity) = show_text3d_entity {
-                        commands.entity(entity).despawn();
-                    } else {
-                        commands.spawn(ShowText3d);
-                    }
-                }
-                // Bind the textbox to the ecs staging resource so the field is
-                // fully responsive and just writes to a dum af string from its
-                // pov. Spawning in tick was a baaaad idea and typing fast made
-                // things go boom needlessly.
-                let mut pending_buf = proj_params.p3().0.clone();
-                ui.horizontal(|ui| {
-                    ui.label("Default Text:");
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(&mut pending_buf)
-                            .hint_text("mitchty.github.io")
-                            .desired_width(160.0),
-                    );
-                    if resp.changed() {
-                        proj_params.p3().0 = pending_buf;
-                    }
-                });
             });
 
             ui.menu_button("Posts", |ui| {
