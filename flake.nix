@@ -74,14 +74,14 @@
         # Build wasm-bindgen-cli at the version used by Bevy for wasm builds
         wasmBindgenCli = pkgsWasm.rustPlatform.buildRustPackage rec {
           pname = "wasm-bindgen-cli";
-          version = "0.2.117";
+          version = "0.2.118";
 
           src = pkgsWasm.fetchCrate {
             inherit pname version;
-            hash = "sha256-vtDQXL8FSgdutqXG7/rBUWgrYCtzdmeVQQkWkjasvZU=";
+            hash = "sha256-ve783oYH0TGv8Z8lIPdGjItzeLDQLOT5uv/jbFOlZpI=";
           };
 
-          cargoHash = "sha256-eKe7uwneUYxejSbG/1hKqg6bSmtL0KQ9ojlazeqTi88=";
+          cargoHash = "sha256-EYDfuBlH3zmTxACBL+sjicRna84CvoesKSQVcYiG9P0=";
 
           nativeBuildInputs = [ pkgsWasm.pkg-config ];
 
@@ -103,7 +103,7 @@
           };
         };
 
-        craneLib = inputs.crane.mkLib pkgs;
+        craneLib = (inputs.crane.mkLib pkgs).overrideToolchain (_: stableRust);
 
         craneLibWasm = (inputs.crane.mkLib pkgsWasm).overrideToolchain (
           p:
@@ -1028,6 +1028,8 @@
               partitions = 1;
               partitionType = "count";
               cargoNextestPartitionsExtraArgs = "--no-tests=pass --profile ci";
+              # -v so I can try debugging the cargo nextest build hang in github runners
+              cargoExtraArgs = "-v";
               # Dump more stuff from wgpu and naga to try debugging gh runner stuff.
               RUST_LOG = "wgpu=warn,naga=warn";
             }
