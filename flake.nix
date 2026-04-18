@@ -166,6 +166,7 @@
             ./deny.toml
             ./Cargo.toml
             ./Cargo.lock
+            ./.config/nextest.toml
           ];
         };
 
@@ -1026,7 +1027,15 @@
               inherit cargoArtifacts;
               partitions = 1;
               partitionType = "count";
-              cargoNextestPartitionsExtraArgs = "--no-tests=pass";
+              cargoNextestPartitionsExtraArgs = "--no-tests=pass --profile ci";
+              # Dump more stuff from wgpu and naga to try debugging gh runner stuff.
+              RUST_LOG = "wgpu=warn,naga=warn";
+            }
+            # On Linux force wgpu to use vulkan software renderer in case this
+            # is the problem.
+            // lib.optionalAttrs pkgs.stdenv.isLinux {
+              WGPU_BACKEND = "vulkan";
+              WGPU_POWER_PREFERENCE = "none";
             }
           );
         };

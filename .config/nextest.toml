@@ -1,0 +1,21 @@
+[profile.default]
+# Show output for failures immediately rather than at the end to help debug gh
+# runner bs.
+failure-output = "immediate"
+
+[profile.ci]
+# Don't stop on first failure in ci, in case its a deadlock kinda thing somehow.
+fail-fast = false
+# Emit stdout/stderr for all tests immediately so wgpu adapter selection, WGSL
+# compile output, and render timing appear in the build log output for
+# debugging.
+failure-output = "immediate"
+success-output = "immediate"
+# Show slow tests in the final summary so I can try to track down whats failing
+# in the linux gh runner.
+final-status-level = "slow"
+# Warn at 30s so we can see when a specific test is slow.
+# For any test, and they all share a mutex to run, bail entirely after 90
+# seconds as they should never take more than 2 seconds even if they run on cpu
+# and not gpu.
+slow-timeout = { period = "30s", terminate-after = 3 }
