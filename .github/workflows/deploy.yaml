@@ -91,7 +91,7 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Build WASM LTO
-        run: nix build path:.#mitchty-wasm-lto -L
+        run: nix build .#mitchty-wasm-lto -L
 
       - name: Prepare site for GitHub Pages
         run: |
@@ -139,7 +139,7 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Build Windows binary
-        run: nix build path:.#mitchty-release-windows -L
+        run: nix build .#mitchty-release-windows -L
 
       - name: Prepare artifact
         run: |
@@ -174,7 +174,7 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Build macOS binary
-        run: nix build path:.#mitchty-release -L
+        run: nix build .#mitchty-release -L
 
       - name: Prepare artifact
         run: |
@@ -255,7 +255,7 @@ jobs:
         # We'll abuse nix develop to run just to be sure we're running in the
         # exact same env as I develop in not whatever ubuntu env in github.
         run: |
-          nix develop path:. --command ./bin/ci-record-sizes.sh
+          nix develop --command ./bin/ci-record-sizes.sh
 
       - name: Commit build metadata
         run: |
