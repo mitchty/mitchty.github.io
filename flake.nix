@@ -685,44 +685,49 @@
         # the binary etc.. but no bueno pugio needs to build crap on its own
         # laaaame). But this is here so I can get a deps svg out of the whole
         # build for later nefarious shenanigans.
-        ci-pugio-graph = craneLib.mkCargoDerivation (
-          commonArgs
-          // nixEnvArgs
-          // releaseArgs
-          // {
-            pname = "ci-pugio-graph";
-            cargoArtifacts = cargoArtifactsRelease;
-            src = fileSetForCrate ./crates/mitchty;
-            doCheck = false;
-            doInstallCargoArtifacts = false;
+        # TODO: Commented out for now, with nix-fast-build and .#packages.$SYS
+        # always building this just makes things slower and I rarely need the
+        # full dep graph anyway. If I can brain up a way to share the crane
+        # cargo deps this would be fine but its effectively an independent build
+        # vi cargo by the pugio binary at runtime.
+        # ci-pugio-graph = craneLib.mkCargoDerivation (
+        #   commonArgs
+        #   // nixEnvArgs
+        #   // releaseArgs
+        #   // {
+        #     pname = "ci-pugio-graph";
+        #     cargoArtifacts = cargoArtifactsRelease;
+        #     src = fileSetForCrate ./crates/mitchty;
+        #     doCheck = false;
+        #     doInstallCargoArtifacts = false;
 
-            nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
-              pugio
-              pkgs.cargo-bloat
-              pkgs.fontconfig
-              pkgs.graphviz
-            ];
+        #     nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
+        #       pugio
+        #       pkgs.cargo-bloat
+        #       pkgs.fontconfig
+        #       pkgs.graphviz
+        #     ];
 
-            # Pugio's SVG renderer uses fontconfig for text layout; without a
-            # valid config it crashes before writing the output file. An empty
-            # fonts.conf with no font dirs is enough to satisfy it.
-            FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = [ ]; };
+        #     # Pugio's SVG renderer uses fontconfig for text layout; without a
+        #     # valid config it crashes before writing the output file. An empty
+        #     # fonts.conf with no font dirs is enough to satisfy it.
+        #     FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = [ ]; };
 
-            buildPhaseCargoCommand = ''
-              install -dm755 $out
-              install -m644 /dev/null $out/deps.svg
-              export CARGO_NET_OFFLINE=true
-              pugio --package mitchty \
-                --bin mitchty \
-                --release \
-                --scheme cum-sum \
-                --gradient blues \
-                --dark-mode \
-                --no-open \
-                --output "$out/deps.svg"
-            '';
-          }
-        );
+        #     buildPhaseCargoCommand = ''
+        #       install -dm755 $out
+        #       install -m644 /dev/null $out/deps.svg
+        #       export CARGO_NET_OFFLINE=true
+        #       pugio --package mitchty \
+        #         --bin mitchty \
+        #         --release \
+        #         --scheme cum-sum \
+        #         --gradient blues \
+        #         --dark-mode \
+        #         --no-open \
+        #         --output "$out/deps.svg"
+        #     '';
+        #   }
+        # );
 
         mitchty-wasm-lto =
           let
@@ -1031,7 +1036,6 @@
             mitchty
             mitchty-lto
             ma
-            ci-pugio-graph
             mitchty-wasm
             mitchty-wasm-lto
             pugio
