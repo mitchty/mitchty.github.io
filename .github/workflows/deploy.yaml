@@ -258,6 +258,10 @@ jobs:
           nix develop --command ./bin/ci-record-sizes.sh
 
       - name: Commit build metadata
+        # NOTE: Added -n to skip commit hooks because the metadata build dir
+        # isn't really a part of what nix flake check cares about.
+        #
+        # We just waste time running the git commit hooks and checks here.
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -265,7 +269,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "no changes to commit"
           else
-            git commit -m "chore: record sizes and dep graph for ${GITHUB_SHA:0:7} [skip ci]"
+            git commit -n -m "chore: record sizes and dep graph for ${GITHUB_SHA:0:7} [skip ci]"
             git pull --rebase origin "$GITHUB_REF_NAME"
             git push origin "$GITHUB_REF_NAME"
           fi
