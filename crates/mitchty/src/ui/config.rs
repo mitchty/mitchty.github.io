@@ -62,13 +62,14 @@ pub struct UiConfig {
     #[cfg(not(target_arch = "wasm32"))]
     pub show_data_viewer: bool,
 
-    /// Open a specific post by index on startup, normally not done, opt-in only
-    /// or via links for the web version.
+    /// Open a specific reverie by name on startup.
     ///
-    /// Resolves from the name/string passed in via `post_index_for_name`. Only
-    /// read once and mapped to an index to seed the `ActivePost`. Not used at
-    /// runtime afterwards. One shot system struct.
-    pub initial_post: Option<usize>,
+    /// Stores the raw string from `--reverie` CLI/native or `?reverie=`
+    /// URL/wasm. Resolved once in `setup_egui` (for now...) by matching against
+    /// `ReverieKey` on the spawned reverie entities. Supports canonical keys
+    /// `"some_ns/foo"`, aliases, and display names all matched
+    /// case-insensitively to match uri insensitivity.
+    pub initial_reverie: Option<String>,
 
     /// Override the initial timezone list shown in World Clock. When non-empty
     /// these replace the hardcoded defaults. Each entry is an IANA tz name.
@@ -102,7 +103,7 @@ impl Default for UiConfig {
             show_recognizer: false,
             #[cfg(not(target_arch = "wasm32"))]
             show_data_viewer: false,
-            initial_post: None,
+            initial_reverie: None::<String>,
             initial_timezones: Vec::new(),
             initial_alarms: Vec::new(),
             initial_sort_col: SortColumn::None,

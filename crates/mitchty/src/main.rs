@@ -2,6 +2,7 @@ mod ai;
 mod assets;
 mod fullscreen_effect;
 mod mesh_effect;
+mod plugins;
 mod post_process;
 mod ui;
 
@@ -15,6 +16,9 @@ use bevy::scene::{SceneInstanceReady, SceneSpawner};
 
 use bevy_pretty_text::prelude::*;
 
+use crate::plugins::reveries::{
+    ActiveReverie, ReverieDisplayName, ReveriesPlugin, send_scroll_events,
+};
 use crate::post_process::{EffectsEnabled, PostProcessSettings};
 use mitchty::RenderLayers;
 use transform_gizmo_bevy::{GizmoDragStarted, GizmoDragging, prelude::*};
@@ -98,7 +102,7 @@ use fullscreen_effect::{
 };
 use mesh_effect::MeshEffectPlugin;
 use post_process::PostProcessPlugin;
-use ui::{ScrollViewPlugin, SettingsUiPlugin, ToggleCameraProjection, send_scroll_events};
+use ui::{SettingsUiPlugin, ToggleCameraProjection};
 
 /// Marker component to indicate hue animation is enabled (on cube entities)
 #[derive(Component)]
@@ -189,11 +193,11 @@ struct Cli {
     #[arg(long, value_delimiter = ',', value_name = "APP", action = clap::ArgAction::Append)]
     app: Vec<String>,
 
-    /// Open a specific post by name at startup. Note the post text is matched
+    /// Open a specific reverie by name at startup. Note the reverie name is matched
     /// case insensitively to make the wasm uri case symmetric with the command
-    /// line ars.
-    #[arg(long, value_name = "POST")]
-    post: Option<String>,
+    /// line args.
+    #[arg(long, value_name = "REVERIE")]
+    reverie: Option<String>,
 
     /// Override the world clock timezone list. Comma-separated or repeated inputs allowed.
     /// Each value must be a valid IANA timezone name e.g. America/New_York.
@@ -230,7 +234,7 @@ struct Cli {
 /// Only handles `%XX` sequences and `+` space. Good enough for IANA tz names
 /// which can contain `/` encoded as `%2F` and epoch seconds which is all I need
 /// for now.
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 fn percent_decode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
@@ -317,11 +321,8 @@ fn main() {
             }
         }
 
-        if let Some(name) = &cli.post {
-            match ui::post_index_for_name(name) {
-                Some(idx) => cfg.initial_post = Some(idx),
-                None => bevy::log::warn!("--post: unknown post {:?} ignoring it", name),
-            }
+        if let Some(name) = &cli.reverie {
+            cfg.initial_reverie = Some(name.clone());
         }
 
         // Collect --tz values. Validate each name against the bundled tz
@@ -423,12 +424,8 @@ fn main() {
                         None => bevy::log::warn!("?app=: unknown app {:?} ignoring it", slug),
                     }
                 }
-            } else if key.eq_ignore_ascii_case("post") {
-                // Single post name; only one post can be active at a time, last one wins.
-                match ui::post_index_for_name(value) {
-                    Some(idx) => cfg.initial_post = Some(idx),
-                    None => bevy::log::warn!("?post=: unknown post {:?} ignoring it", value),
-                }
+            } else if key.eq_ignore_ascii_case("reverie") {
+                cfg.initial_reverie = Some(reverie_from_query_value(raw_value));
             } else if key.eq_ignore_ascii_case("tz") {
                 // Comma-separated list of IANA timezone names. Validate each
                 // against the bundled tz database and skip unknowns.
@@ -554,7 +551,7 @@ fn main() {
     }
 
     app.add_plugins(SettingsUiPlugin)
-        .add_plugins(ScrollViewPlugin)
+        .add_plugins(ReveriesPlugin)
         .init_resource::<DragState>()
         .add_systems(
             Startup,
@@ -593,7 +590,7 @@ fn main() {
         )
         .add_systems(
             Update,
-            sync_text3d_to_active_post.run_if(bevy::time::common_conditions::on_timer(
+            sync_text3d_to_active_reverie.run_if(bevy::time::common_conditions::on_timer(
                 std::time::Duration::from_secs(1),
             )),
         )
@@ -1457,18 +1454,19 @@ fn commit_pending_default(
 /// Priority order:
 /// 1. If the World Clock has at least one active (non-expired) alarm, show the
 ///    countdown to the soonest one, e.g. `"3h 25m 10s"`.
-/// 2. Otherwise, if a blog post is selected, show the post title.
+/// 2. Otherwise, if a reverie is selected, show its display name (filename basically).
 /// 3. Otherwise fall back to `"mitchty.github.io"`.
 ///
 /// Updates the `Text3dContent` resource every second based on active alarms and
-/// selected posts and whatever the default might be. Does not touch any
+/// selected reveries and whatever the default might be. Does not touch any
 /// entities `manage_text3d` reacts to the resource change and handles all
 /// spawning of text. This is mostly just here to handle per second countdown of
 /// alarm text. It won't ever update in under a second so the reason for only
 /// running every second is... Well there won't be anything to update in what it
 /// gives a crap about.
-fn sync_text3d_to_active_post(
-    active_post: Res<ui::ActivePost>,
+fn sync_text3d_to_active_reverie(
+    active_post: Res<ActiveReverie>,
+    display_q: Query<&ReverieDisplayName>,
     world_clock: Option<Res<ui::WorldClockState>>,
     mut text_content: ResMut<Text3dContent>,
 ) {
@@ -1498,10 +1496,10 @@ fn sync_text3d_to_active_post(
         cd
     } else {
         match active_post.0 {
-            Some(idx) => ui::POSTS
-                .get(idx)
-                .map(|p| p.name.to_string())
-                .unwrap_or_else(|| fallback.clone()),
+            Some(entity) => display_q
+                .get(entity)
+                .map(|d| d.0.to_string())
+                .unwrap_or_else(|_| fallback.clone()),
             None => fallback,
         }
     };
@@ -2128,5 +2126,87 @@ mod tests {
     fn entirely_empty_value_returns_empty() {
         let results = parse_alarm_value("");
         assert!(results.is_empty());
+    }
+}
+
+// TODO: Future me can migrate more code into the mitchty lib setup as time goes
+// on I kind want mitchty to really be fairly lightweight as a crate and it
+// honestly would work out better if it stays mostly static at some point.
+//
+// Where that ends up is a future me task though but this files way too dam long.
+
+/// Decode a raw `?reverie=` query-param value percent-encoded most likely into
+/// the plain string that will be stored directly in `UiConfig::initial_reverie`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn reverie_from_query_value(raw: &str) -> String {
+    percent_decode(raw)
+}
+
+#[cfg(test)]
+mod reverie_query_tests {
+    use super::*;
+
+    #[test]
+    fn decode_plain_ascii_unchanged() {
+        assert_eq!(percent_decode("lorem_ipsum"), "lorem_ipsum");
+    }
+
+    #[test]
+    fn decode_slash_uppercase_hex() {
+        assert_eq!(percent_decode("namespace%2Ffoo"), "namespace/foo");
+    }
+
+    #[test]
+    fn decode_slash_lowercase_hex() {
+        assert_eq!(percent_decode("namespace%2ffoo"), "namespace/foo");
+    }
+
+    #[test]
+    fn decode_space_via_plus() {
+        assert_eq!(percent_decode("lorem+ipsum"), "lorem ipsum");
+    }
+
+    #[test]
+    fn decode_space_via_percent20() {
+        assert_eq!(percent_decode("lorem%20ipsum"), "lorem ipsum");
+    }
+
+    #[test]
+    fn decode_empty_string() {
+        assert_eq!(percent_decode(""), "");
+    }
+
+    #[test]
+    fn decode_truncated_percent_passes_through() {
+        assert_eq!(percent_decode("foo%"), "foo%");
+        assert_eq!(percent_decode("foo%2"), "foo%2");
+    }
+
+    #[test]
+    fn decode_mixed() {
+        assert_eq!(percent_decode("namespace%2Fbaz_qux"), "namespace/baz_qux");
+    }
+
+    #[test]
+    fn query_value_plain_slug_unchanged() {
+        assert_eq!(reverie_from_query_value("lorem_ipsum"), "lorem_ipsum");
+    }
+
+    #[test]
+    fn query_value_encoded_slash_decoded() {
+        assert_eq!(reverie_from_query_value("namespace%2Ffoo"), "namespace/foo");
+    }
+
+    #[test]
+    fn query_value_deep_path_decoded() {
+        assert_eq!(reverie_from_query_value("a%2Fb%2Fc%2Fdeep"), "a/b/c/deep");
+    }
+
+    #[test]
+    fn query_value_display_name_with_plus_spaces() {
+        // A display-name lookup like "Lorem+Ipsum" decodes to "Lorem Ipsum"
+        // like you'd expect. This isn't ancient latin with no spaces between
+        // words. We have spaces in ye olde moderne english lets use em!
+        assert_eq!(reverie_from_query_value("Lorem+Ipsum"), "Lorem Ipsum");
     }
 }

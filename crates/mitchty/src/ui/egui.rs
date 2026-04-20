@@ -1,4 +1,5 @@
 use crate::ai::infer::InferenceEngine;
+use crate::plugins::reveries::{ActiveReverie, ReverieDisplayName, ReverieKey};
 use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled};
 use crate::ui::config::{ThemeChoice, UiConfig};
 #[cfg(not(target_arch = "wasm32"))]
@@ -6,7 +7,6 @@ use crate::ui::data_viewer::{DataViewerState, ShowDataViewer, data_viewer_window
 #[cfg(debug_assertions)]
 use crate::ui::recognizer::RasterSize;
 use crate::ui::recognizer::{BASE_BRUSH_R, InferenceResult, RecognizerState};
-use crate::ui::scroll_view::{ActivePost, POSTS};
 use crate::ui::world_clock::{ShowWorldClock, WorldClockState, world_clock_window};
 use crate::{
     CameraMode, ColorState, FpsDisplay, HueAnimation, MainCamera, ShowText3d, Text3dDefaultPending,
@@ -467,8 +467,9 @@ fn configure_egui_style(
 fn setup_egui(
     mut commands: Commands,
     mut effects_enabled: ResMut<EffectsEnabled>,
-    mut active_post: ResMut<ActivePost>,
+    mut active_reverie: ResMut<ActiveReverie>,
     ui_config: Res<UiConfig>,
+    reveries: Query<(Entity, &ReverieKey, &ReverieDisplayName)>,
 ) {
     // Start with effects enabled by default
     effects_enabled.0 = true;
@@ -496,8 +497,11 @@ fn setup_egui(
         commands.spawn(ShowDataViewer);
     }
 
-    if let Some(idx) = ui_config.initial_post {
-        *active_post = ActivePost(Some(idx));
+    // Resolve the raw initial_reverie string -> Entity. Reverie entities are
+    // spawned in ReveriesPlugin::build() before any startup system runs, so
+    // this query is always populated by the time this system runs.
+    if let Some(ref name) = ui_config.initial_reverie {
+        crate::plugins::reveries::apply_initial_reverie(name, &reveries, &mut active_reverie);
     }
 
     // Build WorldClockState from UiConfig overrides. insert_resource replaces
@@ -809,7 +813,8 @@ fn settings_ui(
         Query<Entity, With<ShowSceneConfig>>,
     )>,
     #[cfg(not(target_arch = "wasm32"))] data_viewer_query: Query<Entity, With<ShowDataViewer>>,
-    mut active_post: ResMut<ActivePost>,
+    mut active_reverie: ResMut<ActiveReverie>,
+    reverie_query: Query<(Entity, &ReverieKey, &ReverieDisplayName)>,
     mut active_shader: ResMut<ActiveShader>,
     available_shaders: Res<AvailableShaders>,
     mut commands: Commands,
@@ -938,15 +943,10 @@ fn settings_ui(
                 }
             });
 
-            ui.menu_button("Posts", |ui| {
-                for (idx, post) in POSTS.iter().enumerate() {
-                    let is_active = active_post.0 == Some(idx);
-                    if ui.selectable_label(is_active, post.name).clicked() {
-                        active_post.0 = if is_active { None } else { Some(idx) };
-                        ui.close();
-                    }
-                }
-            });
+            {
+                let entries: Vec<_> = reverie_query.iter().collect();
+                crate::plugins::reveries::reveries_egui_menu(ui, &entries, &mut active_reverie);
+            }
 
             ui.menu_button("Apps", |ui| {
                 let wc_entity = marker_queries.p3().single().ok();

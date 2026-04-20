@@ -159,6 +159,7 @@
             (lib.fileset.fileFilter (file: file.hasExt "wesl") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "toml") ./crates)
             # This is stuff thats embedded beyond the bevy asset server
+            (lib.fileset.fileFilter (file: file.hasExt "md") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "ttf") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "glb") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "mpk") ./crates)
@@ -442,6 +443,7 @@
               (craneLib.fileset.commonCargoSources crate)
               (lib.fileset.fileFilter (file: file.hasExt "rs") ./crates)
               (lib.fileset.fileFilter (file: file.hasExt "toml") ./crates)
+              (lib.fileset.fileFilter (file: file.hasExt "md") ./crates)
               (lib.fileset.fileFilter (file: file.hasExt "ktx2") ./crates)
               (lib.fileset.fileFilter (file: file.hasExt "ttf") ./crates)
               (lib.fileset.fileFilter (file: file.hasExt "glb") ./crates)
