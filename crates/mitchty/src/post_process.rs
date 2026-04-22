@@ -66,11 +66,11 @@ struct PostProcessLabel;
 pub struct PostProcessSettings {
     /// Effect intensity 0.0 passthrough 1.0 = most effect of effect
     pub intensity: f32,
-    /// Time value for animated effects
+    /// Time value for animated effects.
+    /// #[shader(size(12))]: pads this field to 12 bytes so the struct is 16
+    /// byte aligned.
+    #[shader(size(12))]
     pub time: f32,
-    // WebGL2 structs must be 16 byte aligned
-    #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
-    pub _webgl2_padding: Vec2,
 }
 
 /// Resource listing all available shader files

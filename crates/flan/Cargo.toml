@@ -61,7 +61,7 @@ getrandom.workspace = true
 polars = { version = "~0.53", default-features = false }
 
 [dev-dependencies]
-bytemuck = { version = "1", features = ["derive"] }
+
 
 [[test]]
 name = "shader_2d"
@@ -69,8 +69,4 @@ required-features = ["render"]
 
 [[test]]
 name = "shader_fullscreen"
-required-features = ["render"]
-
-[[test]]
-name = "uniform_size"
 required-features = ["render"]

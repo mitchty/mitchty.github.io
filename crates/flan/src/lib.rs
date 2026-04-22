@@ -44,7 +44,7 @@ pub const PLOT_WINDOW_SIZE: usize = 200;
 
 /// The backing polars DataFrame that owns all plot data.
 ///
-/// Callers own this resource and mutate it directly.  After
+/// Callers own this resource and mutate it directly. After
 /// mutating, fire a `PlotDataUpdated` event and `flan` will sync the newest
 /// `PLOT_WINDOW_SIZE` rows to the shader automatically.
 ///
@@ -88,7 +88,7 @@ impl Plugin for PlotPlugin {
         //
         // PlotDataFrame is NOT inserted here callers are
         // responsible for inserting that data before Startup runs so that
-        // setup_plot_ui can do the initial upload.  If no PlotDataFrame exists
+        // setup_plot_ui can do the initial upload. If no PlotDataFrame exists
         // at startup an empty shader buffer is used so no plot for you sucker.
         app.add_plugins(Material2dPlugin::<PlotMaterial>::default())
             .add_plugins(UiMaterialPlugin::<PlotUiMaterial>::default())
@@ -143,8 +143,6 @@ fn setup_plot_ui(
             count: points.len().min(MAX_PLOT_POINTS) as u32,
             time: 0.0,
             line_width: 0.003, // TODO: I should make this dynamic somehow future me problem
-            #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
-            _webgl2_padding: 0.0,
         },
         points: points_binding,
     });
@@ -271,7 +269,7 @@ fn df_tail_to_points(df: &DataFrame) -> Vec<Vec2> {
 ///
 /// Reads the last `PLOT_WINDOW_SIZE` rows from the `"y"` column of
 /// `PlotDataFrame` and uploads them to every spawned plot UI node's shader
-/// buffer.  If `PlotDataFrame` has not been inserted this system is a no-op.
+/// buffer. If `PlotDataFrame` has not been inserted this system is a no-op.
 fn sync_plot_data(
     plot_df: Option<Res<PlotDataFrame>>,
     node_query: Query<&MaterialNode<PlotUiMaterial>, With<PlotUiNode>>,
@@ -334,19 +332,18 @@ pub struct PlotUniform {
     pub max: Vec2,
     pub zoom: Vec2,
     pub offset: Vec2,
-    /// Number of valid points in the `points` array.  Set this to the actual
+    /// Number of valid points in the `points` array. Set this to the actual
     /// point count on every update; ignored on non-WebGL builds at runtime.
     pub count: u32,
-    /// Elapsed time in seconds.  Upload `time.elapsed_secs()` here every
+    /// Elapsed time in seconds. Upload `time.elapsed_secs()` here every
     /// frame so the shader can animate.
     pub time: f32,
     /// Antialiased half-width of the polyline in UV space.
+    /// #[shader(size(8))]: pads this field to 8 bytes so the struct is 48
+    /// bytes total (4xvec2 + u32 + f32 + f32 = 44 -> rounded to 48),
+    /// satisfying WebGL's requirement that uniform bindings are multiples of 16.
+    #[shader(size(8))]
     pub line_width: f32,
-    /// WebGL2 / std140 padding: keeps the struct at 48 bytes (multiple of 16).
-    /// `line_width` fills the 4 bytes that the old `Vec2` padding had left spare.
-    // God I can't wait until webgpu works so I can ditch all the webgl compat.
-    #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
-    pub _webgl2_padding: f32,
 }
 
 /// Points buffer used in WebGL2 builds (uniform buffer, WEBGL feature).
@@ -453,19 +450,6 @@ impl UiMaterial for PlotUiMaterial {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
-    fn plot_uniform_webgl_alignment() {
-        use std::mem::size_of;
-        // WebGL requires uniform buffer structs to be multiples of 16 bytes
-        assert_eq!(
-            size_of::<PlotUniform>() % 16,
-            0,
-            "PlotUniform must be a multiple of 16 bytes for WebGL (got {} bytes)",
-            size_of::<PlotUniform>()
-        );
-    }
 
     #[test]
     #[cfg(feature = "webgl")]

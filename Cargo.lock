@@ -4767,7 +4767,6 @@ name = "flan"
 version = "0.0.16"
 dependencies = [
  "bevy",
- "bytemuck",
  "getrandom 0.4.2",
  "image",
  "image-compare",

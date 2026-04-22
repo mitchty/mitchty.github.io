@@ -675,8 +675,6 @@ fn spawn_camera(
         PostProcessSettings {
             intensity,
             time: 0.0,
-            #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
-            _webgl2_padding: Vec2::ZERO,
         },
         RenderLayers::layer(0),
     ));
@@ -1270,8 +1268,6 @@ fn setup_fps_sparkline_ui(
             count: 0,
             time: 0.0,
             line_width: 0.01,
-            #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
-            _webgl2_padding: 0.0,
         },
         points: points_binding,
     });
