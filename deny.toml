@@ -257,6 +257,11 @@ skip = [
   { name = "tiny-skia-path", version = "=0.12.0" },
   { name = "roxmltree", version = "=0.20.0" },
   { name = "roxmltree", version = "=0.21.1" },
+  # resvg &/or burn
+  { name = "zune-core", version = "=0.4.12" },
+  { name = "zune-core", version = "=0.5.1" },
+  { name = "zune-jpeg", version = "=0.4.21" },
+  { name = "zune-jpeg", version = "=0.5.15" },
   # rand and... wesl?bevy
   { name = "cpufeatures", version = "=0.2.17" },
   { name = "cpufeatures", version = "=0.3.0" },

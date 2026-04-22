@@ -50,7 +50,7 @@ fn snapshot_reference_ui() {
     assert_snapshot("reference_ui", &frame, DEFAULT_SSIM_THRESHOLD);
 }
 
-/// Material and UI variants of plot should be visually identical — same shader
+/// Material and UI variants of plot should be visually identical - same shader
 /// logic, only the binding group differs which WGPU_TEST normalises to @group(0).
 #[test]
 fn plot_material_and_ui_are_visually_equivalent() {

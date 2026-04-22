@@ -3,7 +3,9 @@ use crate::plugins::reveries::{ActiveReverie, ReverieDisplayName, ReverieKey};
 use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled};
 use crate::ui::config::{ThemeChoice, UiConfig};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::ui::data_viewer::{DataViewerState, ShowDataViewer, data_viewer_window};
+use crate::ui::data_viewer::{
+    DataViewerState, ImageProcessingCache, ShowDataViewer, data_viewer_window,
+};
 #[cfg(debug_assertions)]
 use crate::ui::recognizer::RasterSize;
 use crate::ui::recognizer::{BASE_BRUSH_R, InferenceResult, RecognizerState};
@@ -155,6 +157,7 @@ impl Plugin for SettingsUiPlugin {
         let app = app
             .init_resource::<LastKnownTheme>()
             .init_resource::<DataViewerState>()
+            .init_resource::<ImageProcessingCache>()
             .insert_non_send_resource(SceneFileDialog(
                 FileDialog::new()
                     .title("Load Scene GLTF")

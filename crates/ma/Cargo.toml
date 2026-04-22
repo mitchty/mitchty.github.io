@@ -8,6 +8,9 @@ version.workspace = true
 name = "ma"
 path = "src/main.rs"
 
+[features]
+cuda = ["burn/cuda"]
+
 [dependencies]
 burn = { workspace = true, features = [
   "tui",
@@ -23,7 +26,9 @@ csv = "~1.4"
 # EUC-JP decoding for JIS 0208 in ETL conversion testing
 encoding_rs = "~0.8"
 regex = "~1.12"
+serde = { version = "~1", features = ["derive"] }
 serde_json = "~1"
+serde_yaml = "~0.9"
 unicode_names2.workspace = true
 # Also a test for etl source data resizing
 image = { version = "~0.25", default-features = false, features = ["png"] }
@@ -32,3 +37,8 @@ resvg = "~0.47"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zip.workspace = true
+indicatif.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+tempfile = "~3"

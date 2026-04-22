@@ -1,6 +1,6 @@
 pub mod convert;
 pub mod default;
-pub mod infer;
+pub mod dump;
 pub mod train;
 
 // TODO: burn with tui/train sets up its own tracing. I might want to figure out
@@ -16,7 +16,7 @@ pub(crate) fn init_tracing() {
 
 use clap::{Parser, Subcommand};
 use convert::ConvertArgs;
-use infer::InferArgs;
+use dump::DumpArgs;
 use train::TrainArgs;
 
 #[derive(Parser)]
@@ -35,8 +35,8 @@ enum Command {
     Default,
     /// Convert etl files to paired npz datasets for training
     Convert(ConvertArgs),
-    /// Infer using a trained model, kinda useless tbh, here from burn examples really
-    Infer(InferArgs),
+    /// Inspect individual ETL characters: ASCII art preview + contact-sheet PNG
+    Dump(DumpArgs),
     /// Train a model to be slightly useful
     Train(TrainArgs),
 }
@@ -46,7 +46,7 @@ pub fn run() {
     match cli.command.unwrap_or(Command::Train(TrainArgs::default())) {
         Command::Default => default::run(),
         Command::Convert(args) => convert::run(args),
-        Command::Infer(args) => infer::run(args),
+        Command::Dump(args) => dump::run(args),
         Command::Train(args) => train::run(args),
     }
 }

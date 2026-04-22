@@ -33,7 +33,13 @@ pub fn infer<B: Backend>(artifact_dir: &str, device: B::Device, item: BurnMnistI
         artifact_dir,
         &device,
         DataItem {
-            image: item.image,
+            image: item
+                .image
+                .iter()
+                .flat_map(|row| row.iter().copied())
+                .collect(),
+            width: 28,
+            height: 28,
             label: item.label as u32,
         },
     );
@@ -51,7 +57,13 @@ pub fn infer_from_file<B: Backend>(
         artifact_dir,
         &device,
         DataItem {
-            image: item.image,
+            image: item
+                .image
+                .iter()
+                .flat_map(|row| row.iter().copied())
+                .collect(),
+            width: 28,
+            height: 28,
             label: item.label as u32,
         },
     );

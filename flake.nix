@@ -69,6 +69,20 @@
           config.allowUnfree = true;
         };
 
+        # CUDA-enabled nixpkgs varietal, mostly for the ma binary for training.
+        pkgsCuda =
+          if pkgs.stdenv.isLinux then
+            import inputs.nixpkgs {
+              inherit system;
+              overlays = [ inputs.fenix.overlays.default ];
+              config = {
+                allowUnfree = true;
+                cudaSupport = true;
+              };
+            }
+          else
+            null;
+
         inherit (pkgs) lib;
 
         # Build wasm-bindgen-cli at the version used by Bevy for wasm builds
@@ -136,6 +150,20 @@
             p.fenix.targets.x86_64-pc-windows-gnu.stable.rust-std
           ]
         );
+
+        # Crane lib for CUDA builds Linux only obvs
+        craneLibCuda =
+          if pkgs.stdenv.isLinux then
+            (inputs.crane.mkLib pkgsCuda).overrideToolchain (
+              p:
+              p.fenix.combine [
+                p.fenix.stable.rustc
+                p.fenix.stable.cargo
+                p.fenix.stable.rust-std
+              ]
+            )
+          else
+            null;
 
         # Constrained src fileset to ensure that cargo deps aren't rebuilt every
         # change to files that don't contribute to dependency chains. Only
@@ -344,6 +372,55 @@
             "CXX_${buildPlatformSuffix}" = "c++";
           };
 
+        # Use nixpkgs cudatoolkit for headers and compilation setup
+        cudaMerged = if pkgs.stdenv.isLinux then pkgsCuda.cudaPackages.cudatoolkit else null;
+
+        # Common args for the ma-cuda build, has all the cuda runtime junk in
+        # its trunk so that cubec/burn-cuda can dlopen() and build at runtime.
+        commonArgsCuda =
+          if pkgs.stdenv.isLinux then
+            {
+              inherit src;
+              strictDeps = true;
+
+              nativeBuildInputs = with pkgsCuda; [
+                git
+                pkg-config
+                # autoAddDriverRunpath patches ELF RPATH entries so the CUDA
+                # libs are found at runtime even outside of NixOS, veeery needed.
+                autoAddDriverRunpath
+              ];
+
+              buildInputs =
+                with pkgsCuda;
+                [
+                  cudaPackages.cuda_cudart
+                  cudaPackages.cuda_nvcc
+                  cudaPackages.cuda_nvrtc
+                  cudaPackages.cuda_cccl
+                  cudaPackages.libcublas
+                  vulkan-loader
+                  wayland
+                  mold
+                  lld
+                ]
+                ++ commonXinputs;
+
+              # Need to set this up for the cuda compilation to work, this is to
+              # enable the compilation to work at runtime within the devshell.
+              CUDA_PATH = "${cudaMerged}";
+              LD_LIBRARY_PATH = lib.makeLibraryPath (
+                commonXinputs
+                ++ (with pkgsCuda; [
+                  cudaPackages.cuda_cudart
+                  cudaPackages.cuda_nvrtc
+                  cudaPackages.libcublas
+                ])
+              );
+            }
+          else
+            { };
+
         # Build *just* the cargo dependencies (of the entire workspace),
         # so we can reuse all of that work (e.g. via cachix) when running in CI
         # It is *highly* recommended to use something like cargo-hakari to avoid
@@ -424,11 +501,53 @@
           }
         );
 
+        # Cargo dep cache for the ma-cuda derivation specifically.
+        cargoArtifactsMaCuda =
+          if pkgs.stdenv.isLinux then
+            craneLibCuda.buildDepsOnly (
+              commonArgsCuda
+              // nixEnvArgs
+              // releaseArgs
+              // {
+                src = srcDeps;
+                cargoExtraArgs = "-p ma --features ma/cuda";
+              }
+            )
+          else
+            null;
+
+        # Release build of the ma-cuda binary using the burn CUDA backend for
+        # slightly faster training.
+        ma-cuda =
+          if pkgs.stdenv.isLinux then
+            craneLibCuda.buildPackage (
+              commonArgsCuda
+              // nixEnvArgs
+              // releaseArgs
+              // {
+                pname = "ma-cuda";
+                version = version;
+                cargoArtifacts = cargoArtifactsMaCuda;
+                cargoExtraArgs = "-p ma --bin ma --features ma/cuda";
+                src = fileSetForCrate ./crates/ma;
+                doCheck = false;
+                meta = {
+                  description = "ma training CLI CUDA flavor";
+                  mainProgram = "ma";
+                  platforms = [
+                    "x86_64-linux"
+                    "aarch64-linux"
+                  ];
+                };
+              }
+            )
+          else
+            null;
+
         version = self.rev or self.dirtyShortRev or "nix-flake-cant-get-git-commit-sha";
 
         individualCrateArgs = commonArgs // {
           inherit cargoArtifacts;
-          #          inherit (craneLib.crateNameFromCargoToml { inherit src; }) version;
           # NB: we disable tests since we'll run them all via cargo-nextest
           doCheck = false;
         };
@@ -1064,6 +1183,7 @@
         }
         // lib.optionalAttrs pkgs.stdenv.isLinux {
           inherit mitchty-release-windows;
+          inherit ma-cuda;
           wine = pkgsUnfree.wineWow64Packages.full;
           steam-run = pkgsUnfree.steam-run;
         }
@@ -1222,6 +1342,19 @@
               platforms = [ "x86_64-linux" ];
             };
           };
+
+          ma-cuda = {
+            type = "app";
+            program = "${ma-cuda}/bin/ma";
+            meta = {
+              description = "ma training CLI - burn CUDA backend";
+              mainProgram = "ma";
+              platforms = [
+                "x86_64-linux"
+                "aarch64-linux"
+              ];
+            };
+          };
         }
         // lib.optionalAttrs pkgs.stdenv.isDarwin {
           mitchty-release =
@@ -1279,6 +1412,18 @@
               ++ (lib.attrValues hookTools)
               ++ commonArgs.buildInputs
               ++ commonArgs.nativeBuildInputs
+              # CUDA 12 dev tools for linux devshell abusage
+              ++ lib.optionals pkgs.stdenv.isLinux (
+                with pkgsCuda;
+                [
+                  cudaPackages.cuda_cudart
+                  cudaPackages.cuda_nvcc
+                  cudaPackages.cuda_nvrtc
+                  cudaPackages.cuda_cccl
+                  cudaPackages.libcublas
+                  autoAddDriverRunpath
+                ]
+              )
             );
 
             shellHook = ''
@@ -1292,8 +1437,23 @@
             # Make sure eglot+etc.. pick the right rust-src for eglot+lsp mode stuff using direnv
             RUST_SRC_PATH = "${stableRust}/lib/rustlib/src/rust/library";
 
-            # Set library path for Bevy
-            LD_LIBRARY_PATH = commonArgs.LD_LIBRARY_PATH;
+            # Set library path for Bevy and on linux cuda crap
+            LD_LIBRARY_PATH =
+              commonArgs.LD_LIBRARY_PATH
+              + lib.optionalString pkgs.stdenv.isLinux (
+                ":"
+                + lib.makeLibraryPath (
+                  with pkgsCuda;
+                  [
+                    cudaPackages.cuda_cudart
+                    cudaPackages.cuda_nvrtc
+                    cudaPackages.libcublas
+                  ]
+                )
+              );
+
+            # CUDA toolkit path used to find headers at runtime for jit compilation
+            CUDA_PATH = lib.optionalString pkgs.stdenv.isLinux "${cudaMerged}";
           }
           // lib.optionalAttrs pkgs.stdenv.isDarwin commonEnvDarwin;
       }

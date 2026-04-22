@@ -1,3 +1,6 @@
+pub mod img;
+pub mod npz;
+
 /// Shared build-time version and environment information for all crates.
 pub mod build_info {
     /// Git repo this is nominally built from for link usage.

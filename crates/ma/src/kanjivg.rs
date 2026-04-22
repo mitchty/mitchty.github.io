@@ -1,12 +1,12 @@
 //! KanjiVG SVG -> 28x28 npz training dataset conversion.
 //!
 //! KanjiVG (<https://kanjivg.tagaini.net>) provides clean bezier-curve stroke
-//! data for 6,355+ kanji and kana on a 109x109 canvas.  Each character has a
+//! data for 6,355+ kanji and kana on a 109x109 canvas. Each character has a
 //! file named by its Unicode code point: `04e00.svg` = 一.
 //!
 //! ## Augmentation strategy
 //!
-//! A single SVG gives one canonical drawing.  We synthesize `N_AUG` training
+//! A single SVG gives one canonical drawing. We synthesize `N_AUG` training
 //! samples per stroke width variant by rendering once then applying random
 //! geometric augmentation rotation +/-15deg, translation +/-2px, scale 0.85-1.15
 //
@@ -20,6 +20,9 @@ use regex::Regex;
 
 use crate::data::augment_image;
 use crate::etl::{OutputPaths, write_classmap, write_npz, write_stats};
+
+// KanjiVG images are always rendered and stored at 28x28 pixels.
+const KANJI_IMG_SIZE: usize = 28;
 
 /// Why a character was excluded if it was at all. used for debug logs mainly.
 #[derive(Debug)]
@@ -85,6 +88,7 @@ const OUT_SIZE: u32 = 28;
 /// against, renders each character at `STROKE_WIDTHS` x `N_AUG` augmented
 /// samples, and writes the result to the paths derived from `paths` from the
 /// cli.
+#[allow(clippy::too_many_arguments)]
 pub fn convert_kanjivg_dir(
     dir: &str,
     paths: &OutputPaths,
@@ -93,6 +97,7 @@ pub fn convert_kanjivg_dir(
     aug_seed: Option<u64>,
     filter_chars: &[char],
     filter_names: &[String],
+    equiv: &std::collections::HashMap<char, char>,
 ) -> io::Result<()> {
     let mut entries: Vec<(char, std::path::PathBuf)> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
@@ -191,11 +196,17 @@ pub fn convert_kanjivg_dir(
         ));
     }
 
-    // Note the map is via unicode point order
-    let label_map: HashMap<char, u32> = entries
+    // Build label map directly from filtered entries, normalising through equiv
+    // at lookup time - no need to mutate or clone the entries list.
+    // entries is already sorted by char (unicode point order).
+    let canonical_chars: Vec<char> = entries
+        .iter()
+        .map(|(ch, _)| crate::kana_merging::equiv_char(*ch, equiv))
+        .collect();
+    let label_map: HashMap<char, u32> = canonical_chars
         .iter()
         .enumerate()
-        .map(|(i, (ch, _))| (*ch, i as u32))
+        .map(|(i, &ch)| (ch, i as u32))
         .collect();
 
     let n_classes = entries.len();
@@ -235,7 +246,7 @@ pub fn convert_kanjivg_dir(
         None => Box::new(rand::rng()),
     };
 
-    // Split RNG - only created when --seed is given.  A separate RNG keeps the
+    // Split RNG - only created when --seed is given. A separate RNG keeps the
     // split selection fully independent from the augmentation decisions, so
     // changing --seed never alters the rendered pixels, only which samples land
     // in train vs test.
@@ -276,7 +287,8 @@ pub fn convert_kanjivg_dir(
 
         let svg_stripped = strip_namespaces(&svg_raw);
         let svg_clean = strip_stroke_numbers(&svg_stripped);
-        let label = *label_map.get(ch).unwrap();
+        let canonical = crate::kana_merging::equiv_char(*ch, equiv);
+        let label = *label_map.get(&canonical).unwrap();
 
         // Collect all samples for this character into a temporary per-char
         // buffer, then route them into train/test based on position.
@@ -325,9 +337,9 @@ pub fn convert_kanjivg_dir(
 
             char_images.push(base_px);
 
-            let base_f32 = u8_to_f32_image(&base_px);
+            // augment_image now takes &[u8] directly - no u8->f32->u8 round-trip.
             for _ in 1..N_AUG {
-                let aug = augment_image(&base_f32, &mut *aug_rng);
+                let aug = augment_image(&base_px, 28, 28, &mut *aug_rng);
                 char_images.push(f32_to_u8_image(&aug));
             }
         }
@@ -370,7 +382,7 @@ pub fn convert_kanjivg_dir(
         .unwrap_or(".");
 
     write_classmap(out_dir, &label_map)?;
-    write_stats(out_dir, &train_images)?;
+    write_stats(out_dir, &train_images, KANJI_IMG_SIZE * KANJI_IMG_SIZE)?;
 
     if n == 0 {
         return Err(io::Error::other("no images were successfully rendered"));
@@ -542,26 +554,11 @@ fn render_to_28x28(svg: &str) -> Option<[u8; 784]> {
     Some(out)
 }
 
-/// Convert a `[u8; 784]` pixel array to a `[[f32; 28]; 28]` for augmentation.
-/// More mnist nonsense that can get nuked methinks
-fn u8_to_f32_image(px: &[u8; 784]) -> [[f32; 28]; 28] {
-    let mut out = [[0f32; 28]; 28];
-    for row in 0..28 {
-        for col in 0..28 {
-            out[row][col] = px[row * 28 + col] as f32;
-        }
-    }
-    out
-}
-
-/// Convert `[[f32; 28]; 28]` back to `[u8; 784]`, clamping to 0–255. This is
-/// for mnist compat but I'm starting to think its time to ditch that here.
-fn f32_to_u8_image(img: &[[f32; 28]; 28]) -> [u8; 784] {
+/// Convert a flat `f32` pixel buffer back to `[u8; 784]`, clamping to 0–255.
+fn f32_to_u8_image(img: &[f32]) -> [u8; 784] {
     let mut out = [0u8; 784];
-    for row in 0..28 {
-        for col in 0..28 {
-            out[row * 28 + col] = img[row][col].clamp(0.0, 255.0) as u8;
-        }
+    for (i, &v) in img.iter().enumerate().take(784) {
+        out[i] = v.clamp(0.0, 255.0) as u8;
     }
     out
 }

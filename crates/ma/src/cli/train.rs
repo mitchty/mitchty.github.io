@@ -1,12 +1,16 @@
+#[cfg(feature = "cuda")]
+use burn::backend::Cuda;
+#[cfg(not(feature = "cuda"))]
+use burn::backend::Wgpu;
 use burn::{
-    backend::{Autodiff, Wgpu},
+    backend::Autodiff,
     data::dataset::{Dataset, vision::MnistDataset},
     optim::AdamConfig,
 };
 use clap::Args;
 
 use crate::{
-    data::{ConcatNpzDataset, DataItem, KaggleMnistDataset},
+    data::{ConcatNpzDataset, DataItem},
     model::ModelConfig,
     training::{self, TrainingConfig},
 };
@@ -53,22 +57,22 @@ pub struct TrainArgs {
     // combine datasets into a single npz file All imgs/labels lists must be the
     // same length and share a label space for now. This barely works.
     //
-    // Note the 28x28 is to match the mnist stuff. This might not be worth
-    // keeping long. Or I might want to make them more accurate.
-    /// Training images npzs are u8 arrays (N, 28, 28)
+    /// Training images npzs: u8 array shape (N, H, W) - any H and W accepted.
+    /// All files passed together must share the same H and W (mix resolutions
+    /// via `ma convert --merge` first, which resizes everything to a common size).
     /// ex concatenate: --train-imgs a.npz --train-imgs b.npz
     #[arg(long, num_args = 1..)]
     train_imgs: Vec<String>,
 
-    /// Training labels npzs: u8 array shape (N,) Must pair with --train-imgs for now cause I'm a hack
+    /// Training labels npzs: u8 or u16-LE array shape (N,). Must pair with --train-imgs.
     #[arg(long, num_args = 1..)]
     train_labels: Vec<String>,
 
-    /// Test or validation image npzs: u8 array shape (M, 28, 28).
+    /// Test or validation image npzs: u8 array shape (M, H, W). Must share H and W with --train-imgs.
     #[arg(long, num_args = 1..)]
     test_imgs: Vec<String>,
 
-    /// Test or validation labels npzs: u8 array shape (M,) Must pair with --test-imgs here too
+    /// Test or validation labels npzs: u8 or u16-LE array shape (M,). Must pair with --test-imgs.
     #[arg(long, num_args = 1..)]
     test_labels: Vec<String>,
 
@@ -76,14 +80,26 @@ pub struct TrainArgs {
     #[arg(short, long)]
     epochs: Option<usize>,
 
-    /// Mini-batch size. Larger values use more VRAM but train faster and
-    /// produce more stable gradient estimates. Default: 64.
-    // TODO: note 256 seems a better default but not sure I should use it yet
-    // 512 fails on my macbook, works on 4090
+    /// Mini-batch size. Default: 64.
+    ///
+    /// Larger values use more VRAM but train faster and produce more stable
+    /// gradient estimates (256 is a good target on a 4090; 512 OOMs on a
+    /// MacBook).
+    ///
+    /// Each in-flight batch allocates `batch_size x channels x H x W x 4`
+    /// bytes of f32 on the host before the GPU upload. Reduce this (e.g. 32
+    /// or 16) if host RAM is tight at training time.
     #[arg(short, long)]
     batch_size: Option<usize>,
 
-    /// How many dataloader worker threads. Set to 0 to load on the main thread Default: 4. Unsure of a good value the input data is small right now.
+    /// Dataloader worker threads. Default: 4.
+    ///
+    /// Each worker independently calls Dataset::get() and holds up to
+    /// `batch_size` items in a channel buffer, so peak host RAM during loading
+    /// is roughly `num_workers x batch_size x channels x H x W` bytes (u8).
+    ///
+    /// Set to 0 to disable background threads and load batches on the training
+    /// thread itself - lowest peak RAM, slightly slower on I/O-bound datasets.
     #[arg(short, long)]
     workers: Option<usize>,
 
@@ -127,7 +143,7 @@ pub struct TrainArgs {
     norm_mean: Option<f64>,
 
     /// Per-pixel normalization std.
-    /// K49=0.3416, KMNIST=0.3475, MNIST=0.3081.  Default: 0.3416 (K49).
+    /// K49=0.3416, KMNIST=0.3475, MNIST=0.3081. Default: 0.3416 (K49).
     // TODO: Like ^^^ here more for legacy testing
     #[arg(long)]
     norm_std: Option<f64>,
@@ -149,7 +165,17 @@ struct MnistAdapter(MnistDataset);
 impl burn::data::dataset::Dataset<DataItem> for MnistAdapter {
     fn get(&self, index: usize) -> Option<DataItem> {
         self.0.get(index).map(|item| DataItem {
-            image: item.image,
+            // Burn's MnistItem stores pixels as [[f32; 28]; 28] in [0, 255].
+            // DataItem.image is Vec<u8> so cast back here; the batcher will
+            // convert to normalized f32 inline when assembling each batch.
+            image: item
+                .image
+                .iter()
+                .flat_map(|row| row.iter().map(|&v| v as u8))
+                .collect(),
+            width: 28,
+            height: 28,
+            channels: 1,
             label: item.label as u32,
         })
     }
@@ -159,7 +185,10 @@ impl burn::data::dataset::Dataset<DataItem> for MnistAdapter {
 }
 
 pub fn run(args: TrainArgs) {
+    #[cfg(not(feature = "cuda"))]
     type MyBackend = Wgpu<f32, i32>;
+    #[cfg(feature = "cuda")]
+    type MyBackend = Cuda<f32, i32>;
     type MyAutodiffBackend = Autodiff<MyBackend>;
 
     // Resolve --input directory into individual default flags it stands for.
@@ -216,7 +245,10 @@ pub fn run(args: TrainArgs) {
         }
     }
 
+    #[cfg(not(feature = "cuda"))]
     let device = burn::backend::wgpu::WgpuDevice::default();
+    #[cfg(feature = "cuda")]
+    let device = burn::backend::cuda::CudaDevice::default();
     let artifact_dir = args.output.as_str();
 
     let classmap: Vec<String> = if let Some(path) = &args.classmap {
@@ -353,17 +385,6 @@ pub fn run(args: TrainArgs) {
 
         let config = with_epochs(TrainingConfig::new(
             ModelConfig::new(num_classes, hidden_size)
-                .with_conv_channels(conv_channels)
-                .with_dropout(dropout),
-            AdamConfig::new(),
-        ));
-        training::train::<MyAutodiffBackend, _>(artifact_dir, config, device, train_ds, test_ds);
-    } else if let Some(path) = &args.file {
-        // Kaggle CSV mode, I doubt this works anymore
-        let fraction = args.split.unwrap_or(0.8);
-        let (train_ds, test_ds) = KaggleMnistDataset::from_csv(path).split(fraction);
-        let config = with_epochs(TrainingConfig::new(
-            ModelConfig::new(10, hidden_size)
                 .with_conv_channels(conv_channels)
                 .with_dropout(dropout),
             AdamConfig::new(),

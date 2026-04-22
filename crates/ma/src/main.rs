@@ -2,7 +2,8 @@
 mod cli;
 mod data;
 mod etl;
-mod inference;
+mod filter_config;
+mod kana_merging;
 mod kanjivg;
 mod model;
 mod training;

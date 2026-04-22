@@ -18,7 +18,7 @@ use burn::{
 impl<B: Backend> Model<B> {
     pub fn forward_classification(
         &self,
-        images: Tensor<B, 3>,
+        images: Tensor<B, 4>,
         targets: Tensor<B, 1, Int>,
     ) -> ClassificationOutput<B> {
         let output = self.forward(images);
@@ -76,9 +76,9 @@ pub struct TrainingConfig {
     /// Class index -> Unicode character mapping, in label-index order.
     ///
     /// Populated at training time from a `classmap.json` written by
-    /// `ma convert`.  Saved to `config.json` so the inference engine can
+    /// `ma convert`. Saved to `config.json` so the inference engine can
     /// display the correct character for each predicted class without any
-    /// separate lookup file.  Empty for models trained without a classmap
+    /// separate lookup file. Empty for models trained without a classmap
     /// (e.g. built-in MNIST fallback).
     #[config(default = "Vec::new()")]
     pub class_map: Vec<String>,

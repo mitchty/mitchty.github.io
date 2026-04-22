@@ -1,275 +1,46 @@
-use std::{io::Read, sync::Arc};
+use std::sync::Arc;
 
 use burn::{
-    data::{
-        dataloader::batcher::Batcher,
-        dataset::{Dataset, vision::MnistItem},
-    },
+    data::{dataloader::batcher::Batcher, dataset::Dataset},
     prelude::*,
 };
 
-/// A single 28x28 grayscale image with a class label.
+/// A single grayscale image with a class label.
 ///
-/// Replaces burn's `MnistItem` which uses `label: u8` so I can use something
-/// more useful for Japanese/Kanji. Otherwise I'm capped at 255 classes which
-/// won't even scratch the Joyo Kanji. JIS X 0208 is amost 7k characters so...
-/// yeah
+/// Images are stored as a flat row-major `Vec<u8>` with explicit `width` and
+/// `height` so the dataset can hold any resolution - native ETL sizes (64x63,
+/// 128x127, …) or anything you choose to resize to at training time.
+///
+/// Pixel values are raw `u8` in `[0, 255]` - the `MnistBatcher` converts to
+/// normalized `f32` inline when building each batch, so no full-dataset f32
+/// expansion ever happens.
+///
+/// Replaces burn's `MnistItem` to also support labels > 255 classes (Kanji
+/// datasets need u32 - JIS X 0208 has ~7 k characters alone).
 #[derive(Clone, Debug)]
 pub struct DataItem {
-    pub image: [[f32; 28]; 28],
-    /// Class index, supports up to 4 billion classes, should be "good enough".
+    /// Flat row-major pixel buffer, length = `channels * width * height`, values in `[0, 255]`.
+    /// Channel order matches the npz layout: channel 0 starts at index 0, channel 1 at H*W, etc.
+    pub image: Vec<u8>,
+    pub width: usize,
+    pub height: usize,
+    /// Number of channels: 1 for grayscale, 3 for (original, Otsu, Sauvola).
+    pub channels: usize,
+    /// Class index, supports up to 4 billion classes.
     pub label: u32,
 }
 
-/// Parse a single csv record, header not incldued into an MnistItem.
-fn parse_record(record: &csv::StringRecord, row: usize) -> MnistItem {
-    let label: u8 = record[0]
-        .parse()
-        .unwrap_or_else(|e| panic!("failed to parse label at row {row}: {e}"));
-
-    let mut image = [[0f32; 28]; 28];
-    for (i, pixel) in record.iter().skip(1).enumerate() {
-        let val: f32 = pixel
-            .parse::<u8>()
-            .unwrap_or_else(|e| panic!("failed to parse pixel {i} at row {row}: {e}"))
-            as f32;
-        image[i / 28][i % 28] = val;
-    }
-
-    MnistItem { image, label }
-}
-
-/// Load every labelled row from a Kaggle mnist csv into memory first
+/// Read all bytes from the first entry in an npz file.
 ///
-/// csv layout appears to be like so: label,pixel0,pixel1,...,pixel783
-//TODO: marked for deletion kaboom
-fn load_kaggle_csv(path: &str) -> Vec<MnistItem> {
-    let mut reader = csv::Reader::from_path(path)
-        .unwrap_or_else(|e| panic!("failed to open Kaggle CSV at {path}: {e}"));
-
-    reader
-        .records()
-        .enumerate()
-        .map(|(i, res)| {
-            let record = res.unwrap_or_else(|e| panic!("failed to read row {i} in {path}: {e}"));
-            parse_record(&record, i)
-        })
-        .collect()
-}
-
-/// Load a single item from a kaggle mnist csv file by row index.
-///
-/// Note: This is only for the current infer logic. Not likely to survive real world usage.
-// TODO: kaboom
-pub fn load_kaggle_item(path: &str, index: usize) -> MnistItem {
-    let mut reader = csv::Reader::from_path(path)
-        .unwrap_or_else(|e| panic!("failed to open kaggle csv at {path}: {e}"));
-
-    let record = reader
-        .records()
-        .nth(index)
-        .unwrap_or_else(|| panic!("index {index} out of range in {path}"))
-        .unwrap_or_else(|e| panic!("failed to read record {index} from {path}: {e}"));
-
-    parse_record(&record, index)
-}
-
-/// An in-memory burn `Dataset` backed by a kaggle mnist csv file.
-///
-/// For "some" mnist kaggle datasets shipped this way `split()` lets you divide
-/// it into train and validation subsets without copying the underlying data.
-/// Which is nice.
-#[derive(Clone)]
-pub struct KaggleMnistDataset {
-    items: Arc<Vec<MnistItem>>,
-    /// This is what provides the underlying split() behavior
-    start: usize,
-    end: usize,
-}
-
-impl KaggleMnistDataset {
-    pub fn from_csv(path: &str) -> Self {
-        let items = Arc::new(load_kaggle_csv(path));
-        let end = items.len();
-        Self {
-            items,
-            start: 0,
-            end,
-        }
-    }
-
-    /// Split the csv into (train, validation) tuples.
-    ///
-    /// `train_fraction` must be within range of `(0.0, 1.0)`. The first tuple
-    /// portion becomes the training set; the remainder becomes the validation
-    /// set. Both share the same underlying `Arc<Vec<MnistItem>>` so there is no
-    /// data duplication/wasted rams.
-    // TODO: I should make the validation subset random... somehow
-    pub fn split(self, train_fraction: f64) -> (Self, Self) {
-        // future mitch is being stupid somehow... again...
-        assert!(
-            (0.0..1.0).contains(&train_fraction),
-            "train_fraction must be in (0.0, 1.0), got {train_fraction}"
-        );
-        let total = self.end - self.start;
-        let split = self.start + (total as f64 * train_fraction) as usize;
-        let train = Self {
-            items: self.items.clone(),
-            start: self.start,
-            end: split,
-        };
-        let val = Self {
-            items: self.items,
-            start: split,
-            end: self.end,
-        };
-        (train, val)
-    }
-}
-
-impl Dataset<DataItem> for KaggleMnistDataset {
-    fn get(&self, index: usize) -> Option<DataItem> {
-        let abs = self.start + index;
-        if abs < self.end {
-            let item = &self.items[abs];
-            Some(DataItem {
-                image: item.image,
-                label: item.label as u32,
-            })
-        } else {
-            None
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.end - self.start
-    }
-}
-
-/// Parsed NPY v1 header.
-struct NpyHeader {
-    #[allow(dead_code)]
-    dtype: String,
-    shape: Vec<usize>,
-    /// Byte offset at which raw array data actually begins.
-    data_offset: usize,
-}
-
-/// Parse a numpy v1.x NPY file.
-///
-/// Validates magic, major version, dtype, and shape dimensionality. Panics with
-/// a message that includes `path` so future mitch can figure out the problem
-/// with that file. Or go drink one of the two.
-fn parse_npy(raw: &[u8], path: &str) -> NpyHeader {
-    assert!(
-        raw.len() >= 10,
-        "npz entry in {path} is too short to be a valid NPY file {} bytes",
-        raw.len()
-    );
-    assert_eq!(
-        &raw[..6],
-        b"\x93NUMPY",
-        "{path} is not a valid NPY file bad magic bytes"
-    );
-    let major = raw[6];
-    assert_eq!(
-        major, 1,
-        "{path} only NPY v1.x is supported not major version {major}"
-    );
-    // NOTE minor version in raw[7] 0 or 1 for v1.x, doesn't affect the underlying data layout
-
-    let header_len = u16::from_le_bytes([raw[8], raw[9]]) as usize;
-    let data_offset = 10 + header_len;
-    assert!(
-        raw.len() >= data_offset,
-        "{path} NPY header claims {header_len} header bytes but file is only {} bytes, someones lying",
-        raw.len()
-    );
-
-    let header_str = std::str::from_utf8(&raw[10..data_offset])
-        .unwrap_or_else(|_| panic!("{path} NPY header is not valid UTF-8"));
-
-    let dtype = extract_header_field(header_str, "descr")
-        .unwrap_or_else(|| panic!("{path} NPY header missing 'descr' field:\n  {header_str}"));
-
-    // Dtype is validated by the caller, not here, since labels may be
-    // '|u1' u8, K49/KMNIST or '<u2' u16 LE, large-class ETL datasets
-
-    let shape_str = extract_header_field(header_str, "shape")
-        .unwrap_or_else(|| panic!("{path} NPY header missing 'shape' field:\n  {header_str}"));
-
-    let shape = parse_shape(&shape_str)
-        .unwrap_or_else(|| panic!("{path} could not parse shape tuple '{shape_str}'"));
-
-    NpyHeader {
-        dtype,
-        shape,
-        data_offset,
-    }
-}
-
-/// Pull the value for a key out of a Python-dict-style NPY header string.
-///
-/// Handles both `'key': value` and `'key': 'value'` (quoted) forms.
-/// Returns the inner string without surrounding quotes.
-fn extract_header_field(header: &str, key: &str) -> Option<String> {
-    // Look for 'key':
-    let needle = format!("'{key}':");
-    let start = header.find(&needle)? + needle.len();
-    let rest = header[start..].trim_start();
-
-    // TODO: use a real parsing library lazy
-    let value = if rest.starts_with('(') {
-        // We got a tuple grab everything up to the matching ')'
-        let end = rest.find(')')?;
-        rest[..=end].trim().to_owned()
-    } else if let Some(inner) = rest.strip_prefix('\'') {
-        let end = inner.find('\'')?;
-        inner[..end].to_owned()
-    } else {
-        // Bare word (True, False, number)
-        let end = rest.find([',', '}', '\n']).unwrap_or(rest.len());
-        rest[..end].trim().to_owned()
-    };
-    Some(value)
-}
-
-/// Parse a Python tuple string like `(270912,)` or `(2385, 28, 28)` to `Vec<usize>`.
-fn parse_shape(s: &str) -> Option<Vec<usize>> {
-    let inner = s.trim().strip_prefix('(')?.strip_suffix(')')?;
-    if inner.trim().is_empty() {
-        return Some(vec![]);
-    }
-    inner
-        .split(',')
-        .map(|part| part.trim())
-        .filter(|p| !p.is_empty())
-        .map(|p| p.parse::<usize>().ok())
-        .collect()
-}
-
-/// Read all bytes from the first entry in an npz, note its just a zip file.
+/// Delegates to `lib::npz::read_npz_first_entry`; panics on error with a
+/// message that includes the path so debugging is not a nightmare.
 fn read_npz_first_entry(path: &str) -> Vec<u8> {
-    let file = std::fs::File::open(path).unwrap_or_else(|e| panic!("cannot open npz {path} {e}"));
-    let mut zip = zip::ZipArchive::new(file)
-        .unwrap_or_else(|e| panic!("{path} cannot read as zip archive {e}"));
-    let entry_name = zip
-        .by_index(0)
-        .map(|e| e.name().to_owned())
-        .unwrap_or_else(|e| panic!("{path} no entries in zip {e}"));
-    let mut entry = zip
-        .by_name(&entry_name)
-        .unwrap_or_else(|e| panic!("{path} cannot open zip entry '{entry_name}' {e}"));
-    let mut raw = Vec::new();
-    entry
-        .read_to_end(&mut raw)
-        .unwrap_or_else(|e| panic!("{path} error reading zip entry '{entry_name}' {e}"));
-    raw
+    lib::npz::read_npz_first_entry(path).unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// In-memory burn `Dataset` backed by a pair of npz files.
 ///
-/// - `imgs_path`   = npz containing a `|u1` array of shape (N, 28, 28)
+/// - `imgs_path`   = npz containing a `|u1` array of shape (N, H, W) - any H and W
 /// - `labels_path` = npz containing a `|u1` u8 or `<u2` u16 LE array of shape (N,)
 ///
 /// K49 / KMNIST files use `|u1` labels (<=255 classes).
@@ -277,10 +48,35 @@ fn read_npz_first_entry(path: &str) -> Vec<u8> {
 /// Both are detected automatically from the NPY header dtype so no bigs.
 ///
 /// `num_classes()` returns `max_label + 1` and should be passed to `ModelConfig`.
+///
+/// ## Memory layout
+///
+/// Pixels are stored as a single **contiguous `u8` slab** in the underlying
+/// `Arc<Vec<u8>>` - identical to the raw NPZ bytes, no f32 expansion at load
+/// time. `Dataset::get()` converts one image's worth of bytes to `Vec<f32>`
+/// on demand, so only the currently-in-flight batch items are ever in f32 form.
+///
+/// For a 3-channel 64x63 dataset with N images this saves:
+///
+/// | Before | After |
+/// |--------|-------|
+/// | N x CxHxW x 4 bytes (f32 slab) + N x CxHxW x 1 byte (raw NPZ) alive simultaneously | N x CxHxW x 1 byte (u8 slab only) |
+/// | Peak at load time ≈ 5x raw size | Peak at load time = 1x raw size |
 #[derive(Clone)]
 pub struct NpzDataset {
-    items: Arc<Vec<DataItem>>,
+    /// Raw u8 pixel slab: N x channels x H x W bytes, C-order, same layout as the NPZ.
+    pixels: Arc<Vec<u8>>,
+    /// Decoded labels, one per image.
+    labels: Arc<Vec<u32>>,
+    /// Number of images in the full slab.
+    #[allow(dead_code)]
+    n: usize,
+    channels: usize,
+    height: usize,
+    width: usize,
+    /// First image index in this view of the slab (for future sub-range slicing).
     start: usize,
+    /// One-past-last image index.
     end: usize,
 }
 
@@ -289,32 +85,25 @@ impl NpzDataset {
         let imgs_raw = read_npz_first_entry(imgs_path);
         let labels_raw = read_npz_first_entry(labels_path);
 
-        let imgs_hdr = parse_npy(&imgs_raw, imgs_path);
-        let labels_hdr = parse_npy(&labels_raw, labels_path);
+        let imgs_hdr =
+            lib::npz::parse_npy_header(&imgs_raw, imgs_path).unwrap_or_else(|e| panic!("{e}"));
+        let labels_hdr =
+            lib::npz::parse_npy_header(&labels_raw, labels_path).unwrap_or_else(|e| panic!("{e}"));
 
         // Images must always be uint8.
         assert_eq!(
             imgs_hdr.dtype, "|u1",
-            "{imgs_path} image array must be uint8 '|u1' but got dtype '{}' did you pass an unsupported datatype float32 or int32 image file by mistake?",
+            "{imgs_path}: image array must be uint8 '|u1' but got dtype '{}' - did you pass a float32 image file by mistake?",
             imgs_hdr.dtype
         );
 
-        // Validate images must be 3dim with last two dims 28x28
-        assert_eq!(
-            imgs_hdr.shape.len(),
-            3,
-            "{imgs_path} expected a 3dim image array (N, 28, 28) but got shape {:?} did you swap --train-imgs and --train-labels again dum dum?",
+        // Images must be 3-D (N, H, W) or 4-D (N, C, H, W).
+        // The 4-D case arises from `ma convert --three-channel` which stores
+        // (original, Otsu, Sauvola) as three channels.
+        assert!(
+            imgs_hdr.shape.len() == 3 || imgs_hdr.shape.len() == 4,
+            "{imgs_path}: expected a 3-D (N,H,W) or 4-D (N,C,H,W) image array but got shape {:?}; did you swap --train-imgs and --train-labels?",
             imgs_hdr.shape
-        );
-        assert_eq!(
-            imgs_hdr.shape[1], 28,
-            "{imgs_path} image height must be 28, got {}",
-            imgs_hdr.shape[1]
-        );
-        assert_eq!(
-            imgs_hdr.shape[2], 28,
-            "{imgs_path} image width must be 28, got {}",
-            imgs_hdr.shape[2]
         );
 
         // Validate labels: must be 1-D.
@@ -332,78 +121,85 @@ impl NpzDataset {
             "image count ({n_imgs} from {imgs_path}) != label count ({n_labels} from {labels_path})"
         );
 
-        let img_data = &imgs_raw[imgs_hdr.data_offset..];
-        let label_data = &labels_raw[labels_hdr.data_offset..];
-
-        // Read labels as u32, supporting both |u1 1 byte and <u2 2 bytes LE chungus datasets
-        let labels_u32: Vec<u32> = match labels_hdr.dtype.as_str() {
-            "<u2" | "|u2" => {
-                // 2-byte little-endian u16 labels ETL large-class datasets of like 6k or more
-                assert_eq!(
-                    label_data.len(),
-                    n_labels * 2,
-                    "{labels_path}: expected {n_labels}x2 bytes for <u2 labels, got {}",
-                    label_data.len()
-                );
-                (0..n_labels)
-                    .map(|i| u16::from_le_bytes([label_data[i * 2], label_data[i * 2 + 1]]) as u32)
-                    .collect()
-            }
-            _ => {
-                // |u1 or anything else = 1 byte per label K49, KMNIST, MNIST style datasets aka small af datasets
-                assert_eq!(
-                    label_data.len(),
-                    n_labels,
-                    "{labels_path}: expected {n_labels} bytes for |u1 labels, got {}",
-                    label_data.len()
-                );
-                label_data[..n_labels].iter().map(|&b| b as u32).collect()
-            }
+        // Extract channels, height, width from either (N,H,W) or (N,C,H,W).
+        let (img_channels, img_h, img_w) = match imgs_hdr.shape.len() {
+            3 => (1, imgs_hdr.shape[1], imgs_hdr.shape[2]),
+            4 => (imgs_hdr.shape[1], imgs_hdr.shape[2], imgs_hdr.shape[3]),
+            _ => unreachable!(),
         };
 
-        let items: Vec<DataItem> = (0..n_imgs)
-            .map(|i| {
-                let mut image = [[0f32; 28]; 28];
-                let offset = i * 28 * 28;
-                for row in 0..28 {
-                    for col in 0..28 {
-                        image[row][col] = img_data[offset + row * 28 + col] as f32;
-                    }
-                }
-                DataItem {
-                    image,
-                    label: labels_u32[i],
-                }
-            })
-            .collect();
+        // Decode labels; labels_raw can be dropped once done.
+        let label_data = &labels_raw[labels_hdr.data_offset..];
+        let labels_u32 = lib::npz::read_labels(label_data, n_labels, &labels_hdr.dtype);
+        drop(labels_raw);
 
-        let end = items.len();
+        // Strip the NPY header prefix from the decompressed buffer in-place so
+        // the pixel slab can be wrapped in an Arc without a second allocation.
+        //
+        // `drain(0..data_offset)` drops the NPY magic, version bytes, and header
+        // dict, leaving imgs_raw as just the pixel bytes. We then move it into
+        // the Arc - no copy, no transient dual-buffer peak.
+        let data_offset = imgs_hdr.data_offset;
+        let ppi = img_channels * img_h * img_w;
+        let expected_len = n_imgs * ppi;
+        assert!(
+            imgs_raw.len() >= data_offset + expected_len,
+            "{imgs_path}: NPZ pixel data too short (expected {} bytes after header, got {})",
+            expected_len,
+            imgs_raw.len().saturating_sub(data_offset),
+        );
+        let mut pixels = imgs_raw;
+        pixels.drain(0..data_offset); // drop NPY header prefix in-place
+        pixels.truncate(expected_len); // drop any trailing padding bytes
+
+        // imgs_raw was moved into `pixels` above; it is consumed here.
         Self {
-            items: Arc::new(items),
+            pixels: Arc::new(pixels),
+            labels: Arc::new(labels_u32),
+            n: n_imgs,
+            channels: img_channels,
+            height: img_h,
+            width: img_w,
             start: 0,
-            end,
+            end: n_imgs,
         }
     }
 
     /// Returns the number of distinct classes `max_label + 1`
     pub fn num_classes(&self) -> usize {
-        self.items[self.start..self.end]
+        self.labels[self.start..self.end]
             .iter()
-            .map(|it| it.label as usize)
+            .map(|&l| l as usize)
             .max()
             .map(|m| m + 1)
             .unwrap_or(0)
+    }
+
+    /// Pixels per image (channels x height x width).
+    fn ppi(&self) -> usize {
+        self.channels * self.height * self.width
     }
 }
 
 impl Dataset<DataItem> for NpzDataset {
     fn get(&self, index: usize) -> Option<DataItem> {
         let abs = self.start + index;
-        if abs < self.end {
-            Some(self.items[abs].clone())
-        } else {
-            None
+        if abs >= self.end {
+            return None;
         }
+        let ppi = self.ppi();
+        let offset = abs * ppi;
+        // Copy the raw u8 pixels for this one image. The batcher converts to
+        // normalized f32 inline while filling the batch buffer - 4x smaller
+        // per-item allocation than returning Vec<f32>.
+        let image: Vec<u8> = self.pixels[offset..offset + ppi].to_vec();
+        Some(DataItem {
+            image,
+            channels: self.channels,
+            width: self.width,
+            height: self.height,
+            label: self.labels[abs],
+        })
     }
 
     fn len(&self) -> usize {
@@ -487,45 +283,51 @@ impl Dataset<DataItem> for ConcatNpzDataset {
     }
 }
 
-/// Apply random geometric augmentation to a 28x28 image for training.
+/// Apply random geometric augmentation to a grayscale image for training.
+///
+/// Works on a flat row-major pixel buffer of any size - the caller supplies
+/// `width` and `height` so the same function handles 28x28, 64x63, 128x127,
+/// or whatever native resolution came out of the npz file.
 ///
 /// Transformation parameters sampled each call:
-/// - Rotation:    +-15degrees
-/// - Translation: +02 pixels in x and y
-/// - Scale:       0.85 <-> 1.15
+/// - Rotation:    +/-15°
+/// - Translation: +/-2 px in x and y (relative to image size)
+/// - Scale:       0.85–1.15
 ///
-/// Uses inverse-map bilinear sampling so every output pixel is a smooth
-/// weighted average of its source neighbors. Out-of-bounds source pixels are
-/// treated as background.
+/// Accepts raw `u8` pixels; bilinear sampling is performed in `f32` internally.
+/// Returns a `Vec<f32>` (unnormalized, in `[0, 255]`) so the batcher can apply
+/// its inline normalisation in the same pass as the augmented values.
+///
+/// Note: multi-channel augmentation (applying a shared transform across all
+/// channels) is deferred to future work.
 pub fn augment_image(
-    image: &[[f32; 28]; 28],
+    image: &[u8],
+    width: usize,
+    height: usize,
     rng: &mut (impl rand::RngExt + ?Sized),
-) -> [[f32; 28]; 28] {
-    let sz = 28usize;
-    let cx = (sz as f32 - 1.0) / 2.0;
-    let cy = cx;
+) -> Vec<f32> {
+    let cx = (width as f32 - 1.0) / 2.0;
+    let cy = (height as f32 - 1.0) / 2.0;
 
-    let angle = (rng.random::<f32>() - 0.5) * 30.0_f32.to_radians(); // ±15°
-    let tx = (rng.random::<f32>() - 0.5) * 4.0; // ±2 px
-    let ty = (rng.random::<f32>() - 0.5) * 4.0; // ±2 px
+    let angle = (rng.random::<f32>() - 0.5) * 30.0_f32.to_radians(); // +/-15°
+    let tx = (rng.random::<f32>() - 0.5) * 4.0; // +/-2 px
+    let ty = (rng.random::<f32>() - 0.5) * 4.0; // +/-2 px
     let scale = 0.85 + rng.random::<f32>() * 0.30; // 0.85 – 1.15
 
     let cos_a = angle.cos();
     let sin_a = angle.sin();
 
     let sample = |xi: isize, yi: isize| -> f32 {
-        if xi >= 0 && xi < sz as isize && yi >= 0 && yi < sz as isize {
-            image[yi as usize][xi as usize]
+        if xi >= 0 && xi < width as isize && yi >= 0 && yi < height as isize {
+            image[yi as usize * width + xi as usize] as f32
         } else {
             0.0
         }
     };
 
-    // This is just glorified bilinear interpolation. Also I really wanted to
-    // use a shader to do all this.
-    let mut out = [[0f32; 28]; 28];
-    for (y, _) in out.clone().iter().enumerate().take(sz) {
-        for (x, _) in out.clone().iter().enumerate().take(sz) {
+    let mut out = vec![0f32; width * height];
+    for y in 0..height {
+        for x in 0..width {
             let dx = x as f32 - cx - tx;
             let dy = y as f32 - cy - ty;
             let src_x = (dx * cos_a + dy * sin_a) / scale + cx;
@@ -536,7 +338,7 @@ pub fn augment_image(
             let fx = src_x - x0 as f32;
             let fy = src_y - y0 as f32;
 
-            out[y][x] = (1.0 - fx) * (1.0 - fy) * sample(x0, y0)
+            out[y * width + x] = (1.0 - fx) * (1.0 - fy) * sample(x0, y0)
                 + fx * (1.0 - fy) * sample(x0 + 1, y0)
                 + (1.0 - fx) * fy * sample(x0, y0 + 1)
                 + fx * fy * sample(x0 + 1, y0 + 1);
@@ -611,7 +413,9 @@ impl Default for MnistBatcher {
 
 #[derive(Clone, Debug)]
 pub struct MnistBatch<B: Backend> {
-    pub images: Tensor<B, 3>,
+    /// Shape: `[batch, channels, height, width]`.
+    /// `channels` is 1 for grayscale npz files and 3 for three-channel npz files.
+    pub images: Tensor<B, 4>,
     pub targets: Tensor<B, 1, Int>,
 }
 
@@ -620,31 +424,59 @@ impl<B: Backend> Batcher<B, DataItem, MnistBatch<B>> for MnistBatcher {
         let mean = self.stats.mean;
         let std = self.stats.std;
         let augment = self.augment;
-        let images = items
-            .iter()
-            .map(|item| {
-                if augment {
-                    let mut rng = rand::rng();
-                    augment_image(&item.image, &mut rng)
-                } else {
-                    item.image
+        let n = items.len();
+
+        // Pull shape from first item (all items in a batch share dimensions).
+        let (c, h, w) = items
+            .first()
+            .map(|it| (it.channels, it.height, it.width))
+            .unwrap_or((1, 1, 1));
+        let ppi = c * h * w;
+
+        // Build a single contiguous f32 buffer for the entire batch, with
+        // normalisation applied inline. This replaces:
+        //   - N x item.image.clone() (one Vec<f32> per item)
+        //   - N x TensorData::new + Tensor::from_data (N individual uploads)
+        //   - Tensor::cat(images, 0) (allocation + copy to merge N tensors)
+        //
+        // Now there is exactly one Vec<f32> allocation and one device upload
+        // for the entire batch.
+        let mut pixels_f32: Vec<f32> = Vec::with_capacity(n * ppi);
+
+        let mut rng = rand::rng();
+        let mut label_buf: Vec<i64> = Vec::with_capacity(n);
+
+        for item in &items {
+            // Augmentation is only applied to single-channel images for now;
+            // multi-channel augmentation (shared spatial transform across
+            // channels) is future work.
+            //
+            // augment_image takes &[u8] and returns Vec<f32> (in [0,255] range)
+            // so normalisation is applied inline in both paths.
+            if augment && item.channels == 1 {
+                let aug = augment_image(&item.image, item.width, item.height, &mut rng);
+                for v in aug {
+                    pixels_f32.push((v / 255.0 - mean) / std);
                 }
-            })
-            .map(|image| TensorData::from(image).convert::<B::FloatElem>())
-            .map(|data| Tensor::<B, 2>::from_data(data, device))
-            .map(|tensor| tensor.reshape([1, 28, 28]))
-            .map(|tensor| ((tensor / 255) - mean) / std)
-            .collect();
+            } else {
+                // Direct u8 -> normalized f32, no intermediate Vec<f32>.
+                for &b in &item.image {
+                    pixels_f32.push((b as f32 / 255.0 - mean) / std);
+                }
+            }
+            label_buf.push(item.label as i64);
+        }
 
-        let targets = items
-            .iter()
-            .map(|item| {
-                Tensor::<B, 1, Int>::from_data([(item.label as i64).elem::<B::IntElem>()], device)
-            })
-            .collect();
+        // Single device upload for the whole batch -> reshape to [B, C, H, W].
+        let img_data = TensorData::new(pixels_f32, [n * ppi]).convert::<B::FloatElem>();
+        let images: Tensor<B, 4> =
+            Tensor::<B, 1>::from_data(img_data, device).reshape([n, c, h, w]);
 
-        let images = Tensor::cat(images, 0);
-        let targets = Tensor::cat(targets, 0);
+        // Labels: one small allocation for the whole batch.
+        let label_elems: Vec<B::IntElem> =
+            label_buf.iter().map(|&l| l.elem::<B::IntElem>()).collect();
+        let targets: Tensor<B, 1, Int> =
+            Tensor::<B, 1, Int>::from_data(TensorData::new(label_elems, [n]), device);
 
         MnistBatch { images, targets }
     }

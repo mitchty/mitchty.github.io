@@ -2,7 +2,7 @@
 #-*-mode: Shell-script; coding: utf-8;-*-
 # Simulates the CI workflow locally without committing.
 # Downloads the latest pre-release binaries from GitHub, builds the dep graph,
-# and runs ci-record-sizes — all outside the nix sandbox so network access works.
+# and runs ci-record-sizes - all outside the nix sandbox so network access works.
 #
 # Usage: ./bin/test-ci
 # Description: Unified versions script to handle listing latest versions,

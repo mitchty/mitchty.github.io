@@ -343,7 +343,7 @@ impl InferenceEngine {
     /// a 1px line.
     pub fn rasterize(state: &RecognizerState) -> (CanvasData, Option<(f32, f32, f32, f32)>) {
         // Border to leave on each side, expressed as a fraction of the grid.
-        // 128×128 grids get a ~9px border
+        // 128x128 grids get a ~9px border
         let sz = state.raster_size.pixels();
         let padding: f32 = 2.0 * sz as f32 / RasterSize::S128.pixels() as f32;
         // Brush radius: base value scaled for grid size, then multiplied by the
