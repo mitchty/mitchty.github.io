@@ -164,7 +164,7 @@ impl SavedTrainingConfig {
         let v: serde_json::Value = serde_json::from_str(text).ok()?;
         let model = &v["model"];
 
-        // Parse class_map: array of single-char strings, e.g. ["あ","い",…]
+        // Parse class_map: array of single-char strings, e.g. ["あ","い",...]
         let class_map: Vec<char> = v["class_map"]
             .as_array()
             .map(|arr| {

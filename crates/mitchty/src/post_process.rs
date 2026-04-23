@@ -21,7 +21,9 @@ use bevy::{
 };
 use std::collections::HashMap;
 
-/// Plugin that manages post-processing effects with dynamic shader loading
+/// Plugin that manages post-processing effects with dynamic shader loading.
+///
+/// Note: this plugin also isn't toggleable at runtime at least not in a system set way.
 pub struct PostProcessPlugin;
 
 impl Plugin for PostProcessPlugin {

@@ -1,7 +1,7 @@
 //! Per-mesh vertex effect material extension.
 //!
 //! Wraps every [`StandardMaterial`] mesh that loads from the GLTF scene in an
-//! [`ExtendedMaterial<StandardMaterial, MeshEffectExtension>`].  Right now the
+//! [`ExtendedMaterial<StandardMaterial, MeshEffectExtension>`]. Right now the
 //! vertex shader is a pure passthrough cause I don't know how to use it yet
 //! identical output to StandardMaterial so there should be no visible change.
 //! The wiring is here so real effects can be dropped into a mesh shader later.
@@ -14,6 +14,8 @@ use crate::Text3d;
 
 /// Plugin that registers the extended material pipeline and the system that
 /// swaps newly-spawned [`StandardMaterial`] meshes over to it.
+///
+/// Note: this plugin isn't part of the toggle system it more a render graph plugin.
 pub struct MeshEffectPlugin;
 
 impl Plugin for MeshEffectPlugin {
@@ -46,7 +48,7 @@ impl MaterialExtension for MeshEffectExtension {
 ///
 /// Uses [`Added`] so it only fires once per entity, the frame the component
 /// appears. After the swap the entity has
-/// `MeshMaterial3d<ExtendedMaterial<…>>` and no longer matches, so the system
+/// `MeshMaterial3d<ExtendedMaterial<...>>` and no longer matches, so the system
 /// never runs again for that entity.
 ///
 /// `Without<Text3d>` guards against hijacking the 3D text mesh entities spawned

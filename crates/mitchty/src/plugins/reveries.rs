@@ -5,6 +5,8 @@ use bevy::{
 };
 use markdown::{ParseOptions, mdast::Node as MdNode, to_mdast};
 
+use crate::plugins::{PluginEnabled, PluginRegistry, run_if_enabled};
+
 // Build.rs generated data from the reveries dir markdown files.
 include!(concat!(env!("OUT_DIR"), "/reveries_generated.rs"));
 
@@ -53,6 +55,13 @@ pub struct ReverieContent(pub &'static str);
 #[derive(Resource, Default)]
 pub struct ActiveReverie(pub Option<Entity>);
 
+/// `SystemSet` that gates all per-frame systems owned by [`ReveriesPlugin`].
+///
+/// Controlled by `PluginEnabled::<ReveriesPlugin>`. Only toggles the bevy ui
+/// view for now. Need to make this also control what egui displays shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SystemSet)]
+pub struct ReveriesSystems;
+
 pub struct ReveriesPlugin;
 
 impl Plugin for ReveriesPlugin {
@@ -67,9 +76,18 @@ impl Plugin for ReveriesPlugin {
             ));
         }
 
-        app.init_resource::<ActiveReverie>()
-            .add_systems(Update, sync_scroll_view_visibility)
+        app.insert_resource(PluginEnabled::<ReveriesPlugin>::default())
+            .configure_sets(
+                Update,
+                ReveriesSystems.run_if(run_if_enabled::<ReveriesPlugin>()),
+            )
+            .init_resource::<ActiveReverie>()
+            .add_systems(Update, sync_scroll_view_visibility.in_set(ReveriesSystems))
             .add_observer(on_scroll);
+
+        if let Some(mut registry) = app.world_mut().get_resource_mut::<PluginRegistry>() {
+            registry.register::<ReveriesPlugin>("Reveries", true);
+        }
     }
 }
 

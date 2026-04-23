@@ -93,6 +93,7 @@ pub struct SceneUrlState {
 use polars::prelude::*;
 use rand::RngExt;
 
+use crate::plugins::{PluginRegistry, sync_registry_to_plugins};
 use assets::{AssetConfigPlugin, asset_path};
 use bevy_fontmesh::prelude::*;
 use flan::shaders::ShadersPlugin;
@@ -497,6 +498,11 @@ fn main() {
     };
 
     let mut app = App::new();
+
+    // The PluginRegistry must be initialized before any plugin's build() runs
+    // so they can register themselves during app construction.
+    app.init_resource::<PluginRegistry>()
+        .add_systems(PreUpdate, sync_registry_to_plugins);
 
     app.add_plugins(assets::create_default_plugins(enable_gamepad))
         .add_plugins(AssetConfigPlugin)

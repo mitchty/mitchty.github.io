@@ -23,6 +23,7 @@ use transform_gizmo_bevy::prelude::{GizmoMode, GizmoOptions, GizmoOrientation};
 use crate::plugins::theme::{
     EguiThemeSet, ThemePlugin, resolve_initial_theme, theme_default_color,
 };
+use crate::plugins::{PluginEnabled, PluginRegistry, run_if_enabled};
 
 /// Resource to track if egui is currently using input, helps with accidental
 /// clicks not bleeding downwards to bevy.
@@ -68,6 +69,13 @@ pub struct ShowRecognizer;
 #[derive(Component)]
 pub struct ShowSceneConfig;
 
+/// `SystemSet` that gates all per-frame systems owned by the `SettingsUiPlugin`.
+///
+/// Controlled by `PluginEnabled::<SettingsUiPlugin>`. For now this basically
+/// kills egui but I need to make this more granular later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SystemSet)]
+pub struct SettingsUiSystems;
+
 /// Plugin for egui UI
 pub struct SettingsUiPlugin;
 
@@ -97,6 +105,15 @@ impl Plugin for SettingsUiPlugin {
         }
 
         let app = app
+            .insert_resource(PluginEnabled::<SettingsUiPlugin>::default())
+            .configure_sets(
+                Update,
+                SettingsUiSystems.run_if(run_if_enabled::<SettingsUiPlugin>()),
+            )
+            .configure_sets(
+                EguiPrimaryContextPass,
+                SettingsUiSystems.run_if(run_if_enabled::<SettingsUiPlugin>()),
+            )
             .add_plugins(ThemePlugin)
             .init_resource::<EguiWantsInput>()
             .init_resource::<RecognizerState>()
@@ -113,7 +130,8 @@ impl Plugin for SettingsUiPlugin {
                     apply_camera_projection_toggle,
                     reset_camera,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(SettingsUiSystems),
             );
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -143,8 +161,13 @@ impl Plugin for SettingsUiPlugin {
                 (recognizer_window, world_clock_window, scene_config_window).chain(),
                 update_egui_input_state,
             )
-                .chain(),
+                .chain()
+                .in_set(SettingsUiSystems),
         );
+
+        if let Some(mut registry) = app.world_mut().get_resource_mut::<PluginRegistry>() {
+            registry.register::<SettingsUiPlugin>("Settings UI", true);
+        }
     }
 }
 
@@ -566,6 +589,7 @@ fn settings_ui(
     // thing for now hacks it is.
     mut proj_params: ParamSet<(Res<CameraMode>, ResMut<CameraProjectionToggleRequested>)>,
     mut reset_camera_events: MessageWriter<ResetCamera>,
+    mut plugin_registry: ResMut<PluginRegistry>,
 ) -> Result {
     if show_egui_query.is_empty() {
         return Ok(());
@@ -754,6 +778,40 @@ fn settings_ui(
                     ui.separator();
                     ui.label("Kanjivg");
                     ui.hyperlink("https://kanjivg.tagaini.net");
+                });
+
+                // Debug menu only visible in debug builds for now, obviously.
+                // But this is to start to make things be dynamic to toggle
+                // things on/off at runtime or to swap between egui
+                // implementations and bevy feathers at some point.
+                //
+                // Not something anyone but me needs to give a shit about, its
+                // more so I don't keep half baked stuff in long running
+                // branches forever. I hate merge conflicts and its almost
+                // summer. Better to chip off bit by bit whilst I keep working
+                // things working.
+                //
+                // All plugins are registered with PluginRegistry. Checkboxes
+                // write directly into the registry and
+                // `sync_registry_to_plugins` in PreUpdate propagates the flags
+                // to each `PluginEnabled<T>` resource before the next Update
+                // run. This lets me do feature testing at runtime and to swap
+                // things to test.
+                #[cfg(debug_assertions)]
+                ui.menu_button("Debug", |ui| {
+                    ui.label(egui::RichText::new("Plugin Toggles").strong());
+                    ui.separator();
+                    if plugin_registry.entries.is_empty() {
+                        ui.label(
+                            egui::RichText::new("No plugins registered.")
+                                .italics()
+                                .weak(),
+                        );
+                    } else {
+                        for entry in plugin_registry.entries.iter_mut() {
+                            ui.checkbox(&mut entry.enabled, entry.name);
+                        }
+                    }
                 });
 
                 ui.menu_button("Experiments", |ui| {

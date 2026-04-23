@@ -18,6 +18,7 @@ use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 use bevy::prelude::*;
 
+use crate::plugins::{PluginEnabled, PluginRegistry, run_if_enabled};
 use crate::ui::config::{ThemeChoice, UiConfig};
 
 /// `SystemSet` that `apply_theme_change` is ordered to run after.
@@ -28,6 +29,15 @@ use crate::ui::config::{ThemeChoice, UiConfig};
 #[cfg(feature = "egui")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SystemSet)]
 pub struct EguiThemeSet;
+
+/// `SystemSet` that gates all per-frame systems owned by [`ThemePlugin`].
+///
+/// Controlled by `PluginEnabled::<ThemePlugin>`. Disabling stops OS/browser
+/// theme-change polling and egui visual application. Note: need to brain up
+/// what else disabling this should do as I want turning theming off to do
+/// something else but no idea what that is yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SystemSet)]
+pub struct ThemeSystems;
 
 /// Bevy message fired when the OS or browser dark/light preference changes.
 ///
@@ -79,26 +89,36 @@ pub struct ThemePlugin;
 
 impl Plugin for ThemePlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<ThemeChanged>();
+        app.insert_resource(PluginEnabled::<ThemePlugin>::default())
+            .configure_sets(Update, ThemeSystems.run_if(run_if_enabled::<ThemePlugin>()))
+            .add_message::<ThemeChanged>();
 
         #[cfg(not(target_arch = "wasm32"))]
         app.init_resource::<LastKnownTheme>().add_systems(
             Update,
-            poll_system_theme.run_if(bevy::time::common_conditions::on_timer(
-                std::time::Duration::from_secs(1),
-            )),
+            poll_system_theme
+                .run_if(bevy::time::common_conditions::on_timer(
+                    std::time::Duration::from_secs(1),
+                ))
+                .in_set(ThemeSystems),
         );
 
         #[cfg(target_arch = "wasm32")]
         app.add_systems(Startup, setup_wasm_theme_listener)
-            .add_systems(Update, drain_wasm_theme_events);
+            .add_systems(Update, drain_wasm_theme_events.in_set(ThemeSystems));
 
+        // EguiThemeSet configure_sets is an ordering anchor used by other
+        // plugins for now.
         #[cfg(feature = "egui")]
         app.configure_sets(EguiPrimaryContextPass, EguiThemeSet)
             .add_systems(
                 EguiPrimaryContextPass,
-                apply_theme_change.after(EguiThemeSet),
+                apply_theme_change.after(EguiThemeSet).in_set(ThemeSystems),
             );
+
+        if let Some(mut registry) = app.world_mut().get_resource_mut::<PluginRegistry>() {
+            registry.register::<ThemePlugin>("Theme", true);
+        }
     }
 }
 
