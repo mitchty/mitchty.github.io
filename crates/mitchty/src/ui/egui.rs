@@ -20,11 +20,9 @@ use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use egui_file_dialog::FileDialog;
 use transform_gizmo_bevy::prelude::{GizmoMode, GizmoOptions, GizmoOrientation};
 
-// Wasm js bridge types for dark/light changes.
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::JsCast;
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::closure::Closure;
+use crate::plugins::theme::{
+    EguiThemeSet, ThemePlugin, resolve_initial_theme, theme_default_color,
+};
 
 /// Resource to track if egui is currently using input, helps with accidental
 /// clicks not bleeding downwards to bevy.
@@ -70,41 +68,6 @@ pub struct ShowRecognizer;
 #[derive(Component)]
 pub struct ShowSceneConfig;
 
-/// Bevy message for when the outside theme has changed.
-///
-/// For native, a 1 second poll system fires the event on chage.
-/// For wasm `matchMedia` listener used by the `EguiPrimaryContextPass`
-#[derive(Debug, Clone, Copy)]
-pub struct ThemeChanged(pub dark_light::Mode);
-impl bevy::ecs::message::Message for ThemeChanged {}
-
-/// Resource for the last OS/browser theme seen.
-///
-/// Native only, wasm uses the listener directly.
-///
-/// Pre pump the value so first poll works. Defaults to `Mode::Default` if
-/// detection fails.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Resource)]
-pub struct LastKnownTheme(pub dark_light::Mode);
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Default for LastKnownTheme {
-    fn default() -> Self {
-        Self(dark_light::detect().unwrap_or(dark_light::Mode::Dark))
-    }
-}
-
-/// Here to keep `matchMedia` closure and `MediaQueryList` alive for the apps
-/// lifetime otherwise we can't get data from the listeners as they unregister.
-#[cfg(target_arch = "wasm32")]
-pub struct WasmThemeListener {
-    /// The wasm_bindgen closure listener
-    _closure: Closure<dyn FnMut(web_sys::MediaQueryListEvent)>,
-    /// The MediaQueryList listener
-    _mql: web_sys::MediaQueryList,
-}
-
 /// Plugin for egui UI
 pub struct SettingsUiPlugin;
 
@@ -134,10 +97,10 @@ impl Plugin for SettingsUiPlugin {
         }
 
         let app = app
+            .add_plugins(ThemePlugin)
             .init_resource::<EguiWantsInput>()
             .init_resource::<RecognizerState>()
             .init_resource::<InferenceResult>()
-            .add_message::<ThemeChanged>()
             .add_message::<ToggleCameraProjection>()
             .add_message::<ResetCamera>()
             .init_resource::<CameraProjectionToggleRequested>()
@@ -155,32 +118,18 @@ impl Plugin for SettingsUiPlugin {
 
         #[cfg(not(target_arch = "wasm32"))]
         let app = app
-            .init_resource::<LastKnownTheme>()
             .init_resource::<DataViewerState>()
             .init_resource::<ImageProcessingCache>()
             .insert_non_send_resource(SceneFileDialog(
                 FileDialog::new()
                     .title("Load Scene GLTF")
                     .add_file_filter_extensions("GLTF / GLB", vec!["gltf", "glb"]),
-            ))
-            .add_systems(
-                Update,
-                poll_system_theme.run_if(bevy::time::common_conditions::on_timer(
-                    std::time::Duration::from_secs(1),
-                )),
-            );
-
-        // WASM: register the matchMedia listener at startup and drain its
-        // pending changes every frame.
-        #[cfg(target_arch = "wasm32")]
-        let app = app
-            .add_systems(Startup, setup_wasm_theme_listener)
-            .add_systems(Update, drain_wasm_theme_events);
+            ));
 
         app.add_systems(
             EguiPrimaryContextPass,
             (
-                configure_egui_style,
+                configure_egui_style.in_set(EguiThemeSet),
                 settings_ui,
                 #[cfg(not(target_arch = "wasm32"))]
                 (
@@ -196,14 +145,6 @@ impl Plugin for SettingsUiPlugin {
             )
                 .chain(),
         );
-
-        // apply_theme_change consumes ThemeChanged messages and updates egui
-        // visuals. Runs in the same pass but separately to avoid poisoning the
-        // chained tuple above with its different system signature.
-        app.add_systems(
-            EguiPrimaryContextPass,
-            apply_theme_change.after(configure_egui_style),
-        );
     }
 }
 
@@ -216,207 +157,6 @@ static DEFAULT_MODEL_CONFIG: &[u8] = include_bytes!("../assets/models/default/co
 
 /// Default model weights for ^^^
 static DEFAULT_MODEL_WEIGHTS: &[u8] = include_bytes!("../assets/models/default/model.mpk");
-
-/// Native system poll `dark_light::detect()` once per second.
-///
-/// Emits `ThemeChanged` when the detected mode actually differs from the
-/// last seen value and the user didn't pick one manually.
-#[cfg(not(target_arch = "wasm32"))]
-fn poll_system_theme(
-    ui_config: Res<UiConfig>,
-    mut last: ResMut<LastKnownTheme>,
-    mut events: bevy::ecs::message::MessageWriter<ThemeChanged>,
-) {
-    // User choice wins always. Nothing to do.
-    if ui_config.theme != ThemeChoice::Auto {
-        return;
-    }
-
-    let current = dark_light::detect().unwrap_or(dark_light::Mode::Dark);
-    if current != last.0 {
-        last.0 = current;
-        events.write(ThemeChanged(current));
-    }
-}
-
-/// WASM system to register a `matchMedia` `change` listener at startup.
-///
-/// The listener writes the new mode into `WasmThemeListener::pending`. A
-/// separate per-frame system drains values into the Bevy event bus.
-/// Both the `Closure` and `MediaQueryList` listeners need to always be alive, hence the
-/// `NonSendMut` resource that owns them for the app's duration.
-#[cfg(target_arch = "wasm32")]
-fn setup_wasm_theme_listener(world: &mut World) {
-    use std::sync::{Arc, Mutex};
-
-    // Shared slot read by the drain system from the js closure interop.
-    let pending: Arc<Mutex<Option<dark_light::Mode>>> = Arc::new(Mutex::new(None));
-    let pending_clone = pending.clone();
-
-    // TODO: I have no idea wat to do on failures here. I barely understand wasm
-    // as it is js interop is veritable black magique.
-    let window = match web_sys::window() {
-        Some(w) => w,
-        None => {
-            bevy::log::warn!("setup_wasm_theme_listener: no window object, skipping");
-            return;
-        }
-    };
-
-    let mql = match window.match_media("(prefers-color-scheme: dark)") {
-        Ok(Some(mql)) => mql,
-        _ => {
-            bevy::log::warn!(
-                "setup_wasm_theme_listener: matchMedia not available, skipping listener"
-            );
-            return;
-        }
-    };
-
-    let closure: Closure<dyn FnMut(web_sys::MediaQueryListEvent)> =
-        Closure::wrap(Box::new(move |e: web_sys::MediaQueryListEvent| {
-            let mode = if e.matches() {
-                dark_light::Mode::Dark
-            } else {
-                dark_light::Mode::Light
-            };
-            if let Ok(mut slot) = pending_clone.lock() {
-                *slot = Some(mode);
-            }
-        }));
-
-    if let Err(err) =
-        mql.add_event_listener_with_callback("change", closure.as_ref().unchecked_ref())
-    {
-        bevy::log::warn!(
-            "setup_wasm_theme_listener: failed to add event listener: {:?}",
-            err
-        );
-        return;
-    }
-
-    // Insert as a NonSend resource so both closure and mql stay alive for the exec duration
-    world.insert_non_send_resource(WasmThemeListener {
-        _closure: closure,
-        _mql: mql,
-    });
-
-    // Store the Arc so the drain can read directly without an unsafe block.
-    world.insert_resource(WasmThemePending(pending));
-}
-
-/// Mutable Resource slot shared between the JS closure and the drain system.
-#[cfg(target_arch = "wasm32")]
-#[derive(Resource)]
-struct WasmThemePending(std::sync::Arc<std::sync::Mutex<Option<dark_light::Mode>>>);
-
-/// WASM-only system to drain the shared pending slot Resource Arc into a Bevy
-/// `ThemeChanged` event.
-#[cfg(target_arch = "wasm32")]
-fn drain_wasm_theme_events(
-    ui_config: Res<UiConfig>,
-    pending_res: Option<Res<WasmThemePending>>,
-    mut events: bevy::ecs::message::MessageWriter<ThemeChanged>,
-) {
-    // User choice wins always. Nothing to do.
-    if ui_config.theme != ThemeChoice::Auto {
-        return;
-    }
-
-    let Some(pending_res) = pending_res else {
-        return;
-    };
-
-    let Ok(mut slot) = pending_res.0.lock() else {
-        return;
-    };
-
-    if let Some(mode) = slot.take() {
-        events.write(ThemeChanged(mode));
-    }
-}
-
-/// Apply an incoming `ThemeChanged` event to the egui context visuals.
-///
-/// Runs in `EguiPrimaryContextPass` so the context is always valid.
-/// Skipped entirely when the user has set a `ThemeChoice` value of dark/light.
-fn apply_theme_change(
-    mut contexts: EguiContexts,
-    ui_config: Res<UiConfig>,
-    mut events: bevy::ecs::message::MessageReader<ThemeChanged>,
-) -> Result {
-    // User picked something, drain queue and call it a day.
-    if ui_config.theme != ThemeChoice::Auto {
-        for _ in events.read() {}
-        return Ok(());
-    }
-
-    // Consume all pending events; last one wins but only one should be there.
-    // Just being safe.
-    let mut new_visuals: Option<egui::Visuals> = None;
-    for ThemeChanged(mode) in events.read() {
-        new_visuals = Some(match mode {
-            dark_light::Mode::Dark => egui::Visuals::dark(),
-            dark_light::Mode::Light | dark_light::Mode::Unspecified => egui::Visuals::light(),
-        });
-    }
-
-    if let Some(visuals) = new_visuals {
-        let ctx = contexts.ctx_mut()?;
-        ctx.set_visuals(visuals);
-    }
-
-    Ok(())
-}
-
-/// Resolve which egui visuals to apply at startup.
-///
-/// First to win checks:
-///   - User explicit `ThemeChoice::Dark` or `ThemeChoice::Light`
-///   - OS or browser preference via `dark-light`
-///   - Local time-of-day hack: 07:00–17:59 is Light, otherwise go for Dark
-///   - If all that crap failed Dark
-fn resolve_initial_theme(choice: ThemeChoice) -> egui::Visuals {
-    // User
-    match choice {
-        ThemeChoice::Dark => return egui::Visuals::dark(),
-        ThemeChoice::Light => return egui::Visuals::light(),
-        ThemeChoice::Auto => {}
-    }
-
-    match dark_light::detect().unwrap_or(dark_light::Mode::Unspecified) {
-        dark_light::Mode::Dark => return egui::Visuals::dark(),
-        dark_light::Mode::Light => return egui::Visuals::light(),
-        dark_light::Mode::Unspecified => {}
-    }
-
-    // Hold my beer and use time of day to SWAG a guesstimate.
-    let hour = jiff::Zoned::now().hour();
-    let use_light = (7..18).contains(&hour);
-
-    if use_light {
-        return egui::Visuals::light();
-    }
-
-    // If we ever get here just go for Dark, its like the Rock of Roshambo for
-    // themes.
-    egui::Visuals::dark()
-}
-
-/// Returns the default background color for a given theme choice.
-// TODO: This is a good candidate for a theme kinda system maybe or plugin.
-fn theme_default_color(choice: ThemeChoice) -> bevy::color::Srgba {
-    let is_dark = match choice {
-        ThemeChoice::Dark => true,
-        ThemeChoice::Light => false,
-        ThemeChoice::Auto => resolve_initial_theme(ThemeChoice::Auto).dark_mode,
-    };
-    if is_dark {
-        bevy::color::Srgba::new(0.0, 0.0, 0.0, 1.0)
-    } else {
-        bevy::color::Srgba::new(1.0, 1.0, 1.0, 1.0)
-    }
-}
 
 /// Bump up egui text, register NotoSansJP as a CJK fallback, and apply the
 /// resolved startup theme.
