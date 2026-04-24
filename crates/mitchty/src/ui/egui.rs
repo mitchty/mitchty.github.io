@@ -589,7 +589,7 @@ fn settings_ui(
     // thing for now hacks it is.
     mut proj_params: ParamSet<(Res<CameraMode>, ResMut<CameraProjectionToggleRequested>)>,
     mut reset_camera_events: MessageWriter<ResetCamera>,
-    mut plugin_registry: ResMut<PluginRegistry>,
+    #[cfg(debug_assertions)] mut plugin_registry: ResMut<PluginRegistry>,
 ) -> Result {
     if show_egui_query.is_empty() {
         return Ok(());

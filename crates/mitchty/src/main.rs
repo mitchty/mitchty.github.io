@@ -19,6 +19,7 @@ use bevy_pretty_text::prelude::*;
 use crate::plugins::reveries::{
     ActiveReverie, ReverieDisplayName, ReveriesPlugin, send_scroll_events,
 };
+use crate::plugins::terminal::TerminalPlugin;
 use crate::post_process::{EffectsEnabled, PostProcessSettings};
 use mitchty::RenderLayers;
 use transform_gizmo_bevy::{GizmoDragStarted, GizmoDragging, prelude::*};
@@ -558,6 +559,7 @@ fn main() {
 
     app.add_plugins(SettingsUiPlugin)
         .add_plugins(ReveriesPlugin)
+        .add_plugins(TerminalPlugin)
         .init_resource::<DragState>()
         .add_systems(
             Startup,

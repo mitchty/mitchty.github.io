@@ -1,4 +1,5 @@
 pub mod reveries;
+pub mod terminal;
 pub mod theme;
 pub mod toggle;
 
