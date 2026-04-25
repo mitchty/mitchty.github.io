@@ -52,9 +52,11 @@ impl MaterialExtension for MeshEffectExtension {
 /// never runs again for that entity.
 ///
 /// `Without<Text3d>` guards against hijacking the 3D text mesh entities spawned
-/// by `bevy_fontmesh` those use `MeshMaterial3d<StandardMaterial>` too, but
-/// must stay on `StandardMaterial` so that `FontMeshPlugin::<StandardMaterial>`
-/// re-mesh systems and `animate_materials` continue to find them.
+/// by either `bevy_fontmesh` or `bevy_slugtext`. FontMesh entities use
+/// `MeshMaterial3d<StandardMaterial>` and must stay on `StandardMaterial` so
+/// that `FontMeshPlugin::<StandardMaterial>` re-mesh systems and
+/// `animate_materials` continue to find them. SlugText entities use their own
+/// `TextMaterial` but carry the same `Text3d` marker, so the guard covers both.
 ///
 /// Thinking about how I can deal with this in a node editor way.
 #[allow(clippy::type_complexity)]

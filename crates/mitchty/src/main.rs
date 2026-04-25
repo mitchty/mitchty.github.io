@@ -6,6 +6,8 @@ mod plugins;
 mod post_process;
 mod ui;
 
+use bevy::camera::primitives::Aabb;
+use bevy::camera::visibility::VisibilitySystems;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 #[cfg(feature = "feathers")]
 use bevy::feathers::{FeathersPlugins, dark_theme::create_dark_theme, theme::UiTheme};
@@ -39,6 +41,11 @@ pub struct ColorState {
 /// despawned and respawned when a different file is picked.
 #[derive(Component)]
 pub struct LoadedScene;
+
+/// Marker component that controls whether the loaded GLTF/GLB model is
+/// rendered or not.
+#[derive(Component, Default)]
+pub struct ShowSceneModel;
 
 /// Tracks the loaded GLB/GLTF scene.
 ///
@@ -97,6 +104,7 @@ use rand::RngExt;
 use crate::plugins::{PluginRegistry, sync_registry_to_plugins};
 use assets::{AssetConfigPlugin, asset_path};
 use bevy_fontmesh::prelude::*;
+use bevy_slugtext::prelude::*;
 use flan::shaders::ShadersPlugin;
 use fullscreen_effect::{
     CameraConfig, CameraOrbit, manage_effect_settings, next_effect, previous_effect,
@@ -510,6 +518,7 @@ fn main() {
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(ShadersPlugin)
         .add_plugins(FontMeshPlugin::<StandardMaterial>::default())
+        .add_plugins(SlugTextPlugin)
         .add_plugins(PostProcessPlugin)
         .add_plugins(TransformGizmoPlugin)
         .add_plugins(MeshEffectPlugin)
@@ -528,13 +537,15 @@ fn main() {
         .insert_resource(ui_config)
         .init_resource::<CameraConfig>()
         .init_resource::<Text3dContent>()
-        .init_resource::<Text3dDefaultPending>();
+        .init_resource::<Text3dDefaultPending>()
+        .init_resource::<Text3dRenderer>();
 
     app.init_resource::<SceneConfig>()
         .init_resource::<SceneUrlState>()
         .init_resource::<SceneTransformConfig>()
         .add_systems(Update, replace_scene)
         .add_systems(Update, apply_scene_transform)
+        .add_systems(Update, apply_scene_model_visibility)
         .add_systems(Update, sync_gizmo_target)
         .add_systems(Update, touch_interact_gizmo)
         .add_systems(Update, manage_post_process_for_gizmo)
@@ -612,6 +623,10 @@ fn main() {
                 .before(manage_text3d),
         )
         .add_systems(Update, manage_text3d)
+        .add_systems(
+            PostUpdate,
+            center_slug_text.after(VisibilitySystems::CalculateBounds),
+        )
         .add_systems(
             Update,
             (
@@ -706,6 +721,8 @@ fn setup(
             LoadedScene,
         ))
         .observe(on_scene_ready);
+
+    commands.spawn(ShowSceneModel);
 }
 
 /// Watches `SceneConfig` for changes and swaps out the active scene.
@@ -944,6 +961,24 @@ fn apply_scene_transform(
     t.scale = t.scale.max(Vec3::splat(0.001));
     for mut transform in scene_query.iter_mut() {
         *transform = t;
+    }
+}
+
+/// Mirrors the `ShowSceneModel` marker component onto each `LoadedScene`
+/// entity's `Visibility` attribute.
+fn apply_scene_model_visibility(
+    show_query: Query<(), With<ShowSceneModel>>,
+    mut scene_query: Query<&mut Visibility, With<LoadedScene>>,
+) {
+    let target = if show_query.is_empty() {
+        Visibility::Hidden
+    } else {
+        Visibility::Visible
+    };
+    for mut vis in scene_query.iter_mut() {
+        if *vis != target {
+            *vis = target;
+        }
     }
 }
 
@@ -1400,7 +1435,7 @@ impl Default for Text3dContent {
 /// whatever so that the ui the field stays responsive and disconnected from the
 /// actual work to spawn the 3d text. A separate system flushes the value to
 /// `Text3dContent` only after a debounce period so mesh entities are not
-/// churned faster than `bevy_fontmesh` can finish its own computation and we
+/// churned faster than the active renderer can finish its own computation and we
 /// panic() on a despawned entity. This is a workaround for now to see if there
 /// is another better approach later. Right now I got more crap to do than deal
 /// with silly panics in bevy's ecs. And honestly this approach seems fine, its
@@ -1420,6 +1455,16 @@ impl Default for Text3dDefaultPending {
 /// update system.
 #[derive(Component)]
 pub struct Text3dCommitPending;
+
+/// Which crate is used to render the 3D text label.
+// TODO: Part of testing this is so I can plan on if using the slug algorithm to
+// draw text glyphs in flan is fine.
+#[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Text3dRenderer {
+    #[default]
+    FontMesh,
+    SlugText,
+}
 
 /// Watches `Text3dDefaultPending` for changes and spawns a
 /// `Text3dCommitPending` marker if one doesn't exist. Runs every frame but just
@@ -1520,6 +1565,7 @@ fn sync_text3d_to_active_reverie(
 fn manage_text3d(
     show_query: Query<(), With<ShowText3d>>,
     content: Res<Text3dContent>,
+    renderer: Res<Text3dRenderer>,
     existing: Query<Entity, With<Text3d>>,
     asset_server: Res<AssetServer>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -1536,19 +1582,29 @@ fn manage_text3d(
         return;
     }
 
-    // Spawn only when the resource changed or there is no entity as of yet aka
-    // mostly first startup or the enable checkbox got reclicked.
-    if content.is_changed() || !has_text {
+    // Respawn when text content changes, renderer changes, or no entity exists yet.
+    if content.is_changed() || renderer.is_changed() || !has_text {
         for entity in existing_entities {
             commands.entity(entity).despawn();
         }
-        spawn_text3d(&mut commands, &asset_server, &mut materials, &content.text);
+        spawn_text3d(
+            &mut commands,
+            &asset_server,
+            &mut materials,
+            &content.text,
+            *renderer,
+        );
     }
 }
 
 /// Marker component for the 3d text entities from the crate.
 #[derive(Component)]
 struct Text3d;
+
+/// Stores the intended world-space center position for a SlugText entity so
+/// that `center_slug_text` can re-anchor after the `Aabb` material is computed.
+#[derive(Component)]
+struct SlugTextAnchor(Vec3);
 
 /// Marker component controlling visibility of the 3D text output
 /// Spawn to show the text, despawn to hide it ezpzlemonwhatever simple
@@ -1558,42 +1614,80 @@ struct Text3d;
 #[derive(Component)]
 pub struct ShowText3d;
 
-// Spawn the 3d text with whatevers in the Resource string
+// Spawn the 3d text with whatevers in the Resource string, using whichever
+// renderer is currently selected.
 fn spawn_text3d(
     commands: &mut Commands,
     asset_server: &AssetServer,
     materials: &mut Assets<StandardMaterial>,
     text: &str,
+    renderer: Text3dRenderer,
 ) {
-    //    let font_path = asset_path("fonts/FiraMono-Medium.ttf");
     let font_path = asset_path("fonts/NotoSansJP-Regular.ttf");
+    let transform = Transform::from_xyz(0.0, 0.7, 0.0).with_scale(Vec3::splat(0.5));
 
-    let text_material = materials.add(StandardMaterial {
-        base_color: Color::from(Hsla::hsl(180.0, 1.0, 0.5)),
-        metallic: 0.5,
-        perceptual_roughness: 0.3,
-        ..default()
-    });
-
-    commands.spawn((
-        TextMeshBundle {
-            text_mesh: TextMesh {
-                text: text.to_string(),
-                font: asset_server.load(font_path),
-                style: TextMeshStyle {
-                    depth: 0.1,
-                    subdivision: 20,
-                    anchor: TextAnchor::Center,
-                    justify: JustifyText::Center,
+    match renderer {
+        Text3dRenderer::FontMesh => {
+            let text_material = materials.add(StandardMaterial {
+                base_color: Color::from(Hsla::hsl(180.0, 1.0, 0.5)),
+                metallic: 0.5,
+                perceptual_roughness: 0.3,
+                ..default()
+            });
+            commands.spawn((
+                TextMeshBundle {
+                    text_mesh: bevy_fontmesh::prelude::TextMesh {
+                        text: text.to_string(),
+                        font: asset_server.load(font_path),
+                        style: TextMeshStyle {
+                            depth: 0.1,
+                            subdivision: 20,
+                            anchor: TextAnchor::Center,
+                            justify: JustifyText::Center,
+                        },
+                    },
+                    material: MeshMaterial3d(text_material),
+                    transform,
+                    ..default()
                 },
-            },
-            material: MeshMaterial3d(text_material),
-            transform: Transform::from_xyz(0.0, 0.7, 0.0).with_scale(Vec3::splat(0.5)),
-            ..default()
-        },
-        HueAnimationEnabled,
-        Text3d,
-    ));
+                HueAnimationEnabled,
+                Text3d,
+            ));
+        }
+        Text3dRenderer::SlugText => {
+            commands.spawn((
+                bevy_slugtext::prelude::TextMesh {
+                    text: text.to_string(),
+                    font: asset_server.load(font_path),
+                    color: Color::BLACK,
+                    bg_color: Color::NONE,
+                    size: 1.0,
+                },
+                transform,
+                // Record the intended center so center_slug_text can anchor
+                // correctly once Bevy computes the mesh Aabb.
+                SlugTextAnchor(transform.translation),
+                Text3d,
+            ));
+        }
+    }
+}
+
+/// Re-centers SlugText entities once the mesh `Aabb` has been computed.
+///
+/// This isn't a great approach as this can cause a flicker but this isn't
+/// intended to be perfect and I might reimplement things myself anyway.
+///
+/// The translation is set so the Aabb center lands at the world point stored in
+/// `SlugTextAnchor`, accounting for the entity's scale.
+#[allow(clippy::type_complexity)]
+fn center_slug_text(
+    mut query: Query<(&mut Transform, &Aabb, &SlugTextAnchor), (With<Text3d>, Changed<Aabb>)>,
+) {
+    for (mut transform, aabb, anchor) in query.iter_mut() {
+        transform.translation.x = anchor.0.x - transform.scale.x * aabb.center.x;
+        transform.translation.y = anchor.0.y - transform.scale.y * aabb.center.y;
+    }
 }
 
 /// Startup system to spawn the `ShowText3d` marker so 3D text is visible by

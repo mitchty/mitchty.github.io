@@ -11,7 +11,8 @@ use crate::ui::recognizer::RasterSize;
 use crate::ui::recognizer::{BASE_BRUSH_R, InferenceResult, RecognizerState};
 use crate::ui::world_clock::{ShowWorldClock, WorldClockState, world_clock_window};
 use crate::{
-    CameraMode, ColorState, FpsDisplay, HueAnimation, MainCamera, ShowText3d, Text3dDefaultPending,
+    CameraMode, ColorState, FpsDisplay, HueAnimation, MainCamera, ShowSceneModel, ShowText3d,
+    Text3dDefaultPending, Text3dRenderer,
 };
 use crate::{SceneConfig, SceneTransformConfig, SceneUrlState};
 use bevy::prelude::*;
@@ -362,9 +363,11 @@ fn scene_config_window(
     mut contexts: EguiContexts,
     scene_config_query: Query<Entity, With<ShowSceneConfig>>,
     show_text3d_query: Query<Entity, With<ShowText3d>>,
+    show_scene_model_query: Query<Entity, With<ShowSceneModel>>,
     mut scene_transform: ResMut<SceneTransformConfig>,
     mut gizmo_options: ResMut<GizmoOptions>,
     mut text3d_pending: ResMut<Text3dDefaultPending>,
+    mut text3d_renderer: ResMut<Text3dRenderer>,
     mut scene_config: ResMut<SceneConfig>,
     mut scene_url_state: ResMut<SceneUrlState>,
     #[cfg(not(target_arch = "wasm32"))] mut scene_file_dialog: NonSendMut<SceneFileDialog>,
@@ -412,6 +415,17 @@ fn scene_config_window(
                     scene_config.custom_scene = None;
                 }
             });
+
+            // Toggle gltf model visibility
+            let show_model_entity = show_scene_model_query.single().ok();
+            let show_model = show_model_entity.is_some();
+            if ui.selectable_label(show_model, "👁 Show Model").clicked() {
+                if let Some(entity) = show_model_entity {
+                    commands.entity(entity).despawn();
+                } else {
+                    commands.spawn(ShowSceneModel);
+                }
+            }
 
             ui.add_space(6.0);
             ui.separator();
@@ -540,6 +554,21 @@ fn scene_config_window(
                     commands.spawn(ShowText3d);
                 }
             }
+            ui.horizontal(|ui| {
+                ui.label("Renderer:");
+                if ui
+                    .selectable_label(*text3d_renderer == Text3dRenderer::FontMesh, "FontMesh")
+                    .clicked()
+                {
+                    *text3d_renderer = Text3dRenderer::FontMesh;
+                }
+                if ui
+                    .selectable_label(*text3d_renderer == Text3dRenderer::SlugText, "SlugText")
+                    .clicked()
+                {
+                    *text3d_renderer = Text3dRenderer::SlugText;
+                }
+            });
             // Bind the textbox to the ecs staging resource so the field is
             // fully responsive and just writes to a dum af string from its
             // pov. Spawning in tick was a baaaad idea and typing fast made

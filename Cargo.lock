@@ -1818,6 +1818,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_slugtext"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38a139656ade7df1e14499f0ebf851f74a4f4fb7112165e637ba818bc3a5355d"
+dependencies = [
+ "bevy",
+ "ttf-parser 0.25.1",
+]
+
+[[package]]
 name = "bevy_sprite"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6847,6 +6857,7 @@ dependencies = [
  "bevy_pbr",
  "bevy_picking",
  "bevy_pretty_text",
+ "bevy_slugtext",
  "burn",
  "clap",
  "console_error_panic_hook",
