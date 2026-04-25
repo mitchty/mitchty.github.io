@@ -5,7 +5,7 @@ members = ["crates/lib", "crates/ma", "crates/flan", "crates/mitchty"]
 [workspace.package]
 edition = "2024"
 license = "BlueOak-1.0.0"
-version = "0.0.16"
+version = "0.0.17"
 
 [workspace.dependencies]
 bevy = { version = "~0.18.1", default-features = false }
