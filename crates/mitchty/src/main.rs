@@ -649,6 +649,8 @@ fn main() {
             ),
         );
 
+    app.add_systems(Update, apply_device_state);
+
     // Touch help overlay
     app.add_systems(Startup, setup_help_text)
         .add_systems(Update, dismiss_help_on_input);
@@ -1461,8 +1463,8 @@ pub struct Text3dCommitPending;
 // draw text glyphs in flan is fine.
 #[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Text3dRenderer {
-    #[default]
     FontMesh,
+    #[default]
     SlugText,
 }
 
@@ -1822,6 +1824,48 @@ fn track_input_drag(
                 }
             }
         }
+    }
+}
+
+/// Apply live device orientation received over the Losant SSE state stream.
+///
+/// Each [`DeviceStateEvent`] carries a `roll` and `pitch` value in **degrees**
+/// produced by the physical device (e.g. an accelerometer/IMU). This system
+/// converts them to radians and applies them as the **scene's rotation**, leaving
+/// the camera completely undisturbed so the user can still orbit and zoom freely.
+///
+/// `SceneTransformConfig.transform.rotation` is updated each time a new event
+/// arrives. The existing `apply_scene_transform` system picks up the change
+/// automatically on the same frame via Bevy change detection and writes the new
+/// `Transform` to the live `LoadedScene` entity.
+///
+/// Only the roll (-> Y-axis / yaw) and pitch (-> X-axis) planes are driven.
+/// The Z axis is left at zero because the device provides no up-vector or
+/// heading signal that would give us a meaningful third rotation.
+///
+/// Scale is always preserved from whatever `SceneTransformConfig` currently
+/// holds so a user-adjusted scale is never clobbered by incoming data.
+///
+/// Applies semi live device orientation from a connected device stream.
+fn apply_device_state(
+    mut device_events: bevy::ecs::message::MessageReader<crate::ui::losant::DeviceStateEvent>,
+    mut scene_transform: ResMut<SceneTransformConfig>,
+) {
+    for event in device_events.read() {
+        let data = &event.0;
+
+        // Build a rotation from the two axes the device reports.
+        // YXZ euler order: yaw (roll from device) first, then pitch, no Z roll.
+        let rotation = Quat::from_euler(
+            EulerRot::YXZ,
+            data.roll.to_radians(),
+            data.pitch.to_radians(),
+            0.0,
+        );
+
+        // Only overwrite rotation - preserve the existing scale and translation
+        // so user adjustments via the gizmo or scene config panel are respected.
+        scene_transform.transform.rotation = rotation;
     }
 }
 

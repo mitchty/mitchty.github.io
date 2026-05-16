@@ -30,6 +30,9 @@ pub enum UiWindow {
     /// The NPZ data viewer hack
     #[cfg(not(target_arch = "wasm32"))]
     DataViewer,
+
+    /// The Losant IoT control window
+    Losant,
 }
 
 impl UiWindow {
@@ -42,6 +45,7 @@ impl UiWindow {
             "recognizer" => Some(UiWindow::Recognizer),
             #[cfg(not(target_arch = "wasm32"))]
             "data-viewer" | "data_viewer" => Some(UiWindow::DataViewer),
+            "losant" => Some(UiWindow::Losant),
             _ => None,
         }
     }
@@ -61,6 +65,9 @@ pub struct UiConfig {
     /// Open the Data Viewer window on startup default: `false`, native only.
     #[cfg(not(target_arch = "wasm32"))]
     pub show_data_viewer: bool,
+
+    /// Open the Losant window on startup default: `false`.
+    pub show_losant: bool,
 
     /// Open a specific reverie by name on startup.
     ///
@@ -103,6 +110,7 @@ impl Default for UiConfig {
             show_recognizer: false,
             #[cfg(not(target_arch = "wasm32"))]
             show_data_viewer: false,
+            show_losant: false,
             initial_reverie: None::<String>,
             initial_timezones: Vec::new(),
             initial_alarms: Vec::new(),
@@ -121,6 +129,7 @@ impl UiConfig {
             UiWindow::Recognizer => self.show_recognizer = true,
             #[cfg(not(target_arch = "wasm32"))]
             UiWindow::DataViewer => self.show_data_viewer = true,
+            UiWindow::Losant => self.show_losant = true,
         }
     }
 }

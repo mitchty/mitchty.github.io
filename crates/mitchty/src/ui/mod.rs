@@ -29,6 +29,12 @@ pub mod world_clock;
 #[allow(unused_imports)]
 pub use world_clock::*;
 
+#[cfg(feature = "egui")]
+pub mod losant;
+#[cfg(feature = "egui")]
+#[allow(unused_imports)]
+pub use losant::*;
+
 #[cfg(not(any(feature = "egui", feature = "feathers")))]
 compile_error!("this is a gooey only app, need feathers or egui");
 

@@ -6,6 +6,10 @@ use crate::ui::config::{ThemeChoice, UiConfig};
 use crate::ui::data_viewer::{
     DataViewerState, ImageProcessingCache, ShowDataViewer, data_viewer_window,
 };
+use crate::ui::losant::{
+    LosantAuthTask, LosantDiscoveryTask, LosantSseChannel, LosantSseTask, LosantState,
+};
+use crate::ui::losant::{poll_losant_auth_task, poll_losant_discovery_task, poll_losant_sse};
 #[cfg(debug_assertions)]
 use crate::ui::recognizer::RasterSize;
 use crate::ui::recognizer::{BASE_BRUSH_R, InferenceResult, RecognizerState};
@@ -70,6 +74,10 @@ pub struct ShowRecognizer;
 #[derive(Component)]
 pub struct ShowSceneConfig;
 
+/// Marker component to track whether the Losant window is open
+#[derive(Component)]
+pub struct ShowLosant;
+
 /// `SystemSet` that gates all per-frame systems owned by the `SettingsUiPlugin`.
 ///
 /// Controlled by `PluginEnabled::<SettingsUiPlugin>`. For now this basically
@@ -117,10 +125,16 @@ impl Plugin for SettingsUiPlugin {
             )
             .add_plugins(ThemePlugin)
             .init_resource::<EguiWantsInput>()
+            .init_resource::<LosantState>()
+            .init_resource::<LosantAuthTask>()
+            .init_resource::<LosantDiscoveryTask>()
+            .init_resource::<LosantSseTask>()
+            .init_resource::<LosantSseChannel>()
             .init_resource::<RecognizerState>()
             .init_resource::<InferenceResult>()
             .add_message::<ToggleCameraProjection>()
             .add_message::<ResetCamera>()
+            .add_message::<crate::ui::losant::DeviceStateEvent>()
             .init_resource::<CameraProjectionToggleRequested>()
             .insert_non_send_resource(engine)
             .add_systems(Startup, setup_egui)
@@ -134,6 +148,16 @@ impl Plugin for SettingsUiPlugin {
                     .chain()
                     .in_set(SettingsUiSystems),
             );
+
+        let app = app.add_systems(
+            Update,
+            (
+                poll_losant_auth_task,
+                poll_losant_discovery_task,
+                poll_losant_sse,
+            )
+                .in_set(SettingsUiSystems),
+        );
 
         #[cfg(not(target_arch = "wasm32"))]
         let app = app
@@ -150,16 +174,12 @@ impl Plugin for SettingsUiPlugin {
             (
                 configure_egui_style.in_set(EguiThemeSet),
                 settings_ui,
+                recognizer_window,
                 #[cfg(not(target_arch = "wasm32"))]
-                (
-                    recognizer_window,
-                    data_viewer_window,
-                    world_clock_window,
-                    scene_config_window,
-                )
-                    .chain(),
-                #[cfg(target_arch = "wasm32")]
-                (recognizer_window, world_clock_window, scene_config_window).chain(),
+                data_viewer_window,
+                world_clock_window,
+                scene_config_window,
+                losant_window,
                 update_egui_input_state,
             )
                 .chain()
@@ -262,6 +282,10 @@ fn setup_egui(
     #[cfg(not(target_arch = "wasm32"))]
     if ui_config.show_data_viewer {
         commands.spawn(ShowDataViewer);
+    }
+
+    if ui_config.show_losant {
+        commands.spawn(ShowLosant);
     }
 
     // Resolve the raw initial_reverie string -> Entity. Reverie entities are
@@ -608,6 +632,7 @@ fn settings_ui(
         Query<Entity, With<ShowSceneConfig>>,
     )>,
     #[cfg(not(target_arch = "wasm32"))] data_viewer_query: Query<Entity, With<ShowDataViewer>>,
+    losant_query: Query<Entity, With<ShowLosant>>,
     mut active_reverie: ResMut<ActiveReverie>,
     reverie_query: Query<(Entity, &ReverieKey, &ReverieDisplayName)>,
     mut active_shader: ResMut<ActiveShader>,
@@ -888,6 +913,20 @@ fn settings_ui(
                         }
                         ui.close();
                     }
+
+                    ui.separator();
+
+                    ui.label(egui::RichText::new("Embedded").strong());
+
+                    let losant_open = losant_query.single().is_ok();
+                    if ui.selectable_label(losant_open, "Losant").clicked() {
+                        if let Ok(entity) = losant_query.single() {
+                            commands.entity(entity).despawn();
+                        } else {
+                            commands.spawn(ShowLosant);
+                        }
+                        ui.close();
+                    }
                 });
             });
         });
@@ -1093,6 +1132,380 @@ fn recognizer_window(
         });
 
     if !open && let Ok(entity) = recognizer_query.single() {
+        commands.entity(entity).despawn();
+    }
+
+    Ok(())
+}
+
+/// System to render the Losant egui window when ShowLosant is present.
+#[allow(clippy::too_many_arguments)]
+fn losant_window(
+    mut contexts: EguiContexts,
+    losant_query: Query<Entity, With<ShowLosant>>,
+    mut state: ResMut<LosantState>,
+    mut auth_task: ResMut<LosantAuthTask>,
+    mut discovery_task: ResMut<LosantDiscoveryTask>,
+    mut sse_task: ResMut<LosantSseTask>,
+    mut sse_channel: ResMut<LosantSseChannel>,
+    mut commands: Commands,
+) -> Result {
+    use crate::ui::losant::{
+        LosantAuthStatus, LosantDiscoveryStatus, LosantSseStatus, spawn_fetch_applications,
+        spawn_fetch_devices, spawn_losant_auth_task, spawn_sse_connect, spawn_sse_disconnect,
+    };
+
+    if losant_query.is_empty() {
+        return Ok(());
+    }
+
+    let mut open = true;
+    egui::Window::new("Losant")
+        .open(&mut open)
+        .default_size([460.0, 520.0])
+        .resizable(true)
+        .show(contexts.ctx_mut()?, |ui| {
+            // I have zero idea how to do this well, so the ui progressively
+            // expands as more happens. Login is the only always shown section.
+            //
+            // TODO: is once I stop being a hack here is to put in a state
+            // machine to more directly drive the gui sections versus just
+            // booleans all over the way.
+
+            ui.label(egui::RichText::new("GitHub Authentication").strong());
+            ui.separator();
+            ui.add_space(4.0);
+
+            let authenticated = state.auth_status == LosantAuthStatus::Success;
+
+            if !authenticated {
+                ui.label("GitHub Access Token:");
+                ui.add_space(2.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.github_token_input)
+                        .hint_text("ghp_abcd...xyz")
+                        .password(true)
+                        .desired_width(ui.available_width()),
+                );
+                ui.add_space(6.0);
+
+                let can_auth = matches!(
+                    state.auth_status,
+                    LosantAuthStatus::Idle | LosantAuthStatus::Error(_)
+                ) && !state.github_token_input.trim().is_empty();
+
+                if ui
+                    .add_enabled(can_auth, egui::Button::new("Authenticate via GitHub Token"))
+                    .clicked()
+                {
+                    spawn_losant_auth_task(&mut state, &mut auth_task);
+                }
+                ui.add_space(4.0);
+            }
+
+            match &state.auth_status.clone() {
+                LosantAuthStatus::Idle => {
+                    ui.label(egui::RichText::new("Not authenticated.").weak().italics());
+                }
+                LosantAuthStatus::InFlight => {
+                    ui.label(
+                        // TODO: This looks like ass in light theme. I need to
+                        // make a `Resource` so I can change this color based
+                        // off of active theme. Thats outside of scope for this
+                        // tho.
+                        egui::RichText::new("⏳ Authenticating hold please")
+                            .color(egui::Color32::YELLOW),
+                    );
+                }
+                LosantAuthStatus::Success => {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("✔ Authenticated")
+                                .color(egui::Color32::from_rgb(80, 200, 120))
+                                .strong(),
+                        );
+                        if let Some(token) = &state.bearer_token {
+                            // Don't show the full token just the prefix and suffix.
+                            let preview = if token.len() > 12 {
+                                format!("{} truncated {}", &token[..6], &token[token.len() - 4..])
+                            } else {
+                                "(short)".to_string()
+                            };
+                            ui.label(egui::RichText::new(format!("({preview})")).small().weak());
+                        }
+                        if ui.small_button("Clear").clicked() {
+                            state.auth_status = LosantAuthStatus::Idle;
+                            state.bearer_token = None;
+                            state.github_token_input.clear();
+                            state.applications.clear();
+                            state.selected_application = None;
+                            state.devices.clear();
+                            state.selected_device = None;
+                            state.discovery_status = LosantDiscoveryStatus::Idle;
+                            state.sse_status = LosantSseStatus::Disconnected;
+                            sse_task.0 = None;
+                            sse_channel.0 = None;
+                        }
+                    });
+                }
+                LosantAuthStatus::Error(msg) => {
+                    let msg = msg.clone();
+                    ui.label(
+                        egui::RichText::new(format!("✖ Error: {msg}"))
+                            .color(egui::Color32::from_rgb(220, 80, 80)),
+                    );
+                }
+            }
+
+            if !authenticated {
+                return;
+            }
+
+            // Ok iff auth worked, then we can show the app discovery bits and
+            // associated devices.
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Device Discovery").strong());
+            ui.separator();
+            ui.add_space(4.0);
+
+            let bearer = state.bearer_token.clone().unwrap_or_default();
+            let fetching = matches!(
+                state.discovery_status,
+                LosantDiscoveryStatus::FetchingApps | LosantDiscoveryStatus::FetchingDevices
+            );
+
+            if ui
+                .add_enabled(
+                    !fetching,
+                    egui::Button::new(if state.applications.is_empty() {
+                        "Fetch Applications"
+                    } else {
+                        "↺ Refresh Applications"
+                    }),
+                )
+                .clicked()
+            {
+                spawn_fetch_applications(bearer.clone(), &mut state, &mut discovery_task);
+            }
+
+            match &state.discovery_status.clone() {
+                LosantDiscoveryStatus::FetchingApps => {
+                    ui.label(
+                        egui::RichText::new("⏳ Fetching applications hold please")
+                            .color(egui::Color32::YELLOW),
+                    );
+                }
+                LosantDiscoveryStatus::FetchingDevices => {
+                    ui.label(
+                        egui::RichText::new("⏳ Fetching devices hold please")
+                            .color(egui::Color32::YELLOW),
+                    );
+                }
+                LosantDiscoveryStatus::Error(msg) => {
+                    let msg = msg.clone();
+                    ui.label(
+                        egui::RichText::new(format!("✖ {msg}"))
+                            .color(egui::Color32::from_rgb(220, 80, 80)),
+                    );
+                }
+                _ => {}
+            }
+
+            // Application picker drop down.
+            // Auto-select the only application when there is exactly one choice.
+            if state.applications.len() == 1 && state.selected_application.is_none() {
+                state.selected_application = Some(0);
+                state.devices.clear();
+                state.selected_device = None;
+            }
+
+            if !state.applications.is_empty() {
+                ui.add_space(4.0);
+                ui.label("Application:");
+                let app_label = state
+                    .selected_application
+                    .and_then(|i| state.applications.get(i))
+                    .map(|a| a.name.as_str())
+                    .unwrap_or("select application");
+
+                // Collect names first to avoid holding an immutable borrow
+                // on state.applications while also mutating state inside the closure.
+                let app_names: Vec<(usize, String)> = state
+                    .applications
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| (i, a.name.clone()))
+                    .collect();
+                let mut new_app_sel = None;
+                egui::ComboBox::from_id_salt("losant_app_picker")
+                    .selected_text(app_label)
+                    .width(ui.available_width() - 8.0)
+                    .show_ui(ui, |ui| {
+                        for (idx, name) in &app_names {
+                            let selected = state.selected_application == Some(*idx);
+                            if ui.selectable_label(selected, name).clicked()
+                                && state.selected_application != Some(*idx)
+                            {
+                                new_app_sel = Some(*idx);
+                            }
+                        }
+                    });
+                if let Some(idx) = new_app_sel {
+                    state.selected_application = Some(idx);
+                    state.devices.clear();
+                    state.selected_device = None;
+                }
+            }
+
+            // Fetch Devices button, only usable when an application is selected
+            // so things don't get weirder.
+            if let Some(app_idx) = state.selected_application
+                && let Some(app) = state.applications.get(app_idx)
+            {
+                let app_id = app.id.clone();
+                ui.add_space(4.0);
+                if ui
+                    .add_enabled(
+                        !fetching,
+                        egui::Button::new(if state.devices.is_empty() {
+                            "Fetch Devices"
+                        } else {
+                            "↺ Refresh Devices"
+                        }),
+                    )
+                    .clicked()
+                {
+                    spawn_fetch_devices(bearer.clone(), app_id, &mut state, &mut discovery_task);
+                }
+            }
+
+            // Device picker dropdown, note we show the name not the id maybe I
+            // should show id in a pop up?
+            // Auto-select the only device when there is exactly one choice.
+            if state.devices.len() == 1 && state.selected_device.is_none() {
+                state.selected_device = Some(0);
+            }
+
+            if !state.devices.is_empty() {
+                ui.add_space(4.0);
+                ui.label("Device:");
+                let dev_label = state
+                    .selected_device
+                    .and_then(|i| state.devices.get(i))
+                    .map(|d| d.name.as_str())
+                    .unwrap_or("select device");
+
+                let dev_names: Vec<(usize, String)> = state
+                    .devices
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| (i, d.name.clone()))
+                    .collect();
+                let mut new_dev_sel = None;
+                egui::ComboBox::from_id_salt("losant_device_picker")
+                    .selected_text(dev_label)
+                    .width(ui.available_width() - 8.0)
+                    .show_ui(ui, |ui| {
+                        for (idx, name) in &dev_names {
+                            let selected = state.selected_device == Some(*idx);
+                            if ui.selectable_label(selected, name).clicked() {
+                                new_dev_sel = Some(*idx);
+                            }
+                        }
+                    });
+                if let Some(idx) = new_dev_sel {
+                    state.selected_device = Some(idx);
+                }
+            }
+
+            // Raw SSE replies, note the underlying losant DeqQueue only keeps
+            // the last 100 so this doesn't get too obscene.
+            let ready_to_stream =
+                state.selected_application.is_some() && state.selected_device.is_some();
+
+            if ready_to_stream {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("Raw Device State Stream").strong());
+                ui.separator();
+                ui.add_space(4.0);
+
+                let connected = matches!(
+                    state.sse_status,
+                    LosantSseStatus::Connecting | LosantSseStatus::Connected
+                );
+
+                ui.horizontal(|ui| {
+                    if connected {
+                        if ui.button("⏹ Disconnect").clicked() {
+                            spawn_sse_disconnect(&mut state, &mut sse_task, &mut sse_channel);
+                        }
+                    } else if ui.button("▶ Connect").clicked() {
+                        let app_id = state
+                            .selected_application
+                            .and_then(|i| state.applications.get(i))
+                            .map(|a| a.id.clone())
+                            .unwrap_or_default();
+                        let device_id = state
+                            .selected_device
+                            .and_then(|i| state.devices.get(i))
+                            .map(|d| d.id.clone())
+                            .unwrap_or_default();
+                        spawn_sse_connect(
+                            bearer.clone(),
+                            app_id,
+                            device_id,
+                            &mut state,
+                            &mut sse_task,
+                            &mut sse_channel,
+                        );
+                    }
+
+                    let (status_text, status_color) = match &state.sse_status {
+                        LosantSseStatus::Disconnected => {
+                            ("Disconnected".to_string(), egui::Color32::GRAY)
+                        }
+                        LosantSseStatus::Connecting => (
+                            "⏳ Connecting hold please".to_string(),
+                            egui::Color32::YELLOW,
+                        ),
+                        LosantSseStatus::Connected => (
+                            "● Connected".to_string(),
+                            egui::Color32::from_rgb(80, 200, 120),
+                        ),
+                        LosantSseStatus::Error(msg) => {
+                            (format!("✖ {msg}"), egui::Color32::from_rgb(220, 80, 80))
+                        }
+                    };
+                    ui.label(egui::RichText::new(status_text).color(status_color));
+                });
+
+                ui.add_space(4.0);
+
+                // Raw Event log sorted by newest at top, show latest 20 for now
+                // cause 100 is a lot of scrolling.
+                let log_height = 160.0;
+                egui::ScrollArea::vertical()
+                    .id_salt("losant_event_log")
+                    .max_height(log_height)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if state.event_log.is_empty() {
+                            ui.label(
+                                egui::RichText::new("No events received so far.")
+                                    .weak()
+                                    .italics(),
+                            );
+                        } else {
+                            for entry in state.event_log.iter().take(20) {
+                                ui.label(egui::RichText::new(entry).small().monospace());
+                                ui.separator();
+                            }
+                        }
+                    });
+            }
+        });
+
+    if !open && let Ok(entity) = losant_query.single() {
         commands.entity(entity).despawn();
     }
 

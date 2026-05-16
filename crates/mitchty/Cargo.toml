@@ -30,11 +30,13 @@ bevy = { version = "0.18.1", default-features = false, features = [
   "experimental_bevy_feathers",
   "http",
   "https",
+  "jpeg",
 ] }
 
 lib = { path = "../lib" }
 rand.workspace = true
 burn.workspace = true
+serde = { version = "~1", features = ["derive"] }
 serde_json = "~1"
 unicode_names2.workspace = true
 zip.workspace = true
@@ -61,6 +63,32 @@ dark-light.workspace = true
 polars = { version = "~0.53", default-features = false, features = ["lazy"] }
 # Needs an egui update too, so.. whatever
 egui-file-dialog = { version = "~0.12" }
+# reqwest on native we use rustls for TLS cause I love to static link binaries
+# and this is simpler.
+reqwest = { version = "~0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
+# Tokio runtime needed so reqwest's reactor is available when running inside
+# Bevy's AsyncComputeTaskPool, which uses its own futures-lite executor.
+tokio = { version = "~1", default-features = false, features = [
+  "rt",
+  "net",
+  "time",
+  "io-util",
+] }
+# eventsource-client and its crap are native-only. wasm uses native Fetch
+# shenanigans I couldn't add bearer auth headers to the EventSource wasm bindgen
+# crap.
+eventsource-client = { version = "0.17.4", features = [
+  "hyper-rustls-webpki-roots",
+] }
+# futures::StreamExt is used for the api streaming, here so cargo+nix don't get
+# angy at a non explicit dep.
+futures = "~0.3"
+# HyperTransport is used by eventsource-client depends on this already, but like
+# ^^^ declared directly so nix builds work.
+launchdarkly-sdk-transport = "~0.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # For wayland clipboard crap to work right, its derp
@@ -83,6 +111,9 @@ getrandom.workspace = true
 polars = { version = "~0.53", default-features = false }
 # Used for reading window.location.search() to parse ?show= URL query params
 # at startup (WASM equivalent of --show CLI flag).
+# reqwest on wasm uses the browser fetch API no TLS config needed the browsers
+# ca bundle handles that for us implicitly.
+reqwest = { version = "~0.12", default-features = false, features = ["json"] }
 web-sys = { version = "~0.3", features = [
   "Navigator",
   "Window",
@@ -90,6 +121,17 @@ web-sys = { version = "~0.3", features = [
   "Clipboard",
   "MediaQueryList",
   "MediaQueryListEvent",
+  "Request",
+  "RequestInit",
+  "Headers",
+  "Response",
+  "ReadableStream",
+  "ReadableStreamDefaultReader",
+  "AbortController",
+  "AbortSignal",
 ] }
+# js-sys is now needed to inspect objects from
+# ReadableStreamDefaultReader.read() and cast that into a rust primitive.
+js-sys = "~0.3"
 wasm-bindgen-futures = "~0.4"
 wasm-bindgen = "~0.2"

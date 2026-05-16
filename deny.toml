@@ -160,7 +160,6 @@ skip = [
   { name = "downcast-rs", version = "=1.2.1" },
   { name = "downcast-rs", version = "=2.0.2" },
   { name = "nix", version = "=0.30.1" },
-  { name = "nix", version = "=0.31.2" },
   { name = "read-fonts", version = "=0.36.0" },
   { name = "rustix", version = "=0.38.44" },
   { name = "rustix", version = "=1.1.4" },
@@ -275,13 +274,14 @@ skip = [
   { name = "glam", version = "=0.32.1" },
   # Egui and transform gizmo
   { name = "epaint", version = "=0.33.3" },
-  { name = "epaint", version = "=0.34.1" },
   { name = "ecolor", version = "=0.33.3" },
-  { name = "ecolor", version = "=0.34.1" },
   { name = "emath", version = "=0.33.3" },
-  { name = "emath", version = "=0.34.1" },
   { name = "epaint_default_fonts", version = "=0.33.3" },
-  { name = "epaint_default_fonts", version = "=0.34.1" },
+  # Bevy and eventsource-client
+  { name = "webpki-roots", version = "=0.26.11" },
+  { name = "webpki-roots", version = "=1.0.7" },
+  { name = "tower", version = "=0.4.13" },
+  { name = "tower", version = "=0.5.3" },
 ]
 skip-tree = []
 
