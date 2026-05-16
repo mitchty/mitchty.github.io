@@ -198,5 +198,25 @@
         "total_bytes": 78707600
       }
     }
+  },
+  {
+    "version": "0.0.18",
+    "commit": "285196078aa0572e429031386b22437b66015d61",
+    "short_commit": "2851960",
+    "date": "2026-05-16T18:47:43Z",
+    "ref": "refs/heads/main",
+    "run_id": 25968108766,
+    "detail_path": ".build-meta/versions/0.0.18-2851960",
+    "builds": {
+      "mitchty-wasm-bg": {
+        "total_bytes": 47122523
+      },
+      "mitchty-windows-x86_64": {
+        "total_bytes": 90793203
+      },
+      "mitchty-darwin-aarch64": {
+        "total_bytes": 80886720
+      }
+    }
   }
 ]
