@@ -1,6 +1,8 @@
 pub mod config;
 pub use config::*;
 
+pub mod state;
+
 #[cfg(all(feature = "egui", not(target_arch = "wasm32")))]
 pub mod data_viewer;
 #[cfg(all(feature = "egui", not(target_arch = "wasm32")))]

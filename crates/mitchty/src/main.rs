@@ -1065,13 +1065,18 @@ fn animate_materials(
 }
 
 /// System to spawn the fps text entity in the upper right of screen
-fn setup_fps_ui(mut commands: Commands) {
+fn setup_fps_ui(mut commands: Commands, ui_state: Res<ui::state::UiState>) {
     // When the egui menu bar is active squeeze the FPS readout down to avoid
-    // overlap.
-    #[cfg(feature = "egui")]
-    let top = Val::Px(40.0);
-    #[cfg(not(feature = "egui"))]
-    let top = Val::Px(10.0);
+    // overlap. Using UiState at runtime so swapping backends doesn't require
+    // a recompile.
+    //
+    // TODO: future me can deal with egui compilation feature but thats more
+    // once feathers is usable and working as well as egui.
+    let top = if ui_state.backend == ui::state::UiBackend::Egui {
+        Val::Px(40.0)
+    } else {
+        Val::Px(10.0)
+    };
 
     commands.spawn((
         Text::new(""),
@@ -1290,6 +1295,7 @@ impl FpsHistory {
 fn setup_fps_sparkline_ui(
     mut commands: Commands,
     mut ui_materials: ResMut<Assets<flan::PlotUiMaterial>>,
+    ui_state: Res<ui::state::UiState>,
     #[cfg(not(feature = "webgl"))] mut buffers: ResMut<
         Assets<bevy::render::storage::ShaderStorageBuffer>,
     >,
@@ -1317,11 +1323,12 @@ fn setup_fps_sparkline_ui(
         points: points_binding,
     });
 
-    // Mirror the top offset used by the FPS text label.
-    #[cfg(feature = "egui")]
-    let top = Val::Px(40.0);
-    #[cfg(not(feature = "egui"))]
-    let top = Val::Px(10.0);
+    // TODO: #[cfg(feature = "egui")] needs to be figured out
+    let top = if ui_state.backend == ui::state::UiBackend::Egui {
+        Val::Px(40.0)
+    } else {
+        Val::Px(10.0)
+    };
 
     commands.spawn((
         Node {

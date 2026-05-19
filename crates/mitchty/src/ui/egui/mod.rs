@@ -1,7 +1,17 @@
+mod about;
+mod apps;
+mod debug;
+mod experiments;
+mod file;
+mod gooey;
+mod reveries;
+mod scene;
+mod theme_toggle;
+
 use crate::ai::infer::InferenceEngine;
 use crate::plugins::reveries::{ActiveReverie, ReverieDisplayName, ReverieKey};
 use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled};
-use crate::ui::config::{ThemeChoice, UiConfig};
+use crate::ui::config::UiConfig;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::ui::data_viewer::{
     DataViewerState, ImageProcessingCache, ShowDataViewer, data_viewer_window,
@@ -13,6 +23,7 @@ use crate::ui::losant::{poll_losant_auth_task, poll_losant_discovery_task, poll_
 #[cfg(debug_assertions)]
 use crate::ui::recognizer::RasterSize;
 use crate::ui::recognizer::{BASE_BRUSH_R, InferenceResult, RecognizerState};
+use crate::ui::state::{UiBackend, UiPanel, UiState, egui_backend_active};
 use crate::ui::world_clock::{ShowWorldClock, WorldClockState, world_clock_window};
 use crate::{
     CameraMode, ColorState, FpsDisplay, HueAnimation, MainCamera, ShowSceneModel, ShowText3d,
@@ -25,10 +36,22 @@ use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use egui_file_dialog::FileDialog;
 use transform_gizmo_bevy::prelude::{GizmoMode, GizmoOptions, GizmoOrientation};
 
-use crate::plugins::theme::{
-    EguiThemeSet, ThemePlugin, resolve_initial_theme, theme_default_color,
-};
+use crate::plugins::theme::{EguiThemeSet, ThemePlugin, resolve_initial_theme};
 use crate::plugins::{PluginEnabled, PluginRegistry, run_if_enabled};
+
+/// Marker component attached alongside `UiPanel` to identify entities that
+/// contribute an egui menu bar entry.
+///
+/// The `UiPanel` component carries the backend-agnostic metadata (id, anchor,
+/// order). This component is the egui-specific signal that the orchestrator
+/// (`settings_ui`) should include this panel in the egui menu bar.
+///
+/// TODO: Extend with `render: fn(&mut egui::Ui, &mut World)` once `settings_ui`
+/// is converted to an exclusive system, enabling full fn-pointer dispatch and
+/// removing the direct `about::render_about_menu` / `reveries::render_reveries_menu`
+/// calls from the orchestrator.
+#[derive(Component)]
+pub struct EguiMenuBarItem;
 
 /// Resource to track if egui is currently using input, helps with accidental
 /// clicks not bleeding downwards to bevy.
@@ -104,7 +127,7 @@ impl Plugin for SettingsUiPlugin {
         // Note: explicitly exclude wasm32 InferenceEngine::load is native-only for now.
         #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
         let engine = engine.or_else(|| {
-            ["recognizer", "../../recognizer", "../recognizer"]
+            ["recognizer", "../../../recognizer", "../recognizer"]
                 .iter()
                 .find_map(|dir| InferenceEngine::load(dir))
         });
@@ -117,13 +140,27 @@ impl Plugin for SettingsUiPlugin {
             .insert_resource(PluginEnabled::<SettingsUiPlugin>::default())
             .configure_sets(
                 Update,
-                SettingsUiSystems.run_if(run_if_enabled::<SettingsUiPlugin>()),
+                SettingsUiSystems
+                    .run_if(run_if_enabled::<SettingsUiPlugin>())
+                    .run_if(egui_backend_active()),
             )
             .configure_sets(
                 EguiPrimaryContextPass,
-                SettingsUiSystems.run_if(run_if_enabled::<SettingsUiPlugin>()),
+                SettingsUiSystems
+                    .run_if(run_if_enabled::<SettingsUiPlugin>())
+                    .run_if(egui_backend_active()),
             )
+            .init_resource::<UiState>()
             .add_plugins(ThemePlugin)
+            .add_plugins(about::AboutMenuPlugin)
+            .add_plugins(apps::AppsMenuPlugin)
+            .add_plugins(debug::DebugMenuPlugin)
+            .add_plugins(experiments::ExperimentsMenuPlugin)
+            .add_plugins(file::FileMenuPlugin)
+            .add_plugins(gooey::GooeyMenuPlugin)
+            .add_plugins(reveries::ReveriesMenuPlugin)
+            .add_plugins(scene::SceneMenuPlugin)
+            .add_plugins(theme_toggle::ThemeToggleMenuPlugin)
             .init_resource::<EguiWantsInput>()
             .init_resource::<LosantState>()
             .init_resource::<LosantAuthTask>()
@@ -193,14 +230,14 @@ impl Plugin for SettingsUiPlugin {
 }
 
 /// Here for the recognizer, I need a CJK font to display kanji/hiragana/katakana
-static NOTO_SANS_JP: &[u8] = include_bytes!("../assets/fonts/NotoSansJP-Regular.ttf");
+static NOTO_SANS_JP: &[u8] = include_bytes!("../../assets/fonts/NotoSansJP-Regular.ttf");
 
 /// Default model config JSON for the default model for now, future will be to
 /// be able to pick different models.
-static DEFAULT_MODEL_CONFIG: &[u8] = include_bytes!("../assets/models/default/config.json");
+static DEFAULT_MODEL_CONFIG: &[u8] = include_bytes!("../../assets/models/default/config.json");
 
 /// Default model weights for ^^^
-static DEFAULT_MODEL_WEIGHTS: &[u8] = include_bytes!("../assets/models/default/model.mpk");
+static DEFAULT_MODEL_WEIGHTS: &[u8] = include_bytes!("../../assets/models/default/model.mpk");
 
 /// Bump up egui text, register NotoSansJP as a CJK fallback, and apply the
 /// resolved startup theme.
@@ -257,16 +294,33 @@ fn setup_egui(
     mut active_reverie: ResMut<ActiveReverie>,
     ui_config: Res<UiConfig>,
     reveries: Query<(Entity, &ReverieKey, &ReverieDisplayName)>,
+    mut ui_state: ResMut<UiState>,
+    panel_query: Query<&UiPanel>,
 ) {
     // Start with effects enabled by default
     effects_enabled.0 = true;
 
-    // Always-on markers
-    commands.spawn(HueAnimation);
-    commands.spawn(FpsDisplay);
+    // Initialize the initial UiState, `settings_ui` reads this every frame to
+    // decide what to draw and how. This is a bit silly for now but it'll make
+    // more sense in post/later.
+    ui_state.backend = UiBackend::Egui;
+    ui_state.menu_bar_visible = ui_config.show_menu_bar;
+    ui_state.enabled = true;
 
-    // Menu bar: on by default, but UiConfig lets callers suppress it... for
-    // now.
+    // Log every registered UiPanel so it's easy to verify the full set at
+    // startup. Also exercises id/anchor/order so the compiler sees them as read
+    // and doesn't optimize them out like a demon.
+    // TODO: Gate this to debug only builds?
+    for panel in panel_query.iter() {
+        debug!(
+            "ui panel registered: id={} anchor={:?} order={}",
+            panel.id, panel.anchor, panel.order
+        );
+    }
+
+    // ShowEgui is mostly kept for update_egui_input_state which still uses the
+    // marker component for now settings_ui now gates on UiState further
+    // refactors can fix this.
     if ui_config.show_menu_bar {
         commands.spawn(ShowEgui);
     }
@@ -288,15 +342,13 @@ fn setup_egui(
         commands.spawn(ShowLosant);
     }
 
-    // Resolve the raw initial_reverie string -> Entity. Reverie entities are
-    // spawned in ReveriesPlugin::build() before any startup system runs, so
-    // this query is always populated by the time this system runs.
+    // Resolve the raw initial_reverie string -> Entity mappings
     if let Some(ref name) = ui_config.initial_reverie {
         crate::plugins::reveries::apply_initial_reverie(name, &reveries, &mut active_reverie);
     }
 
     // Build WorldClockState from UiConfig overrides. insert_resource replaces
-    // the defaults for startup if provided.
+    // the defaults for startup if provided from switches.
     let wc_state = WorldClockState::from_config(
         &ui_config.initial_timezones,
         &ui_config.initial_alarms,
@@ -614,22 +666,27 @@ fn scene_config_window(
     Ok(())
 }
 
-/// Display the settings UI using egui as a top menu bar
+/// Display the settings UI using egui as a top menu bar.
+///
+/// All per-menu logic lives in the sub-modules (file, scene, gooey, reveries,
+/// apps, theme_toggle, about, debug, experiments). This function's job is to:
+///   1. Pre-extract ECS state before the egui closure opens.
+///   2. Open the menu bar and call each render function in order.
+///   3. Write any mutations back to resources after the closure.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
 fn settings_ui(
     mut contexts: EguiContexts,
     mut color_state: ResMut<ColorState>,
     mut effects_enabled: ResMut<EffectsEnabled>,
-    show_egui_query: Query<(), With<ShowEgui>>,
-    // In ParamSet now to avoid 16 param system tuple limit in bevy.
+    ui_state: Res<UiState>,
     mut marker_queries: ParamSet<(
-        Query<Entity, With<FpsDisplay>>,
-        Query<Entity, With<HueAnimation>>,
-        Query<Entity, With<ShowRecognizer>>,
-        Query<Entity, With<ShowWorldClock>>,
-        Query<&mut Visibility, With<flan::PlotUiNode>>,
-        Query<Entity, With<ShowSceneConfig>>,
+        Query<Entity, With<FpsDisplay>>,                      // p0
+        Query<Entity, With<HueAnimation>>,                    // p1
+        Query<Entity, With<ShowRecognizer>>,                  // p2
+        Query<Entity, With<ShowWorldClock>>,                  // p3
+        Query<(Entity, &Visibility), With<flan::PlotUiNode>>, // p4
+        Query<Entity, With<ShowSceneConfig>>,                 // p5
     )>,
     #[cfg(not(target_arch = "wasm32"))] data_viewer_query: Query<Entity, With<ShowDataViewer>>,
     losant_query: Query<Entity, With<ShowLosant>>,
@@ -639,298 +696,115 @@ fn settings_ui(
     available_shaders: Res<AvailableShaders>,
     mut commands: Commands,
     mut ui_config: ResMut<UiConfig>,
-    // TODO: I really need a better approach to this glorified global config
-    // thing for now hacks it is.
-    mut proj_params: ParamSet<(Res<CameraMode>, ResMut<CameraProjectionToggleRequested>)>,
+    mut camera_proj: ParamSet<(Res<CameraMode>, ResMut<CameraProjectionToggleRequested>)>,
     mut reset_camera_events: MessageWriter<ResetCamera>,
     #[cfg(debug_assertions)] mut plugin_registry: ResMut<PluginRegistry>,
 ) -> Result {
-    if show_egui_query.is_empty() {
+    if !ui_state.enabled || !ui_state.menu_bar_visible {
         return Ok(());
     }
 
-    trace!("settings_ui running - ShowEgui exists");
+    trace!("settings_ui running");
+
+    // TODO: I hate this pN bs soo bad when I need to change the paramset count
+    // and order.
+    // p0 FpsDisplay, p1 HueAnimation
+    let fps_entity = marker_queries.p0().single().ok();
+    let hue_entity = marker_queries.p1().single().ok();
+    // p2 ShowRecognizer
+    let recognizer_entity = marker_queries.p2().single().ok();
+    // p3 ShowWorldClock
+    let clock = marker_queries.p3().single().ok();
+    // p4 PlotUiNode visibility
+    let line_graph = {
+        let q = marker_queries.p4();
+        q.single()
+            .ok()
+            .map(|(e, vis)| (e, *vis != Visibility::Hidden))
+    };
+    // p5 ShowSceneConfig
+    let scene_cfg_entity = marker_queries.p5().single().ok();
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let data_viewer_entity = data_viewer_query.single().ok();
+    let losant_entity = losant_query.single().ok();
+
+    let reverie_entries: Vec<_> = reverie_query.iter().collect();
+
+    // Gooey mutable data's render fn writes back via this struct, caller
+    // applies to the real resources.
+    let current_camera_mode = *camera_proj.p0();
+    let mut gooey_data = gooey::GooeyRenderData {
+        fps_entity,
+        hue_entity,
+        camera_mode: current_camera_mode,
+        proj_toggle_requested: false,
+        effects_enabled: effects_enabled.0,
+        active_shader_index: active_shader.index,
+        shader_entries: available_shaders
+            .shaders
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (i, s.display_name.clone()))
+            .collect(),
+        color: color_state.color,
+        theme: ui_config.theme,
+    };
 
     egui::TopBottomPanel::top("menu_bar").show(contexts.ctx_mut()?, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
-            // File menu - native only now (just Quit remains; scene loading moved to Scene sidebar).
+            // lhs of the menubar
             #[cfg(not(target_arch = "wasm32"))]
-            ui.menu_button("File", |ui| {
-                if ui.button("Quit").clicked() {
-                    std::process::exit(0);
-                }
-            });
+            file::render_file_menu(ui);
 
-            // Scene menu simply (de)toggles the Scene Config side panel.
-            let scene_cfg_open = marker_queries.p5().single().is_ok();
-            if ui.selectable_label(scene_cfg_open, "Scene").clicked() {
-                if let Ok(entity) = marker_queries.p5().single() {
-                    commands.entity(entity).despawn();
-                } else {
-                    commands.spawn(ShowSceneConfig);
-                }
-            }
+            scene::render_scene_menu(
+                ui,
+                scene::SceneRenderData { scene_cfg_entity },
+                &mut commands,
+            );
 
-            ui.menu_button("Gooey", |ui| {
-                ui.label(egui::RichText::new("Projection").strong());
-                let proj_label = match *proj_params.p0() {
-                    CameraMode::Perspective => "Perspective [M]",
-                    CameraMode::Orthographic => "Orthographic [M]",
-                };
-                if ui.button(proj_label).clicked() {
-                    proj_params.p1().0 = true;
-                }
-
-                if ui.button("Reset Camera").clicked() {
-                    reset_camera_events.write(ResetCamera);
-                    ui.close();
-                }
-
-                ui.separator();
-
-                ui.label(egui::RichText::new("Effects").strong());
-                let mut fullscreen_enabled = effects_enabled.0;
-                if ui
-                    .checkbox(&mut fullscreen_enabled, "Fullscreen Effect [E]")
-                    .changed()
-                {
-                    effects_enabled.0 = fullscreen_enabled;
-                }
-                ui.label("Shader:");
-                for (idx, shader_info) in available_shaders.shaders.iter().enumerate() {
-                    let is_selected = active_shader.index == idx;
-                    if ui
-                        .selectable_label(is_selected, &shader_info.display_name)
-                        .clicked()
-                    {
-                        active_shader.index = idx;
-                        trace!(
-                            "shader effect changed to {}",
-                            active_shader.display_name(&available_shaders)
-                        );
-                    }
-                }
-
-                ui.separator();
-
-                ui.label(egui::RichText::new("Toggles").strong());
-                let fps_entity = marker_queries.p0().single().ok();
-                let mut fps_enabled = fps_entity.is_some();
-                if ui.checkbox(&mut fps_enabled, "FPS Display [F]").changed() {
-                    if fps_enabled {
-                        commands.spawn(FpsDisplay);
-                    } else if let Some(entity) = fps_entity {
-                        commands.entity(entity).despawn();
-                    }
-                }
-
-                let hue_entity = marker_queries.p1().single().ok();
-                let mut hue_animation_enabled = hue_entity.is_some();
-                if ui
-                    .checkbox(&mut hue_animation_enabled, "Hue Animation [H]")
-                    .changed()
-                {
-                    if hue_animation_enabled {
-                        commands.spawn(HueAnimation);
-                    } else if let Some(entity) = hue_entity {
-                        commands.entity(entity).despawn();
-                    }
-                }
-
-                ui.separator();
-
-                ui.label(egui::RichText::new("Background color").strong());
-                // Resolve the display color: user pick or theme default.
-                let display = color_state
-                    .color
-                    .unwrap_or_else(|| theme_default_color(ui_config.theme));
-                let mut color32 = egui::Color32::from_rgb(
-                    (display.red * 255.0) as u8,
-                    (display.green * 255.0) as u8,
-                    (display.blue * 255.0) as u8,
-                );
-                if egui::color_picker::color_picker_color32(
-                    ui,
-                    &mut color32,
-                    egui::color_picker::Alpha::Opaque,
-                ) {
-                    let [r, g, b, _] = color32.to_normalized_gamma_f32();
-                    color_state.color = Some(bevy::color::Srgba::rgb(r, g, b));
-                }
-                // Only show reset button when the user has overridden the theme default.
-                if color_state.color.is_some() && ui.button("Reset to default").clicked() {
-                    color_state.color = None;
-                    ui.close();
-                }
-            });
+            gooey::render_gooey_menu(ui, &mut gooey_data, &mut commands, &mut reset_camera_events);
 
             {
-                let entries: Vec<_> = reverie_query.iter().collect();
-                crate::plugins::reveries::reveries_egui_menu(ui, &entries, &mut active_reverie);
+                reveries::render_reveries_menu(ui, &reverie_entries, &mut active_reverie);
             }
 
-            ui.menu_button("Apps", |ui| {
-                let wc_entity = marker_queries.p3().single().ok();
-                let wc_open = wc_entity.is_some();
-                if ui.selectable_label(wc_open, "World Clock").clicked() {
-                    if let Some(entity) = wc_entity {
-                        commands.entity(entity).despawn();
-                    } else {
-                        commands.spawn(ShowWorldClock);
-                    }
-                    ui.close();
-                }
-            });
+            apps::render_apps_menu(ui, apps::AppsRenderData { clock }, &mut commands);
 
-            // About and Experiments ar on the RHS of the menu bar. NOte due to
-            // the ordering stuff to the left aka Experiments goes after the
-            // About definition.
+            // rhs of the menubar
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // 3-way theme toggle, Auto means heuristic pick for me,
-                // Dark/Light is user pref
-                let (label, next) = match ui_config.theme {
-                    ThemeChoice::Auto => ("🌓", ThemeChoice::Dark),
-                    ThemeChoice::Dark => ("🌙", ThemeChoice::Light),
-                    ThemeChoice::Light => ("☀", ThemeChoice::Auto),
-                };
-                if ui.button(label).clicked() {
-                    ui_config.theme = next;
-                    // Apply the new visuals immediately if clicked.
-                    let visuals = match next {
-                        ThemeChoice::Dark => egui::Visuals::dark(),
-                        ThemeChoice::Light => egui::Visuals::light(),
-                        ThemeChoice::Auto => resolve_initial_theme(ThemeChoice::Auto),
-                    };
-                    ui.ctx().set_visuals(visuals);
-                }
-                ui.menu_button("About", |ui| {
-                    ui.hyperlink_to("GitHub Repo", lib::build_info::GIT_REPO);
-                    ui.separator();
-                    ui.label(format!("Version:  {}", env!("CARGO_PKG_VERSION")));
-                    if lib::build_info::GIT_DIRTY {
-                        ui.label(format!(
-                            "Commit:   {} modified", // This is what I'll see 99% of the time
-                            lib::build_info::GIT_COMMIT
-                        ));
-                    } else {
-                        // iff we're on a build coming from nix the link will be to the commit
-                        ui.hyperlink_to(
-                            format!("Commit:   {}", lib::build_info::GIT_COMMIT),
-                            format!(
-                                "{}/commit/{}",
-                                lib::build_info::GIT_REPO,
-                                lib::build_info::GIT_COMMIT
-                            ),
-                        );
-                    }
-                    ui.label(format!("Profile:  {}", lib::build_info::BUILD_PROFILE));
-                    ui.label(format!("Rustc:    {}", lib::build_info::RUSTC_VERSION));
-                    // TODO: Gate the build date to debug builds only?
-                    ui.label(format!("Built:    {}", lib::build_info::BUILD_DATE));
-                    ui.separator();
-                    ui.label("Third Party Acknowlegements");
-                    ui.separator();
-                    ui.label("Kanjivg");
-                    ui.hyperlink("https://kanjivg.tagaini.net");
-                });
-
-                // Debug menu only visible in debug builds for now, obviously.
-                // But this is to start to make things be dynamic to toggle
-                // things on/off at runtime or to swap between egui
-                // implementations and bevy feathers at some point.
-                //
-                // Not something anyone but me needs to give a shit about, its
-                // more so I don't keep half baked stuff in long running
-                // branches forever. I hate merge conflicts and its almost
-                // summer. Better to chip off bit by bit whilst I keep working
-                // things working.
-                //
-                // All plugins are registered with PluginRegistry. Checkboxes
-                // write directly into the registry and
-                // `sync_registry_to_plugins` in PreUpdate propagates the flags
-                // to each `PluginEnabled<T>` resource before the next Update
-                // run. This lets me do feature testing at runtime and to swap
-                // things to test.
+                theme_toggle::render_theme_toggle_menu(ui, &mut ui_config);
+                about::render_about_menu(ui);
                 #[cfg(debug_assertions)]
-                ui.menu_button("Debug", |ui| {
-                    ui.label(egui::RichText::new("Plugin Toggles").strong());
-                    ui.separator();
-                    if plugin_registry.entries.is_empty() {
-                        ui.label(
-                            egui::RichText::new("No plugins registered.")
-                                .italics()
-                                .weak(),
-                        );
-                    } else {
-                        for entry in plugin_registry.entries.iter_mut() {
-                            ui.checkbox(&mut entry.enabled, entry.name);
-                        }
-                    }
-                });
-
-                ui.menu_button("Experiments", |ui| {
-                    ui.label(egui::RichText::new("Abominable Intelligence").strong());
-                    ui.separator();
-
-                    let recognizer_entity = marker_queries.p3().single().ok();
-                    if ui.button("Recognizer").clicked() {
-                        if let Some(entity) = recognizer_entity {
-                            commands.entity(entity).despawn();
-                        } else {
-                            commands.spawn(ShowRecognizer);
-                        }
-                        ui.close();
-                    }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if ui.button("Data Viewer").clicked() {
-                        if data_viewer_query.is_empty() {
-                            commands.spawn(ShowDataViewer);
-                        } else if let Ok(entity) = data_viewer_query.single() {
-                            commands.entity(entity).despawn();
-                        }
-                        ui.close();
-                    }
-
-                    ui.separator();
-
-                    ui.label(egui::RichText::new("Flan Shaders").strong());
-
-                    let line_graph_visible = marker_queries
-                        .p4()
-                        .single()
-                        .map(|v| *v != Visibility::Hidden)
-                        .unwrap_or(false);
-                    if ui
-                        .selectable_label(line_graph_visible, "Line Graph")
-                        .clicked()
-                    {
-                        if let Ok(mut vis) = marker_queries.p4().single_mut() {
-                            *vis = if line_graph_visible {
-                                Visibility::Hidden
-                            } else {
-                                Visibility::Visible
-                            };
-                        }
-                        ui.close();
-                    }
-
-                    ui.separator();
-
-                    ui.label(egui::RichText::new("Embedded").strong());
-
-                    let losant_open = losant_query.single().is_ok();
-                    if ui.selectable_label(losant_open, "Losant").clicked() {
-                        if let Ok(entity) = losant_query.single() {
-                            commands.entity(entity).despawn();
-                        } else {
-                            commands.spawn(ShowLosant);
-                        }
-                        ui.close();
-                    }
-                });
+                debug::render_debug_menu(ui, &mut plugin_registry);
+                experiments::render_experiments_menu(
+                    ui,
+                    experiments::ExperimentsRenderData {
+                        recognizer_entity,
+                        line_graph,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        data_viewer_entity,
+                        losant_entity,
+                    },
+                    &mut commands,
+                );
             });
         });
     });
+
+    if gooey_data.proj_toggle_requested {
+        camera_proj.p1().0 = true;
+    }
+    effects_enabled.0 = gooey_data.effects_enabled;
+    if active_shader.index != gooey_data.active_shader_index {
+        active_shader.index = gooey_data.active_shader_index;
+        trace!(
+            "shader effect changed to {}",
+            active_shader.display_name(&available_shaders)
+        );
+    }
+    color_state.color = gooey_data.color;
+
     Ok(())
 }
 
