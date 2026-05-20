@@ -100,6 +100,9 @@ pub struct UiConfig {
 
     /// Which egui visual theme to apply on startup.
     pub theme: ThemeChoice,
+
+    /// Show the FPS overlay on startup default: `true`.
+    pub show_fps: bool,
 }
 
 impl Default for UiConfig {
@@ -118,6 +121,7 @@ impl Default for UiConfig {
             initial_sort_dir: SortDir::Asc,
             initial_pinned: None,
             theme: ThemeChoice::Auto,
+            show_fps: true,
         }
     }
 }
