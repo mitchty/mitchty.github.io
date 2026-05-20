@@ -1,26 +1,49 @@
-// Fullscreen post-processing effect management
-use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled, PostProcessSettings};
+//! Fullscreen post-process effect plugin, mostly enables fullscreen post
+//! process fragment shaders to make things look spectacular. To me ok don't judge.
+//!
+//! Owns the camera orbit/config types, the keyboard toggles for cycling
+//! through shader effects, and the per-frame time-uniform update.
+//!
+//! `CameraOrbit` and `CameraConfig` live here because this is the natural home
+//! for everything that the old `fullscreen_effect` module contained. Ordering
+//! in `main()` places `CameraPlugin` before `FullscreenEffectPlugin` so
+//! `CameraConfig` is initialized in `build()` before any `Startup` system reads
+//! it - no further sequencing is required.
+// TODO: This layouts a bit "how you doing" but I'm not 100% sure if I want the
+// camera plugin to own fullscreen effects or not. I'll sleep on it a bit this
+// refactor is really stupid.
+
 use bevy::prelude::*;
 
-/// Camera orbit data for where the camera is pointing.
+use crate::plugins::camera::{FreeLookCamera, MainCamera};
+use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled, PostProcessSettings};
+
+/// Marker component used by the feathers UI to track whether the fullscreen
+/// post-process effect is enabled. Only meaningful under the `feathers`
+/// feature; the egui path uses `EffectsEnabled` directly.
+#[derive(Component, Default)]
+pub struct FullscreenEffectEnabled;
+
+/// Per-camera orbit data: the point the camera looks at and its orbital
+/// radius.
 #[derive(Component, Clone, Copy)]
 pub struct CameraOrbit {
     pub center: Vec3,
     pub radius: f32,
 }
 
-/// Camera configuration data that needs to be preserved across camera swaps
+/// Resource holding the full camera configuration used at spawn time.
 #[derive(Resource, Clone, Copy)]
 pub struct CameraConfig {
     pub transform: Transform,
-    pub free_look: crate::FreeLookCamera,
+    pub free_look: FreeLookCamera,
     pub orbit: CameraOrbit,
 }
 
 impl Default for CameraConfig {
     fn default() -> Self {
-        // TODO: Should make this calculation to center the 3d stuff to be
-        // dynamic, future me problem.
+        // Position the camera so the default 0.3-scale GLB is nicely framed.
+        // TODO: make this dynamic once scene AABB info is available at load time.
         let initial_pos = Vec3::new(3.0, 1.85, 3.0);
         let center = Vec3::new(0.0, 0.35, 0.0);
         let offset = initial_pos - center;
@@ -31,7 +54,7 @@ impl Default for CameraConfig {
         Self {
             transform: Transform::from_xyz(initial_pos.x, initial_pos.y, initial_pos.z)
                 .looking_at(center, Vec3::Y),
-            free_look: crate::FreeLookCamera {
+            free_look: FreeLookCamera {
                 yaw,
                 pitch,
                 sensitivity: 0.003,
@@ -44,8 +67,7 @@ impl Default for CameraConfig {
     }
 }
 
-/// Toggle fullscreen effects on/off
-/// e toggles on/off
+/// Toggle fullscreen effects on/off with the `E` key.
 pub fn toggle_fullscreen_effect(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut effects_enabled: ResMut<EffectsEnabled>,
@@ -72,8 +94,7 @@ pub fn toggle_fullscreen_effect(
     }
 }
 
-/// Cycle to next effect
-/// . cycles forward for now
+/// Cycle forward through available shader effects with `.`.
 pub fn next_effect(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut active_shader: ResMut<ActiveShader>,
@@ -96,8 +117,7 @@ pub fn next_effect(
     }
 }
 
-/// Cycle to back to a prior effect
-/// , cycles backward
+/// Cycle backward through available shader effects with `,`.
 pub fn previous_effect(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut active_shader: ResMut<ActiveShader>,
@@ -120,14 +140,17 @@ pub fn previous_effect(
     }
 }
 
-/// Update post-processing settings based on enabled state.
+// TODO: I need to make gooey settings for each shader so I can dilly dally
+// about with modifying values at runtime like intensity. This seems like a fun
+// side quest in the future.
+/// Sync the `PostProcessSettings.intensity` on the main camera to the current
+/// `EffectsEnabled` / `ActiveShader` state.
 pub fn manage_effect_settings(
-    mut camera_query: Query<&mut PostProcessSettings, With<crate::MainCamera>>,
+    mut camera_query: Query<&mut PostProcessSettings, With<MainCamera>>,
     effects_enabled: Res<EffectsEnabled>,
     active_shader: Res<ActiveShader>,
     available_shaders: Res<AvailableShaders>,
 ) {
-    // Only run when something changed
     if !effects_enabled.is_changed() && !active_shader.is_changed() {
         return;
     }
@@ -152,19 +175,41 @@ pub fn manage_effect_settings(
     }
 }
 
-/// Update time uniform for animated effects.
+/// Advance the `PostProcessSettings.time` uniform every frame.
 ///
-/// Clamp the time effect to 60 seconds as a period. Note the period if depended
-/// upon will reset.
-const TIME_PERIOD_SECS: f32 = 60.0;
-
+/// Time is clamped to a 60-second period so the shader never sees an
+/// unboundedly growing float and shaders break subtlely when we hit the max for
+/// an f32.
 pub fn update_effect_time(
     time: Res<Time>,
-    mut settings_query: Query<&mut PostProcessSettings, With<crate::MainCamera>>,
+    mut settings_query: Query<&mut PostProcessSettings, With<MainCamera>>,
 ) {
+    const TIME_PERIOD_SECS: f32 = 60.0;
     let current_time = time.elapsed_secs() % TIME_PERIOD_SECS;
 
     for mut settings in settings_query.iter_mut() {
         settings.time = current_time;
+    }
+}
+
+pub struct FullscreenEffectPlugin;
+
+impl Plugin for FullscreenEffectPlugin {
+    fn build(&self, app: &mut App) {
+        if !app.is_plugin_added::<crate::plugins::camera::CameraPlugin>() {
+            panic!("FullscreenEffectPlugin requires CameraPlugin to be added first!");
+        }
+
+        app.world_mut().spawn(FullscreenEffectEnabled);
+        app.init_resource::<CameraConfig>().add_systems(
+            Update,
+            (
+                toggle_fullscreen_effect,
+                next_effect,
+                previous_effect,
+                manage_effect_settings,
+                update_effect_time,
+            ),
+        );
     }
 }

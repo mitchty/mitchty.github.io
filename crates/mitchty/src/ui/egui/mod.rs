@@ -8,8 +8,16 @@ mod reveries;
 mod scene;
 mod theme_toggle;
 
+use crate::CameraMode;
 use crate::ai::infer::InferenceEngine;
+use crate::plugins::camera::MainCamera;
+use crate::plugins::fps::FpsDisplay;
+use crate::plugins::hue::HueAnimation;
 use crate::plugins::reveries::{ActiveReverie, ReverieDisplayName, ReverieKey};
+use crate::plugins::scene::{
+    ColorState, SceneConfig, SceneTransformConfig, SceneUrlState, ShowSceneModel,
+};
+use crate::plugins::text3d::{ShowText3d, Text3dDefaultPending, Text3dRenderer};
 use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled};
 use crate::ui::config::UiConfig;
 #[cfg(not(target_arch = "wasm32"))]
@@ -25,11 +33,6 @@ use crate::ui::recognizer::RasterSize;
 use crate::ui::recognizer::{BASE_BRUSH_R, InferenceResult, RecognizerState};
 use crate::ui::state::{UiBackend, UiPanel, UiState, egui_backend_active};
 use crate::ui::world_clock::{ShowWorldClock, WorldClockState, world_clock_window};
-use crate::{
-    CameraMode, ColorState, FpsDisplay, HueAnimation, MainCamera, ShowSceneModel, ShowText3d,
-    Text3dDefaultPending, Text3dRenderer,
-};
-use crate::{SceneConfig, SceneTransformConfig, SceneUrlState};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 #[cfg(not(target_arch = "wasm32"))]
@@ -1517,8 +1520,8 @@ pub fn apply_camera_projection_toggle(
     mut camera_query: Query<
         (
             &mut Projection,
-            &mut crate::CameraOrbit,
-            &crate::FreeLookCamera,
+            &mut crate::plugins::fullscreen::CameraOrbit,
+            &crate::plugins::camera::FreeLookCamera,
             &mut Transform,
         ),
         With<MainCamera>,
@@ -1588,8 +1591,8 @@ pub fn reset_camera(
     mut camera_query: Query<
         (
             &mut Transform,
-            &mut crate::CameraOrbit,
-            &mut crate::FreeLookCamera,
+            &mut crate::plugins::fullscreen::CameraOrbit,
+            &mut crate::plugins::camera::FreeLookCamera,
             &mut Projection,
         ),
         With<MainCamera>,
@@ -1602,7 +1605,7 @@ pub fn reset_camera(
             continue;
         };
 
-        let defaults = crate::fullscreen_effect::CameraConfig::default();
+        let defaults = crate::plugins::fullscreen::CameraConfig::default();
 
         *transform = defaults.transform;
         *orbit = defaults.orbit;

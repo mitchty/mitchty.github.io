@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::*;
 use bevy_pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin};
 
-use crate::Text3d;
+use crate::plugins::text3d::Text3d;
 
 /// Plugin that registers the extended material pipeline and the system that
 /// swaps newly-spawned [`StandardMaterial`] meshes over to it.

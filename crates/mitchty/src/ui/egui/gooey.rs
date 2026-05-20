@@ -2,10 +2,12 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 
 use super::{EguiMenuBarItem, ResetCamera};
+use crate::CameraMode;
+use crate::plugins::fps::FpsDisplay;
+use crate::plugins::hue::HueAnimation;
 use crate::plugins::theme::theme_default_color;
 use crate::ui::config::ThemeChoice;
 use crate::ui::state::{MenuAnchor, UiPanel};
-use crate::{CameraMode, FpsDisplay, HueAnimation};
 
 /// Plugin that registers the Gooey menu bar entry.
 pub struct GooeyMenuPlugin;

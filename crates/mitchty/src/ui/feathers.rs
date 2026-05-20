@@ -1,4 +1,4 @@
-use crate::fullscreen_effect::FullscreenEffectEnabled;
+use crate::plugins::fullscreen::FullscreenEffectEnabled;
 use crate::{CameraRotation, ColorState, CubeRotation, DragState, FpsDisplay, HueAnimation};
 use bevy::{
     color::Hsla,

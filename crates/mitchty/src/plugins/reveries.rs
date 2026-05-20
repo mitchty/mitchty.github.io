@@ -83,6 +83,7 @@ impl Plugin for ReveriesPlugin {
             )
             .init_resource::<ActiveReverie>()
             .add_systems(Update, sync_scroll_view_visibility.in_set(ReveriesSystems))
+            .add_systems(Update, send_scroll_events.in_set(ReveriesSystems))
             .add_observer(on_scroll);
 
         if let Some(mut registry) = app.world_mut().get_resource_mut::<PluginRegistry>() {

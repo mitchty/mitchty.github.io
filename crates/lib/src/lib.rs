@@ -1,5 +1,6 @@
 pub mod img;
 pub mod npz;
+pub mod quirks;
 
 /// Shared build-time version and environment information for all crates.
 pub mod build_info {
