@@ -37,16 +37,16 @@ pub fn platform_startup() {
     #[cfg(target_os = "windows")]
     {
         if is_wine() {
-            bevy::log::info!("running under Wine - applying startup quirks");
+            log::info!("running under Wine - applying startup quirks");
             // Yes this is unsafe cause in a posix env itself is thread unsafe
             // for removing an env var boo on posix/unix design from before I
             // was born.
             unsafe {
                 std::env::remove_var("TZDIR");
             }
-            bevy::log::info!("wine quirk: removed TZDIR so jiff uses bundled tzdb");
+            log::info!("wine quirk: removed TZDIR so jiff uses bundled tzdb");
         } else {
-            bevy::log::debug!("Windows native - no Wine quirks needed");
+            log::debug!("Windows native - no Wine quirks needed");
         }
     }
 }

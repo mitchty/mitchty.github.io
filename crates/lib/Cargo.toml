@@ -6,6 +6,7 @@ version.workspace = true
 
 [dependencies]
 const_format.workspace = true
+log.workspace = true
 zip.workspace = true
 
 [build-dependencies]

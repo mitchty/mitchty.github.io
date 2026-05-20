@@ -7,9 +7,6 @@ pub struct DebugMenuPlugin;
 
 impl Plugin for DebugMenuPlugin {
     fn build(&self, app: &mut App) {
-        // This only really does stuff in debug builds intentionally for now, I
-        // might change that later.
-        #[cfg(debug_assertions)]
         app.world_mut().spawn((
             UiPanel {
                 id: "debug",
@@ -21,13 +18,12 @@ impl Plugin for DebugMenuPlugin {
     }
 }
 
-/// Render the Debug drop-down menu entry into `ui`.
+/// Render the Debug drop-down menu into `ui`.
 ///
 /// Lists every entry in `PluginRegistry` as a live checkbox so plugins can be
 /// toggled at runtime without recompiling. `sync_registry_to_plugins` in
 /// `PreUpdate` propagates the flag changes to the actual `PluginEnabled<T>`
 /// resources on the next tick.
-#[cfg(debug_assertions)]
 pub fn render_debug_menu(
     ui: &mut bevy_egui::egui::Ui,
     registry: &mut crate::plugins::PluginRegistry,

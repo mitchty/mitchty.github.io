@@ -6521,6 +6521,7 @@ dependencies = [
  "const_format",
  "git-version",
  "jiff",
+ "log",
  "rustc_version",
  "zip 8.5.1",
 ]

@@ -1,7 +1,9 @@
 mod about;
 mod apps;
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 mod debug;
 mod experiments;
+#[cfg(not(target_arch = "wasm32"))]
 mod file;
 mod gooey;
 mod reveries;
@@ -157,9 +159,7 @@ impl Plugin for SettingsUiPlugin {
             .add_plugins(ThemePlugin)
             .add_plugins(about::AboutMenuPlugin)
             .add_plugins(apps::AppsMenuPlugin)
-            .add_plugins(debug::DebugMenuPlugin)
             .add_plugins(experiments::ExperimentsMenuPlugin)
-            .add_plugins(file::FileMenuPlugin)
             .add_plugins(gooey::GooeyMenuPlugin)
             .add_plugins(reveries::ReveriesMenuPlugin)
             .add_plugins(scene::SceneMenuPlugin)
@@ -225,6 +225,12 @@ impl Plugin for SettingsUiPlugin {
                 .chain()
                 .in_set(SettingsUiSystems),
         );
+
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_plugins(file::FileMenuPlugin);
+
+        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+        app.add_plugins(debug::DebugMenuPlugin);
 
         if let Some(mut registry) = app.world_mut().get_resource_mut::<PluginRegistry>() {
             registry.register::<SettingsUiPlugin>("Settings UI", true);
@@ -319,6 +325,10 @@ fn setup_egui(
             "ui panel registered: id={} anchor={:?} order={}",
             panel.id, panel.anchor, panel.order
         );
+    }
+
+    if ui_config.show_fps {
+        commands.spawn(FpsDisplay);
     }
 
     // ShowEgui is mostly kept for update_egui_input_state which still uses the
