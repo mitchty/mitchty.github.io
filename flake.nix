@@ -331,6 +331,8 @@
           LIBCLANG_PATH = lib.optionalString pkgs.stdenv.isDarwin "${pkgs.llvmPackages.libclang.lib}/lib";
         };
 
+        darwinLldFlags = lib.optionalString pkgs.stdenv.isDarwin "-C link-arg=-fuse-ld=${pkgs.llvmPackages.lld}/bin/ld64.lld";
+
         # Common arguments for Darwin builds (system libraries only)
         commonArgsDarwin =
           if pkgs.stdenv.isDarwin then
@@ -338,7 +340,10 @@
               inherit src;
               strictDeps = true;
 
-              nativeBuildInputs = [ pkgsDarwin.git ];
+              nativeBuildInputs = [
+                pkgsDarwin.git
+                pkgs.llvmPackages.lld
+              ];
 
               buildInputs = with pkgsDarwin; [
                 apple-sdk
@@ -488,6 +493,7 @@
               // releaseArgs
               // {
                 src = srcDeps;
+                RUSTFLAGS = "${releaseArgs.RUSTFLAGS} ${darwinLldFlags}";
               }
             )
           else
@@ -966,6 +972,7 @@
                 cargoArtifacts = cargoArtifactsDarwin;
                 cargoExtraArgs = "-p mitchty";
                 src = fileSetForCrate ./crates/mitchty;
+                RUSTFLAGS = "${releaseArgs.RUSTFLAGS} ${darwinLldFlags}";
 
                 # Don't check during cross-compilation
                 doCheck = false;
