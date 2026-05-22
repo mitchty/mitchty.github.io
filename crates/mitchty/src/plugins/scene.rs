@@ -335,6 +335,7 @@ pub fn on_scene_ready(
 /// When `color_state.color` is `None` the color follows the active dark/light
 /// theme and `Some(c)` overrides it directly. I really need to figure out a
 /// themeing strategy.
+// TODO: Future mitch sort ^^^ out kthxbai
 pub fn sync_color_state_to_clear_color(
     color_state: Res<ColorState>,
     ui_config: Res<crate::ui::UiConfig>,
@@ -368,7 +369,19 @@ pub fn sync_color_state_to_clear_color(
 /// Applies live device orientation received over the Losant SSE state stream.
 ///
 /// Converts `roll` and `pitch` in degrees [-180, 180] from a physical device IMU into
-/// a scene rotation, leaving the camera undisturbed.
+/// a scene rotation.
+///
+/// I set up the esp32 IMU to report orientation in a **Z-up** coordinate system
+/// which isn't how bevy maps xyz which is right hand **Y-up** coordinate system:
+/// `pitch` = tilt forward/back, rotation around the device's lateral Y axis.
+/// `roll`  = tilt side-to-side, rotation around the device's forward X axis.
+///
+/// Note I didn't really figure out what forward really is or right hand side.
+/// Just kinda hold my beer'd it so it vaguely works.
+///
+/// Yaw is also totally ignored because without a magnetometer its fairly
+/// useless so the third arg where z would be... if i could depend on it! is
+/// always 0 even though the devices don't even feign to report it.
 pub fn apply_device_state(
     mut device_events: bevy::ecs::message::MessageReader<crate::ui::losant::DeviceStateEvent>,
     mut scene_transform: ResMut<SceneTransformConfig>,
@@ -376,7 +389,7 @@ pub fn apply_device_state(
     for event in device_events.read() {
         let data = &event.0;
         let rotation = Quat::from_euler(
-            EulerRot::YXZ,
+            EulerRot::ZXY,
             data.roll.to_radians(),
             data.pitch.to_radians(),
             0.0,
