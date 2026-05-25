@@ -35,6 +35,14 @@ bevy = { workspace = true, features = [
 rand.workspace = true
 # Force naga/termcolor on here or we can't compile tests.
 naga.workspace = true
+modular-bitfield = "~0.11"
+# For slug font shape parsing.
+# variable-fonts is required for Inter.ttf (and most modern fonts) which store
+# outline variations in the gvar table. Without this feature, outline_glyph()
+# returns None for every glyph because it cannot reconstruct coordinates from
+# the compressed glyf data alone, silently producing an empty atlas.
+ttf-parser = { version = "0.25", features = ["variable-fonts"] }
+bytemuck = { version = "1", features = ["derive"] }
 
 # Lazy feature pulls in tokio which pulls in mio which has a failure when
 # building in wasm32. So web version of this is slower. OH WELL.
@@ -49,11 +57,11 @@ wgpu = { version = "26", optional = true, features = [
   "vulkan",
   "dx12",
 ] }
-image = { version = "0.25", optional = true, default-features = false, features = [
+image = { version = "~0.25", optional = true, default-features = false, features = [
   "png",
 ] }
-image-compare = { version = "0.5", optional = true }
-pollster = { version = "0.4", optional = true }
+image-compare = { version = "~0.5", optional = true }
+pollster = { version = "~0.4", optional = true }
 wesl = { version = "~0.3.2", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -69,4 +77,8 @@ required-features = ["render"]
 
 [[test]]
 name = "shader_fullscreen"
+required-features = ["render"]
+
+[[test]]
+name = "shader_slug"
 required-features = ["render"]

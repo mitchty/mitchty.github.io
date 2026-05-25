@@ -88,14 +88,14 @@
         # Build wasm-bindgen-cli at the version used by Bevy for wasm builds
         wasmBindgenCli = pkgsWasm.rustPlatform.buildRustPackage rec {
           pname = "wasm-bindgen-cli";
-          version = "0.2.121";
+          version = "0.2.122";
 
           src = pkgsWasm.fetchCrate {
             inherit pname version;
-            hash = "sha256-ZOMgFNOcGkO66Jz/Z83eoIu+DIzo3Z/vq6Z5g6BDY/w=";
+            hash = "sha256-vO4RSxi/sMWxmsEs3GuljdMfIRSu75A+Q+c5wgYToRU=";
           };
 
-          cargoHash = "sha256-DPdCDPTAPBrbqLUqnCwQu1dePs9lGg85JCJOCIr9qjU=";
+          cargoHash = "sha256-Inup6vvJSG5ghNyeDPyZbfZo4d0LsMG2OJfStoaeDBs=";
 
           nativeBuildInputs = [ pkgsWasm.pkg-config ];
 

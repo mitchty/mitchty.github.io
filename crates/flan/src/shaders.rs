@@ -52,6 +52,23 @@ impl Plugin for ShadersPlugin {
                     include_str!("lib/helpers/plot.wesl"),
                     "flan/shaders/lib/helpers/plot.wesl",
                 ),
+                // Slug font renderer library modules.
+                (
+                    include_str!("lib/slug/types.wesl"),
+                    "flan/shaders/lib/slug/types.wesl",
+                ),
+                (
+                    include_str!("lib/slug/math.wesl"),
+                    "flan/shaders/lib/slug/math.wesl",
+                ),
+                (
+                    include_str!("lib/slug/render.wesl"),
+                    "flan/shaders/lib/slug/render.wesl",
+                ),
+                (
+                    include_str!("lib/slug/text.wesl"),
+                    "flan/shaders/lib/slug/text.wesl",
+                ),
             ] {
                 let id = bevy::asset::AssetId::Uuid {
                     uuid: bevy::asset::uuid::Uuid::new_v4(),
@@ -64,6 +81,8 @@ impl Plugin for ShadersPlugin {
         // for runtime lookup.
         bevy::asset::embedded_asset!(app, "2d/plot.wesl");
         bevy::asset::embedded_asset!(app, "2d/reference.wesl");
+        bevy::asset::embedded_asset!(app, "slug/text.wesl");
+        bevy::asset::embedded_asset!(app, "slug/ui_text.wesl");
         bevy::asset::embedded_asset!(app, "fullscreen/chromatic-aberration.wesl");
         bevy::asset::embedded_asset!(app, "fullscreen/vhs-effect.wesl");
         bevy::asset::embedded_asset!(app, "fullscreen/em-interference.wesl");

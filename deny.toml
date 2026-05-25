@@ -282,6 +282,10 @@ skip = [
   { name = "webpki-roots", version = "=1.0.7" },
   { name = "tower", version = "=0.4.13" },
   { name = "tower", version = "=0.5.3" },
+  # The spaget is too much with this one but probably from ttf-parser and bevy
+  # based on what I changed/added.
+  { name = "syn", version = "=1.0.109" },
+  { name = "syn", version = "=2.0.117" },
 ]
 skip-tree = []
 

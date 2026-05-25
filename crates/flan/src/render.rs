@@ -40,17 +40,38 @@ pub enum BindingKind {
 /// Blocking render function:
 /// - compiles the wgsl shader
 /// - uploads any bindings to first uniform group
-/// - draws one frame and returns the rendered frame data
+/// - draws one full-size RENDER_SIZE x RENDER_SIZE frame image
 ///
-/// Uses @group(0) for tests mostly
+/// Uses @group(0) for tests mostly.
 ///
-/// Iff wgpu fails returns an error string from the Error from wgpu
+/// Iff wgpu fails returns an error string from the Error from wgpu.
 pub fn render_shader(wgsl_source: &str, bindings: &[Binding<'_>]) -> Result<RenderedFrame, String> {
     let _guard = RENDER_LOCK.lock().unwrap();
-    pollster::block_on(render_async(wgsl_source, bindings))
+    pollster::block_on(render_async(
+        RENDER_SIZE,
+        RENDER_SIZE,
+        wgsl_source,
+        bindings,
+    ))
+}
+
+/// Same as `render_shader` but renders to an explicit `width x height` instead
+/// of the default square `RENDER_SIZE x RENDER_SIZE`. Useful for testing
+/// rectangular viewports e.g. wide UI labels or anything that might need non
+/// square output.
+pub fn render_shader_sized(
+    width: u32,
+    height: u32,
+    wgsl_source: &str,
+    bindings: &[Binding<'_>],
+) -> Result<RenderedFrame, String> {
+    let _guard = RENDER_LOCK.lock().unwrap();
+    pollster::block_on(render_async(width, height, wgsl_source, bindings))
 }
 
 async fn render_async(
+    w: u32,
+    h: u32,
     wgsl_source: &str,
     bindings: &[Binding<'_>],
 ) -> Result<RenderedFrame, String> {
@@ -79,18 +100,32 @@ async fn render_async(
         .await
         .map_err(|e| format!("no wgpu adapter found: {e}"))?;
 
+    // Query what the adapter actually supports so we can ask for as many
+    // storage buffers per stage as the hardware will give us. This is needed
+    // for the Slug text renderer which uses 5 storage bindings in the fragment
+    // stage. `downlevel_defaults()` only guarantees 4, so we start from the
+    // adapter's reported limits and cap at that ceiling.
+    //
+    // TODO: This is why I need to not do array of structs per binding and
+    // instead a single array of structs for everything in one binding. This
+    // craps fiddly af.
+    let adapter_limits = adapter.limits();
+    let required_limits = wgpu::Limits {
+        max_storage_buffers_per_shader_stage: adapter_limits
+            .max_storage_buffers_per_shader_stage
+            .max(8),
+        ..wgpu::Limits::downlevel_defaults()
+    };
+
     let (device, queue): (wgpu::Device, wgpu::Queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("shader-test-device"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults(),
+            required_limits,
             ..Default::default()
         })
         .await
         .map_err(|e| format!("device request failed: {e}"))?;
-
-    let w = RENDER_SIZE;
-    let h = RENDER_SIZE;
 
     let texture: wgpu::Texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("render-target"),

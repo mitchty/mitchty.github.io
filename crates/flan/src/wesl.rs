@@ -13,6 +13,11 @@ const FULLSCREEN_EFFECT_TYPES_WESL: &str = include_str!("lib/types/fullscreen_ef
 const FULLSCREEN_EFFECT_BINDINGS_WESL: &str = include_str!("lib/bindings/fullscreen_effect.wesl");
 const FULLSCREEN_EFFECT_INPUT_WESL: &str = include_str!("lib/input/fullscreen_effect.wesl");
 
+const SLUG_TYPES_WESL: &str = include_str!("lib/slug/types.wesl");
+const SLUG_MATH_WESL: &str = include_str!("lib/slug/math.wesl");
+const SLUG_RENDER_WESL: &str = include_str!("lib/slug/render.wesl");
+const SLUG_LIB_TEXT_WESL: &str = include_str!("lib/slug/text.wesl");
+
 /// Shader variant used in wgpu to separate out webgl shaders and not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Variant {
@@ -125,6 +130,10 @@ const HELPERS: &[(&str, &str)] = &[
         "/flan/shaders/lib/input/fullscreen_effect",
         FULLSCREEN_EFFECT_INPUT_WESL,
     ),
+    ("/flan/shaders/lib/slug/types", SLUG_TYPES_WESL),
+    ("/flan/shaders/lib/slug/math", SLUG_MATH_WESL),
+    ("/flan/shaders/lib/slug/render", SLUG_RENDER_WESL),
+    ("/flan/shaders/lib/slug/text", SLUG_LIB_TEXT_WESL),
 ];
 
 /// Compile a WESL shader to a WGSL string using the in-memory VirtualResolver.

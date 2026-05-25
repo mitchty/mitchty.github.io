@@ -3,7 +3,7 @@ use bevy_egui::egui;
 
 use super::{EguiMenuBarItem, ResetCamera};
 use crate::CameraMode;
-use crate::plugins::fps::FpsDisplay;
+use crate::plugins::fps::{FpsDisplay, FpsTextRenderer};
 use crate::plugins::hue::HueAnimation;
 use crate::plugins::theme::theme_default_color;
 use crate::ui::config::ThemeChoice;
@@ -37,6 +37,8 @@ impl Plugin for GooeyMenuPlugin {
 pub struct GooeyRenderData {
     /// If the fps thingy needs to display or not.
     pub fps_entity: Option<Entity>,
+    /// Which renderer backs the FPS counter.
+    pub fps_renderer: FpsTextRenderer,
     /// This is probably gonna get ripped out soon its not used.
     pub hue_entity: Option<Entity>,
 
@@ -114,6 +116,23 @@ pub fn render_gooey_menu(
             } else if let Some(e) = data.fps_entity {
                 commands.entity(e).despawn();
             }
+        }
+        if fps_on {
+            ui.horizontal(|ui| {
+                ui.label("Renderer:");
+                if ui
+                    .selectable_label(data.fps_renderer == FpsTextRenderer::BevyText, "Bevy")
+                    .clicked()
+                {
+                    data.fps_renderer = FpsTextRenderer::BevyText;
+                }
+                if ui
+                    .selectable_label(data.fps_renderer == FpsTextRenderer::SlugText, "Slug")
+                    .clicked()
+                {
+                    data.fps_renderer = FpsTextRenderer::SlugText;
+                }
+            });
         }
 
         let mut hue_on = data.hue_entity.is_some();

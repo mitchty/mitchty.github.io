@@ -13,7 +13,7 @@ mod theme_toggle;
 use crate::CameraMode;
 use crate::ai::infer::InferenceEngine;
 use crate::plugins::camera::MainCamera;
-use crate::plugins::fps::FpsDisplay;
+use crate::plugins::fps::{FpsDisplay, FpsTextRenderer};
 use crate::plugins::hue::HueAnimation;
 use crate::plugins::reveries::{ActiveReverie, ReverieDisplayName, ReverieKey};
 use crate::plugins::scene::{
@@ -709,7 +709,11 @@ fn settings_ui(
     available_shaders: Res<AvailableShaders>,
     mut commands: Commands,
     mut ui_config: ResMut<UiConfig>,
-    mut camera_proj: ParamSet<(Res<CameraMode>, ResMut<CameraProjectionToggleRequested>)>,
+    mut camera_proj: ParamSet<(
+        Res<CameraMode>,
+        ResMut<CameraProjectionToggleRequested>,
+        ResMut<FpsTextRenderer>,
+    )>,
     mut reset_camera_events: MessageWriter<ResetCamera>,
     #[cfg(debug_assertions)] mut plugin_registry: ResMut<PluginRegistry>,
 ) -> Result {
@@ -749,6 +753,7 @@ fn settings_ui(
     let current_camera_mode = *camera_proj.p0();
     let mut gooey_data = gooey::GooeyRenderData {
         fps_entity,
+        fps_renderer: *camera_proj.p2(),
         hue_entity,
         camera_mode: current_camera_mode,
         proj_toggle_requested: false,
@@ -801,6 +806,7 @@ fn settings_ui(
                     },
                     &mut commands,
                 );
+                egui::warn_if_debug_build(ui);
             });
         });
     });
@@ -817,6 +823,7 @@ fn settings_ui(
         );
     }
     color_state.color = gooey_data.color;
+    *camera_proj.p2() = gooey_data.fps_renderer;
 
     Ok(())
 }
