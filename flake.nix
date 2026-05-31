@@ -765,19 +765,21 @@
         '';
 
         # Wrap the debug binary so BEVY_ASSET_PATH points at the fake workspace
-        # root saved above.
+        # root saved above. Setup LD_LIBRARY_PATH on Linux so the dynamic libs
+        # are found at runtime for things to not crash without them.
         mitchty = pkgs.symlinkJoin {
           name = "mitchty";
           paths = [ mitchty-unwrapped ];
           nativeBuildInputs = [ pkgs.makeWrapper ];
           postBuild = ''
             wrapProgram $out/bin/mitchty \
-              --set BEVY_ASSET_PATH ${mitchty-dev-asset-root}
+              --set BEVY_ASSET_PATH ${mitchty-dev-asset-root} \
+              ${lib.optionalString pkgs.stdenv.isLinux "--prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath commonXinputs}"}
           '';
         };
 
         # Optimized LTO build with release profile
-        mitchty-lto = craneLib.buildPackage (
+        mitchty-lto-unwrapped = craneLib.buildPackage (
           commonArgs
           // nixEnvArgs
           // releaseArgs
@@ -790,6 +792,17 @@
             BEVY_ASSET_PATH = ./crates/mitchty/src/assets;
           }
         );
+
+        mitchty-lto = pkgs.symlinkJoin {
+          name = "mitchty-lto";
+          paths = [ mitchty-lto-unwrapped ];
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          postBuild = ''
+            wrapProgram $out/bin/mitchty \
+              ${lib.optionalString pkgs.stdenv.isLinux "--prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath commonXinputs}"}
+          '';
+          meta.mainProgram = "mitchty";
+        };
 
         # Release build of the plain ma binary with wgpu backend
         ma = craneLib.buildPackage (
@@ -1209,6 +1222,7 @@
           mitchty-lto =
             (inputs.flake-utils.lib.mkApp {
               drv = mitchty-lto;
+              exePath = "/bin/mitchty";
             })
             // {
               meta = metaCommon "LTO optimized build";
