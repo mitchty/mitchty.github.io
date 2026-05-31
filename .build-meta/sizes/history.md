@@ -4,6 +4,7 @@ Newest first. Generated from `history.json` by `ci-record-sizes`.
 
 | Version | Commit | Date | WASM | Windows | macOS |
 |---------|--------|------|------|---------|-------|
+| `0.0.19` | `11f56be` | 2026-05-31 | 45MiB -16KiB | 87MiB +4.1KiB | 78MiB +141KiB |
 | `0.0.18` | `7fce691` | 2026-05-21 | 45MiB +20KiB | 87MiB +42KiB | 78MiB +36KiB |
 | `0.0.18` | `2851960` | 2026-05-16 | 45MiB +227KiB | 87MiB +2.5MiB | 78MiB +2.1MiB |
 | `0.0.17` | `f8aaf6d` | 2026-04-25 | 45MiB +194KiB | 85MiB +431KiB | 76MiB +376KiB |
