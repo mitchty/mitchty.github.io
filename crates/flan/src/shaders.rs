@@ -83,6 +83,7 @@ impl Plugin for ShadersPlugin {
         bevy::asset::embedded_asset!(app, "2d/reference.wesl");
         bevy::asset::embedded_asset!(app, "slug/text.wesl");
         bevy::asset::embedded_asset!(app, "slug/ui_text.wesl");
+        bevy::asset::embedded_asset!(app, "slug/mesh3d.wesl");
         bevy::asset::embedded_asset!(app, "fullscreen/chromatic-aberration.wesl");
         bevy::asset::embedded_asset!(app, "fullscreen/vhs-effect.wesl");
         bevy::asset::embedded_asset!(app, "fullscreen/em-interference.wesl");

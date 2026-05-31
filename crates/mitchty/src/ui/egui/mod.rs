@@ -19,7 +19,9 @@ use crate::plugins::reveries::{ActiveReverie, ReverieDisplayName, ReverieKey};
 use crate::plugins::scene::{
     ColorState, SceneConfig, SceneTransformConfig, SceneUrlState, ShowSceneModel,
 };
-use crate::plugins::text3d::{ShowText3d, Text3dDefaultPending, Text3dRenderer};
+use crate::plugins::text3d::{
+    ShowText3d, Text3dDefaultPending, Text3dDepthPending, Text3dRenderer,
+};
 use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled};
 use crate::ui::config::UiConfig;
 #[cfg(not(target_arch = "wasm32"))]
@@ -457,6 +459,7 @@ fn scene_config_window(
     mut gizmo_options: ResMut<GizmoOptions>,
     mut text3d_pending: ResMut<Text3dDefaultPending>,
     mut text3d_renderer: ResMut<Text3dRenderer>,
+    mut text3d_depth_pending: ResMut<Text3dDepthPending>,
     mut scene_config: ResMut<SceneConfig>,
     mut scene_url_state: ResMut<SceneUrlState>,
     #[cfg(not(target_arch = "wasm32"))] mut scene_file_dialog: NonSendMut<SceneFileDialog>,
@@ -646,11 +649,12 @@ fn scene_config_window(
             ui.horizontal(|ui| {
                 ui.label("Renderer:");
                 if ui
-                    .selectable_label(*text3d_renderer == Text3dRenderer::FontMesh, "FontMesh")
+                    .selectable_label(*text3d_renderer == Text3dRenderer::SlugText3d, "SlugText3d")
                     .clicked()
                 {
-                    *text3d_renderer = Text3dRenderer::FontMesh;
+                    *text3d_renderer = Text3dRenderer::SlugText3d;
                 }
+
                 if ui
                     .selectable_label(*text3d_renderer == Text3dRenderer::SlugText, "SlugText")
                     .clicked()
@@ -658,6 +662,25 @@ fn scene_config_window(
                     *text3d_renderer = Text3dRenderer::SlugText;
                 }
             });
+            if *text3d_renderer == Text3dRenderer::SlugText3d {
+                ui.horizontal(|ui| {
+                    ui.label("Depth:");
+                    // Read the current value without marking the resource as
+                    // changed through the debounce system.
+                    let mut depth_val = text3d_depth_pending.bypass_change_detection().0;
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut depth_val)
+                                .speed(0.001)
+                                .range(0.001_f32..=1.0)
+                                .fixed_decimals(3),
+                        )
+                        .changed()
+                    {
+                        text3d_depth_pending.0 = depth_val;
+                    }
+                });
+            }
             // Bind the textbox to the ecs staging resource so the field is
             // fully responsive and just writes to a dum af string from its
             // pov. Spawning in tick was a baaaad idea and typing fast made

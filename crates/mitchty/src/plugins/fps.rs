@@ -146,6 +146,7 @@ pub fn setup_fps_slug_node(
             layout: flan::Layout::new()
                 .with_vertical(flan::Vertical::Center)
                 .with_horizontal(flan::Horizontal::Right),
+            ..default()
         },
         flan::SlugTextFont(font_id),
         flan::SlugText,

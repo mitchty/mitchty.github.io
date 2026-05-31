@@ -17,7 +17,7 @@
 // https://jcgt.org/published/0006/02/02/
 //
 // Em-space coordinates throughout this file are raw font units (i16 / f32),
-// NOT normalized to [0..1]. Normalisation happened in the old API; the new
+// NOT normalized to [0..1]. Normalization happened in the old API; the new
 // approach matches gabdube and the shader, which use raw font units directly.
 
 use std::collections::HashMap;
@@ -95,6 +95,9 @@ pub struct CachedGlyph {
     pub bbox: [i16; 4], // [xmin, ymin, xmax, ymax]
     /// Bezier curves for this glyph in font units.
     pub curves: Vec<QuadCurve>,
+    /// Start indices into `curves` for each contour. Used for side wall
+    /// extrusion so that it can just iterate each contour stupidly.
+    pub contour_starts: Vec<usize>,
     /// Flat array of curve-local indices into `curves`.
     /// All band packed ranges index into this array (local offsets).
     pub local_curve_indices: Vec<u32>,
@@ -102,6 +105,20 @@ pub struct CachedGlyph {
     pub(crate) vband: [PackedRange; DEFAULT_BAND_COUNT],
     /// Horizontal band packed ranges (offset into `local_curve_indices`).
     pub(crate) hband: [PackedRange; DEFAULT_BAND_COUNT],
+}
+
+impl CachedGlyph {
+    /// Iterate over each contour slice of a Slug `QuadCurve`.
+    pub fn contours(&self) -> impl Iterator<Item = &[QuadCurve]> {
+        self.contour_starts.iter().enumerate().map(|(i, &start)| {
+            let end = self
+                .contour_starts
+                .get(i + 1)
+                .copied()
+                .unwrap_or(self.curves.len());
+            &self.curves[start..end]
+        })
+    }
 }
 
 /// GPU layout for one glyph entry in the atlas storage buffer / data texture.
@@ -663,7 +680,60 @@ impl SlugAtlas {
             .unwrap_or(0)
     }
 
-    /// Collect all glyph IDs (raw u16) needed to render `text` with `font_id`.
+    /// Returns underlying font `(ascender, descender)` in raw font units for a `font_id`.
+    /// These are the values from [`ttf_parser::Face::ascender`] and
+    /// [`ttf_parser::Face::descender`] descender is typically negative
+    /// generally for most fonts. I need more unit tests.
+    pub fn font_metrics(&self, font_id: FontId) -> Option<(f32, f32)> {
+        let entry = self.fonts.get(font_id.0 as usize)?;
+        Some((entry.face.ascender() as f32, entry.face.descender() as f32))
+    }
+
+    // TODO: Result for this if the font or glyphs not cached? None is a hack
+    // for now.
+    /// Return a reference to the cached glyph data for `glyph_id` under
+    /// `font_id`, or `None` if the font or glyph is not in the cache.
+    pub fn cached_glyph(&self, font_id: FontId, glyph_id: u16) -> Option<&CachedGlyph> {
+        self.fonts
+            .get(font_id.0 as usize)?
+            .glyph_cache
+            .get(&glyph_id)
+    }
+
+    /// Return `units_per_em` for `font_id`.
+    pub fn units_per_em(&self, font_id: FontId) -> Option<u16> {
+        Some(self.fonts.get(font_id.0 as usize)?.face.units_per_em())
+    }
+
+    // TODO: Here too might be a better option for a Result rather than Option
+    // as I'm mixing concerns a bit for simplicity/v0.
+    /// Look up the ttf/font glyph id as u16 for some unicode character in
+    /// `font_id`.
+    ///
+    /// Returns `None` if the font is not registered or the character has no
+    /// glyph in the font.
+    pub fn glyph_index_for_char(&self, font_id: FontId, ch: char) -> Option<u16> {
+        self.fonts
+            .get(font_id.0 as usize)?
+            .face
+            .glyph_index(ch)
+            .map(|g| g.0)
+    }
+
+    /// Return horizontal advance for `glyph_id` in font units. Returns `None`
+    /// if the font is not registered or the glyph has no advance metric.
+    ///
+    /// Callers that need pixel-scaled advance should multiply by
+    /// `font_size / units_per_em`.
+    pub fn glyph_advance(&self, font_id: FontId, glyph_id: u16) -> Option<f32> {
+        self.fonts
+            .get(font_id.0 as usize)?
+            .face
+            .glyph_hor_advance(ttf_parser::GlyphId(glyph_id))
+            .map(|v| v as f32)
+    }
+
+    /// Collect all glyph ids needed to render `text` with `font_id`.
     /// Returns an empty vec if font_id is invalid or the character has no glyph.
     pub fn collect_glyph_ids(&self, font_id: FontId, text: &str) -> Vec<u16> {
         let Some(entry) = self.fonts.get(font_id.0 as usize) else {
@@ -685,7 +755,7 @@ impl SlugAtlas {
 fn extract_cached_glyph(face: &Face<'_>, gid: GlyphId) -> Option<CachedGlyph> {
     let mut builder = CurveBuilder::default();
     let rect = face.outline_glyph(gid, &mut builder)?;
-    let curves = builder.into_curves();
+    let (curves, contour_starts) = builder.into_data();
     if curves.is_empty() {
         return None;
     }
@@ -703,6 +773,7 @@ fn extract_cached_glyph(face: &Face<'_>, gid: GlyphId) -> Option<CachedGlyph> {
     Some(CachedGlyph {
         bbox,
         curves,
+        contour_starts,
         local_curve_indices,
         vband,
         hband,
@@ -803,19 +874,23 @@ struct CurveBuilder {
     curves: Vec<QuadCurve>,
     cur: [f32; 2],
     start: [f32; 2],
+    contour_starts: Vec<usize>,
 }
 
 impl CurveBuilder {
     fn push(&mut self, p0: [f32; 2], p1: [f32; 2], p2: [f32; 2]) {
         self.curves.push(QuadCurve { p0, p1, p2 });
     }
-    fn into_curves(self) -> Vec<QuadCurve> {
-        self.curves
+    // TODO: Instead of a vec tuple probably make a Struct for this too.
+    /// Consume the builder so far and return `(curves, contour_starts)`.
+    fn into_data(self) -> (Vec<QuadCurve>, Vec<usize>) {
+        (self.curves, self.contour_starts)
     }
 }
 
 impl OutlineBuilder for CurveBuilder {
     fn move_to(&mut self, x: f32, y: f32) {
+        self.contour_starts.push(self.curves.len());
         self.cur = [x, y];
         self.start = [x, y];
     }

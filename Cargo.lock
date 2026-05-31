@@ -1198,17 +1198,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bevy_fontmesh"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "074aa3a04d8ebfd637412a2d55c4a75bab087c50ff66dc1a9301c0a0b8b70070"
-dependencies = [
- "bevy",
- "fontmesh",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "bevy_gilrs"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1815,16 +1804,6 @@ dependencies = [
  "tracing",
  "wesl",
  "wgpu-types 27.0.1",
-]
-
-[[package]]
-name = "bevy_slugtext"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38a139656ade7df1e14499f0ebf851f74a4f4fb7112165e637ba818bc3a5355d"
-dependencies = [
- "bevy",
- "ttf-parser 0.25.1",
 ]
 
 [[package]]
@@ -4794,7 +4773,7 @@ dependencies = [
  "polars",
  "pollster",
  "rand 0.10.1",
- "ttf-parser 0.25.1",
+ "ttf-parser",
  "wesl",
  "wgpu 26.0.1",
 ]
@@ -4848,12 +4827,6 @@ dependencies = [
  "rand 0.9.4",
  "rand_distr",
 ]
-
-[[package]]
-name = "float_next_after"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bf7cc16383c4b8d58b9905a8509f02926ce3058053c056376248d958c9df1e8"
 
 [[package]]
 name = "fnv"
@@ -4911,19 +4884,7 @@ dependencies = [
  "memmap2",
  "slotmap",
  "tinyvec",
- "ttf-parser 0.25.1",
-]
-
-[[package]]
-name = "fontmesh"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e073e8bdbd27826016221558b663f707f7dd003267ca76b29c3256a984d722d9"
-dependencies = [
- "glam 0.30.10",
- "lyon_tessellation",
- "rustc-hash 2.1.2",
- "ttf-parser 0.24.1",
+ "ttf-parser",
 ]
 
 [[package]]
@@ -6709,38 +6670,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
-name = "lyon_geom"
-version = "1.0.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4336502e29e32af93cf2dad2214ed6003c17ceb5bd499df77b1de663b9042b92"
-dependencies = [
- "arrayvec",
- "euclid",
- "num-traits",
-]
-
-[[package]]
-name = "lyon_path"
-version = "1.0.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c463f9c428b7fc5ec885dcd39ce4aa61e29111d0e33483f6f98c74e89d8621e"
-dependencies = [
- "lyon_geom",
- "num-traits",
-]
-
-[[package]]
-name = "lyon_tessellation"
-version = "1.0.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e43b7e44161571868f5c931d12583592c223c5583eef86b08aa02b7048a3552"
-dependencies = [
- "float_next_after",
- "lyon_path",
- "num-traits",
-]
-
-[[package]]
 name = "ma"
 version = "0.0.18"
 dependencies = [
@@ -6945,11 +6874,9 @@ dependencies = [
  "arboard",
  "bevy",
  "bevy_egui",
- "bevy_fontmesh",
  "bevy_pbr",
  "bevy_picking",
  "bevy_pretty_text",
- "bevy_slugtext",
  "burn",
  "clap",
  "console_error_panic_hook",
@@ -7817,7 +7744,7 @@ version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
- "ttf-parser 0.25.1",
+ "ttf-parser",
 ]
 
 [[package]]
@@ -9429,7 +9356,7 @@ dependencies = [
  "core_maths",
  "log",
  "smallvec",
- "ttf-parser 0.25.1",
+ "ttf-parser",
  "unicode-bidi-mirroring",
  "unicode-ccc",
  "unicode-properties",
@@ -10851,12 +10778,6 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "ttf-parser"
-version = "0.24.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5be21190ff5d38e8b4a2d3b6a3ae57f612cc39c96e83cedeaf7abc338a8bac4a"
-
-[[package]]
-name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
@@ -11137,7 +11058,7 @@ dependencies = [
  "strict-num",
  "svgtypes",
  "tiny-skia-path 0.12.0",
- "ttf-parser 0.25.1",
+ "ttf-parser",
  "unicode-bidi",
  "unicode-script",
  "unicode-vo",

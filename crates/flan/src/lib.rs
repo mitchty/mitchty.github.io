@@ -1,5 +1,7 @@
+use bevy::pbr::Material;
 use bevy::prelude::UiMaterialKey;
 use bevy::prelude::*;
+use bevy::render::alpha::AlphaMode;
 use bevy::render::render_resource::SpecializedMeshPipelineError;
 use bevy::render::render_resource::*;
 use bevy::shader::ShaderDefVal;
@@ -15,7 +17,7 @@ pub mod shaders;
 pub mod slug_text;
 
 pub use layout::{Horizontal, Layout, Vertical};
-pub use slug_text::{SlugPlugin, SlugTextFont, SlugTextNode};
+pub use slug_text::{SlugPlugin, SlugTextFont, SlugTextMesh, SlugTextNode};
 
 #[cfg(all(feature = "render", not(target_arch = "wasm32")))]
 pub mod render;
@@ -27,6 +29,11 @@ pub mod wesl;
 /// Slug font atlas builder is mostly TTF/OTF curve datato GPU curve/band
 /// buffers for the Slug renderer. Uses ttf-parser and bytemuck for the evil.
 pub mod slug;
+
+/// Glyph extrusion to build side-wall geometry from flan slug bezier contours
+/// to replace bevy fontmeash usage so I don't have holes all over in kanji glyphs.
+pub mod extrude;
+pub use extrude::build_text_side_walls;
 
 /// Maximum number of plot points stored in a webgl uniform buffer. Must match
 /// the array size in the WESL shader source `array<vec4<f32>, 512>`.
@@ -700,6 +707,8 @@ pub struct SlugMaterial {
     /// atlas concern. The shader reads it as a push-constant-style field from
     /// the UiMaterial-local uniform instead of the slug lib uniform.
     pub text_color: Vec4,
+    /// Pre-computed local-to-clip matrix for 3d Material path.
+    pub local_to_clip: [[f32; 4]; 4],
     /// Single packed GPU buffer: [curves | curve_indices | glyphs] with alignment.
     pub atlas_buffer: Option<Handle<ShaderStorageBuffer>>,
     pub curves_offset: u64,
@@ -724,6 +733,7 @@ impl Default for SlugMaterial {
         SlugMaterial {
             params: SlugParams::default(),
             text_color: Vec4::ONE,
+            local_to_clip: Mat4::IDENTITY.to_cols_array_2d(),
             atlas_buffer: None,
             curves_offset: 0,
             curves_size: 0,
@@ -775,15 +785,10 @@ impl AsBindGroup for SlugMaterial {
             None => return Err(AsBindGroupError::RetryNextUpdate),
         };
 
-        // Params uniform is 16 bytes (node_size + pad). text_color is separate
-        // from params as its more of a call site concern.
-        //
-        // Pack both into one 32-byte uniform so the binding stays at slot 0.
-        // Layout: [node_size: vec2, _pad: vec2, text_color: vec4] = 32 bytes.
-        // The shader reads text_color from offset 16 and node_size from offset 0.
-        let mut params_bytes = [0u8; 32];
+        let mut params_bytes = [0u8; 96];
         params_bytes[..16].copy_from_slice(bytemuck::bytes_of(&self.params));
         params_bytes[16..32].copy_from_slice(bytemuck::bytes_of(&self.text_color));
+        params_bytes[32..96].copy_from_slice(bytemuck::cast_slice(&self.local_to_clip));
         let params_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("slug_params"),
             contents: &params_bytes,
@@ -880,22 +885,21 @@ impl AsBindGroup for SlugMaterial {
         };
 
         vec![
-            // binding 0: SlugParams uniform (16 bytes) + text_color (16 bytes) = 32 bytes
             BindGroupLayoutEntry {
                 binding: 0,
                 visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: BufferSize::new(32),
+                    min_binding_size: None,
                 },
                 count: None,
             },
-            storage_entry(1), // curves[]
-            storage_entry(2), // curve_indices[]
-            storage_entry(3), // glyphs[]
-            storage_entry(4), // runs[]         (SlugRunDesc, 16 bytes each)
-            storage_entry(5), // glyph_layout[] (SlugGlyphLayout, 48 bytes each)
+            storage_entry(1),
+            storage_entry(2),
+            storage_entry(3),
+            storage_entry(4),
+            storage_entry(5),
         ]
     }
 }
@@ -912,6 +916,9 @@ pub struct SlugMaterial {
     /// concern. Kept here and packed into the uniform at binding 0 alongside
     /// node_size, same as the native path.
     pub text_color: Vec4,
+    /// Pre-computed local-to-clip matrix for 3d path only. Unused for the webgl
+    /// path but kept for struct parity.
+    pub local_to_clip: [[f32; 4]; 4],
     /// curves_tex: texture_2d<f32>, rgba32float, 2 texels per curve.
     pub curves_image: Handle<Image>,
     /// curve_indices_tex: texture_2d<u32>, rgba32uint, 4 indices per texel.
@@ -930,6 +937,7 @@ impl Default for SlugMaterial {
         SlugMaterial {
             params: SlugParams::default(),
             text_color: Vec4::ONE,
+            local_to_clip: Mat4::IDENTITY.to_cols_array_2d(),
             curves_image: Handle::default(),
             curve_indices_image: Handle::default(),
             glyphs_image: Handle::default(),
@@ -995,6 +1003,12 @@ impl AsBindGroup for SlugMaterial {
             &bevy::render::render_resource::TextureView,
             AsBindGroupError,
         > {
+            // TODO: How do I deal with this without this hack? God I hate webgl
+            // and all of its bullshit. I spend 300% more time keeping web stuff
+            // working than linux/macos/windows combined. Worst. Platform. Ever.
+            if handle.id() == bevy::asset::AssetId::default() {
+                return Err(AsBindGroupError::RetryNextUpdate);
+            }
             images
                 .get(handle)
                 .map(|gpu| &gpu.texture_view)
@@ -1007,10 +1021,10 @@ impl AsBindGroup for SlugMaterial {
         let runs_view = get_view(&self.runs_image)?;
         let layout_view = get_view(&self.glyph_layout_image)?;
 
-        // Pack SlugParams into (16 bytes) + text_color (16 bytes) = 32-byte uniform.
-        let mut params_bytes = [0u8; 32];
+        let mut params_bytes = [0u8; 96];
         params_bytes[..16].copy_from_slice(bytemuck::bytes_of(&self.params));
         params_bytes[16..32].copy_from_slice(bytemuck::bytes_of(&self.text_color));
+        params_bytes[32..96].copy_from_slice(bytemuck::cast_slice(&self.local_to_clip));
         let params_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("slug_params_webgl"),
             contents: &params_bytes,
@@ -1076,14 +1090,13 @@ impl AsBindGroup for SlugMaterial {
         };
 
         vec![
-            // binding 0: SlugParams (node_size) + text_color packed = 32-byte uniform
             BindGroupLayoutEntry {
                 binding: 0,
                 visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: BufferSize::new(32),
+                    min_binding_size: None,
                 },
                 count: None,
             },
@@ -1125,6 +1138,84 @@ impl Material2d for SlugMaterial {
         if let Some(ref mut fragment) = descriptor.fragment {
             slug_push_shader_defs(fragment, false);
         }
+        Ok(())
+    }
+}
+
+/// 3D Material impl for slug text meshes placed in world space.
+///
+/// Adds a third rendering surface alongside Material2d and UiMaterial.
+/// The mesh geometry is normalized to 1 world unit tall; Transform handles
+/// placement and scale. Uses the same atlas buffers and bind group layout as
+/// the 2D path. Only the vertex shader differs
+#[cfg(not(feature = "webgl"))]
+impl Material for SlugMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "embedded://flan/slug/mesh3d.wesl".into()
+    }
+
+    fn vertex_shader() -> ShaderRef {
+        "embedded://flan/slug/mesh3d.wesl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        _key: bevy::pbr::MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        descriptor
+            .vertex
+            .shader_defs
+            .push(ShaderDefVal::Bool("MATERIAL_3D".into(), true));
+        if let Some(ref mut fragment) = descriptor.fragment {
+            slug_push_shader_defs(fragment, false);
+            fragment
+                .shader_defs
+                .push(ShaderDefVal::Bool("MATERIAL_3D".into(), true));
+        }
+        // Disable backface culling so the text is readable from both sides.
+        descriptor.primitive.cull_mode = None;
+        Ok(())
+    }
+}
+
+/// 3D Material impl for webgl uses data textures at group 3
+#[cfg(feature = "webgl")]
+impl Material for SlugMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "embedded://flan/slug/mesh3d.wesl".into()
+    }
+
+    fn vertex_shader() -> ShaderRef {
+        "embedded://flan/slug/mesh3d.wesl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        _key: bevy::pbr::MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        descriptor
+            .vertex
+            .shader_defs
+            .push(ShaderDefVal::Bool("MATERIAL_3D".into(), true));
+        if let Some(ref mut fragment) = descriptor.fragment {
+            slug_push_shader_defs(fragment, false);
+            fragment
+                .shader_defs
+                .push(ShaderDefVal::Bool("MATERIAL_3D".into(), true));
+        }
+        descriptor.primitive.cull_mode = None;
         Ok(())
     }
 }

@@ -45,17 +45,17 @@ import package::flan::shaders::lib::slug::math::{
 @if(UI_MATERIAL && !WEBGL)
 @group(1) @binding(5) var<storage, read> slug_glyph_layout:  array<SlugGlyphLayout>;
 
-@if(!UI_MATERIAL && !WEBGL)
+@if(!UI_MATERIAL && !WEBGL && !MATERIAL_3D)
 @group(0) @binding(0) var<uniform>       slug_params:        SlugParams;
-@if(!UI_MATERIAL && !WEBGL)
+@if(!UI_MATERIAL && !WEBGL && !MATERIAL_3D)
 @group(0) @binding(1) var<storage, read> slug_curves:        array<array<vec2<f32>, 3>>;
-@if(!UI_MATERIAL && !WEBGL)
+@if(!UI_MATERIAL && !WEBGL && !MATERIAL_3D)
 @group(0) @binding(2) var<storage, read> slug_curve_indices: array<u32>;
-@if(!UI_MATERIAL && !WEBGL)
+@if(!UI_MATERIAL && !WEBGL && !MATERIAL_3D)
 @group(0) @binding(3) var<storage, read> slug_glyphs:        array<GlyphInfo>;
-@if(!UI_MATERIAL && !WEBGL)
+@if(!UI_MATERIAL && !WEBGL && !MATERIAL_3D)
 @group(0) @binding(4) var<storage, read> slug_runs:          array<SlugRunDesc>;
-@if(!UI_MATERIAL && !WEBGL)
+@if(!UI_MATERIAL && !WEBGL && !MATERIAL_3D)
 @group(0) @binding(5) var<storage, read> slug_glyph_layout:  array<SlugGlyphLayout>;
 
 @if(UI_MATERIAL && WEBGL)
@@ -73,18 +73,45 @@ import package::flan::shaders::lib::slug::math::{
 @if(UI_MATERIAL && WEBGL)
 @group(1) @binding(5) var slug_glyph_layout_tex:  texture_2d<f32>;
 
-@if(!UI_MATERIAL && WEBGL)
+// Non-UI webgl path (Material2d / headless test harness).
+// Excluded when MATERIAL_3D is true to avoid duplicate binding declarations.
+@if(!UI_MATERIAL && WEBGL && !MATERIAL_3D)
 @group(0) @binding(0) var<uniform>                slug_params:            SlugParams;
-@if(!UI_MATERIAL && WEBGL)
+@if(!UI_MATERIAL && WEBGL && !MATERIAL_3D)
 @group(0) @binding(1) var slug_curves_tex:        texture_2d<f32>;
-@if(!UI_MATERIAL && WEBGL)
+@if(!UI_MATERIAL && WEBGL && !MATERIAL_3D)
 @group(0) @binding(2) var slug_curve_indices_tex: texture_2d<u32>;
-@if(!UI_MATERIAL && WEBGL)
+@if(!UI_MATERIAL && WEBGL && !MATERIAL_3D)
 @group(0) @binding(3) var slug_glyphs_tex:        texture_2d<u32>;
-@if(!UI_MATERIAL && WEBGL)
+@if(!UI_MATERIAL && WEBGL && !MATERIAL_3D)
 @group(0) @binding(4) var slug_runs_tex:          texture_2d<f32>;
-@if(!UI_MATERIAL && WEBGL)
+@if(!UI_MATERIAL && WEBGL && !MATERIAL_3D)
 @group(0) @binding(5) var slug_glyph_layout_tex:  texture_2d<f32>;
+
+// 3-D Material path - native uses storage buffers, WebGL uses data textures.
+// Both land at group 3 (MATERIAL_BIND_GROUP_INDEX in Bevy 0.18).
+// Binding 0 is declared in mesh3d.wesl to avoid duplicate declarations.
+@if(MATERIAL_3D && !WEBGL)
+@group(3) @binding(1) var<storage, read> slug_curves:        array<array<vec2<f32>, 3>>;
+@if(MATERIAL_3D && !WEBGL)
+@group(3) @binding(2) var<storage, read> slug_curve_indices: array<u32>;
+@if(MATERIAL_3D && !WEBGL)
+@group(3) @binding(3) var<storage, read> slug_glyphs:        array<GlyphInfo>;
+@if(MATERIAL_3D && !WEBGL)
+@group(3) @binding(4) var<storage, read> slug_runs:          array<SlugRunDesc>;
+@if(MATERIAL_3D && !WEBGL)
+@group(3) @binding(5) var<storage, read> slug_glyph_layout:  array<SlugGlyphLayout>;
+
+@if(MATERIAL_3D && WEBGL)
+@group(3) @binding(1) var slug_curves_tex:        texture_2d<f32>;
+@if(MATERIAL_3D && WEBGL)
+@group(3) @binding(2) var slug_curve_indices_tex: texture_2d<u32>;
+@if(MATERIAL_3D && WEBGL)
+@group(3) @binding(3) var slug_glyphs_tex:        texture_2d<u32>;
+@if(MATERIAL_3D && WEBGL)
+@group(3) @binding(4) var slug_runs_tex:          texture_2d<f32>;
+@if(MATERIAL_3D && WEBGL)
+@group(3) @binding(5) var slug_glyph_layout_tex:  texture_2d<f32>;
 
 
 // Native is a direct array index.

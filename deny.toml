@@ -189,15 +189,13 @@ skip = [
   # from polars and burn
   { name = "signal-hook", version = "=0.3.18" },
   { name = "signal-hook", version = "=0.4.4" },
-  # from polars and/or bevy-fontmesh
+  # from polars only
   { name = "wit-bindgen", version = "=0.51.0" },
   { name = "wit-bindgen", version = "=0.57.1" },
   { name = "getrandom", version = "=0.2.17" },
   { name = "getrandom", version = "=0.3.4" },
   { name = "getrandom", version = "=0.4.2" },
   { name = "rustc-hash", version = "=1.1.0" },
-  { name = "ttf-parser", version = "=0.24.1" },
-  { name = "ttf-parser", version = "=0.25.1" },
   { name = "r-efi", version = "=5.3.0" },
   { name = "r-efi", version = "=6.0.0" },
   { name = "toml_edit", version = "=0.23.10+spec-1.0.0" },

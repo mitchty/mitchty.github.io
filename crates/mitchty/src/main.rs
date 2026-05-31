@@ -23,8 +23,6 @@ use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 #[cfg(feature = "feathers")]
 use bevy::feathers::{FeathersPlugins, dark_theme::create_dark_theme, theme::UiTheme};
 use bevy::prelude::*;
-use bevy_fontmesh::prelude::*;
-use bevy_slugtext::prelude::*;
 use flan::shaders::ShadersPlugin;
 use mesh_effect::MeshEffectPlugin;
 use post_process::PostProcessPlugin;
@@ -58,8 +56,6 @@ fn main() {
         .add_plugins(assets::AssetConfigPlugin)
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(ShadersPlugin)
-        .add_plugins(FontMeshPlugin::<StandardMaterial>::default())
-        .add_plugins(SlugTextPlugin)
         .add_plugins(PostProcessPlugin)
         .add_plugins(TransformGizmoPlugin)
         .add_plugins(MeshEffectPlugin)

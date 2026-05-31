@@ -52,13 +52,14 @@ impl MaterialExtension for MeshEffectExtension {
 /// never runs again for that entity.
 ///
 /// `Without<Text3d>` guards against hijacking the 3D text mesh entities spawned
-/// by either `bevy_fontmesh` or `bevy_slugtext`. FontMesh entities use
-/// `MeshMaterial3d<StandardMaterial>` and must stay on `StandardMaterial` so
-/// that `FontMeshPlugin::<StandardMaterial>` re-mesh systems and
-/// `animate_materials` continue to find them. SlugText entities use their own
-/// `TextMaterial` but carry the same `Text3d` marker, so the guard covers both.
+/// by flan's slug text renderer. SlugText only entities use `SlugMaterial` and
+/// must not have the extended mesh effect material applied on top of them.
+/// Future mitch sould probably make "3d" slugtext entities a totally different
+/// component but I'm still learning what makes sense as an api so wrong it is
+/// for now. Future me can figure out the better option based on use
+/// cases/callsites and fix it then.
 ///
-/// Thinking about how I can deal with this in a node editor way.
+/// Thinking about how I can deal with this in a node editor way too.
 #[allow(clippy::type_complexity)]
 pub fn apply_mesh_effect(
     query: Query<
