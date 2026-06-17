@@ -115,14 +115,32 @@ pub struct Cli {
     /// Value is a Unix timestamp (seconds since epoch).
     #[arg(long = "pinned", value_name = "EPOCH")]
     pub pinned: Option<i64>,
+
+    /// Disable one or more plugins at startup (debug builds only).
+    ///
+    /// Comma-separated or repeated. Known values: `postprocess`, `plot`,
+    /// `mesheffect`, `prettytext`. Unrecognised names are silently ignored so
+    /// typos don't hard-fail the binary.
+    ///
+    /// Example: `--without-plugins postprocess,mesheffect`
+    // TODO: This is just half finished leftovers for me debugging slow memory
+    // leaks. Future me will fix it.
+    #[cfg(debug_assertions)]
+    #[arg(long = "without-plugins", value_delimiter = ',', value_name = "PLUGIN", action = clap::ArgAction::Append)]
+    pub without_plugins: Vec<String>,
 }
 
-/// Parse native CLI arguments and return `(enable_gamepad, UiConfig)`.
+/// Parse native CLI arguments and return `(enable_gamepad, UiConfig, without_plugins)`.
+///
+/// The third element is the raw `--without-plugins` list from the CLI. It is
+/// always `Vec::new()` in release builds (the flag doesn't exist); the caller
+/// is responsible for building a [`bavy::disabled::DisabledPlugins`] resource
+/// from it in debug builds.
 ///
 /// Called once at the top of `main()` on non-WASM targets before the Bevy
 /// `App` is constructed.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn parse_native_args() -> (bool, ui::UiConfig) {
+pub fn parse_native_args() -> (bool, ui::UiConfig, Vec<String>) {
     use clap::Parser;
     use jiff::Timestamp;
 
@@ -198,7 +216,12 @@ pub fn parse_native_args() -> (bool, ui::UiConfig) {
         }
     }
 
-    (cli.with_gamepad, cfg)
+    #[cfg(debug_assertions)]
+    let without_plugins = cli.without_plugins.clone();
+    #[cfg(not(debug_assertions))]
+    let without_plugins: Vec<String> = Vec::new();
+
+    (cli.with_gamepad, cfg, without_plugins)
 }
 
 /// Parse the browser URL query string and return a populated `UiConfig`.

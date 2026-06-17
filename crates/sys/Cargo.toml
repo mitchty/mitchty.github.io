@@ -1,0 +1,22 @@
+[package]
+name = "sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bevy = { version = "~0.18.1", default-features = false, features = [
+  "bevy_log",
+  "bevy_dev_tools",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mach2 = "0.6"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Only the two namespaces needed for GetProcessMemoryInfo + GetCurrentProcess.
+windows = { version = "~0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Threading",
+] }

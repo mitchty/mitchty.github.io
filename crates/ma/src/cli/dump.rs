@@ -24,7 +24,7 @@ use crate::etl::{EtlBatch, EtlFormat, EtlRecord, read_etl_dir, read_etl_file, re
 
 #[derive(Args)]
 pub struct DumpArgs {
-    /// ETLcdb root directory (containing ETL1…ETL9G sub-dirs) when using
+    /// ETLcdb root directory (containing ETL1...ETL9G sub-dirs) when using
     /// --format etlcdb, or path to a single ETL file / directory for
     /// single-dataset formats.
     #[arg(short, long)]
@@ -169,7 +169,12 @@ fn inspect_char(ch: char, batches: &[EtlBatch], out_dir: &str, cols: u32, verbos
         *tag_counts.entry(tag).or_insert(0) += 1;
     }
     for (tag, count) in &tag_counts {
-        let sample = matches.iter().find(|(t, _)| t == tag).unwrap().1;
+        // tag was just observed in matches so find() always succeeds here.
+        let sample = matches
+            .iter()
+            .find(|(t, _)| t == tag)
+            .expect("tag came from matches so it must be present")
+            .1;
         println!(
             "  [{tag}]  {count} sample(s)  {}x{}px",
             sample.width, sample.height
@@ -214,8 +219,9 @@ fn inspect_char(ch: char, batches: &[EtlBatch], out_dir: &str, cols: u32, verbos
 
             // Print pixel statistics
             if !rec.pixels.is_empty() {
-                let min_pixel = rec.pixels.iter().min().unwrap();
-                let max_pixel = rec.pixels.iter().max().unwrap();
+                // Guarded by `if !rec.pixels.is_empty()` above so min/max always succeed.
+                let min_pixel = rec.pixels.iter().min().expect("pixels is non-empty");
+                let max_pixel = rec.pixels.iter().max().expect("pixels is non-empty");
                 println!(
                     "    pixels: {} total, range [{min_pixel}..{max_pixel}]",
                     rec.pixels.len()
@@ -263,7 +269,7 @@ fn print_ascii_art(pixels: &[u8], w: u32, h: u32, target_cols: u32) {
     println!("{border_top}");
 
     for ty in 0..target_rows {
-        // Sample the source row at the centre of this scaled row.
+        // Sample the source row at the center of this scaled row.
         let sy = ((ty as f32 + 0.5) * scale * 2.0) as u32;
         let sy = sy.min(h - 1);
 

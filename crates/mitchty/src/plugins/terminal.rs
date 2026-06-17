@@ -124,7 +124,7 @@ impl TerminalEngine {
 /// `SystemSet` that gates all per-frame systems owned by [`TerminalPlugin`].
 ///
 /// Controlled by `PluginEnabled::<TerminalPlugin>`. Enabled by default for
-/// debugging — toggle with the backtick key at runtime.
+/// debugging: toggle with the backtick key at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SystemSet)]
 pub struct TerminalSystems;
 

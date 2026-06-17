@@ -1,5 +1,7 @@
 pub mod camera;
 pub mod cli;
+pub mod disabled;
+pub mod fonts;
 pub mod fps;
 pub mod fullscreen;
 pub mod help;

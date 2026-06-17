@@ -10,7 +10,23 @@ use bevy::prelude::*;
 use bevy::render::render_resource::*;
 use bevy_pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin};
 
+use crate::plugins::scene::LoadedScene;
 use crate::plugins::text3d::Text3d;
+
+/// Convenience alias so the type doesn't eat the whole line everywhere.
+type ExtMat = ExtendedMaterial<StandardMaterial, MeshEffectExtension>;
+
+/// Tracks the [`AssetId`] of every [`ExtMat`] created for the current scene.
+///
+/// When the scene is replaced, [`cleanup_ext_materials_on_scene_replace`]
+/// drains this list and calls [`Assets::remove`] on each entry directly.
+/// This forces immediate synchronous eviction rather than waiting for Bevy's
+/// async `AssetEvent::Unused` GC cycle, which can lag by several frames and
+/// let dead assets accumulate across multiple scene reloads.
+#[derive(Resource, Default)]
+pub struct TrackedExtMaterials {
+    ids: Vec<AssetId<ExtMat>>,
+}
 
 /// Plugin that registers the extended material pipeline and the system that
 /// swaps newly-spawned [`StandardMaterial`] meshes over to it.
@@ -20,10 +36,10 @@ pub struct MeshEffectPlugin;
 
 impl Plugin for MeshEffectPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(MaterialPlugin::<
-            ExtendedMaterial<StandardMaterial, MeshEffectExtension>,
-        >::default())
-            .add_systems(Update, apply_mesh_effect);
+        app.add_plugins(MaterialPlugin::<ExtMat>::default())
+            .init_resource::<TrackedExtMaterials>()
+            .add_systems(Update, apply_mesh_effect)
+            .add_systems(Update, cleanup_ext_materials_on_scene_replace);
     }
 }
 
@@ -67,7 +83,8 @@ pub fn apply_mesh_effect(
         (Added<MeshMaterial3d<StandardMaterial>>, Without<Text3d>),
     >,
     standard_materials: Res<Assets<StandardMaterial>>,
-    mut extended_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, MeshEffectExtension>>>,
+    mut extended_materials: ResMut<Assets<ExtMat>>,
+    mut tracked: ResMut<TrackedExtMaterials>,
     mut commands: Commands,
 ) {
     for (entity, mat_handle) in query.iter() {
@@ -79,10 +96,15 @@ pub fn apply_mesh_effect(
             continue;
         };
 
-        let ext_handle = extended_materials.add(ExtendedMaterial {
+        let ext_handle = extended_materials.add(ExtMat {
             base: std_mat.clone(),
             extension: MeshEffectExtension {},
         });
+
+        // Record the id so cleanup_ext_materials_on_scene_replace can evict it
+        // immediately when the scene is torn down, rather than waiting on
+        // Bevy's async AssetEvent::Unused GC cycle.
+        tracked.ids.push(ext_handle.id());
 
         // Use a world-level command so the entity existence check happens at
         // execution time, not command queue time.
@@ -101,5 +123,34 @@ pub fn apply_mesh_effect(
             e.remove::<MeshMaterial3d<StandardMaterial>>();
             e.insert(MeshMaterial3d(ext_handle));
         });
+    }
+}
+
+/// Explicitly evict all tracked [`ExtMat`] assets the moment the loaded scene
+/// is despawned.
+///
+/// Bevy's normal asset cleanup only runs when it processes [`AssetEvent::Unused`]
+/// events, which can lag several frames behind the actual handle drops. Calling
+/// [`Assets::remove`] here ensures the backing data is freed immediately on the
+/// same frame the scene tears down, preventing dead assets from accumulating
+/// across multiple scene reloads.
+///
+/// [`Assets::remove`] is a no-op for IDs that were already cleaned up (e.g.
+/// if the entity-command error branch dropped the only handle before this runs),
+/// so there is no double-free concern.
+pub fn cleanup_ext_materials_on_scene_replace(
+    mut removed_scenes: RemovedComponents<LoadedScene>,
+    mut tracked: ResMut<TrackedExtMaterials>,
+    mut extended_materials: ResMut<Assets<ExtMat>>,
+) {
+    if removed_scenes.read().next().is_none() {
+        return;
+    }
+    let count = tracked.ids.len();
+    for id in tracked.ids.drain(..) {
+        extended_materials.remove(id);
+    }
+    if count > 0 {
+        debug!("evicted {} extended materials on scene replace", count);
     }
 }

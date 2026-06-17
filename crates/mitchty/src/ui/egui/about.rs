@@ -42,7 +42,6 @@ pub fn render_about_menu(ui: &mut egui::Ui) {
         }
         ui.label(format!("Profile:  {}", lib::build_info::BUILD_PROFILE));
         ui.label(format!("Rustc:    {}", lib::build_info::RUSTC_VERSION));
-        ui.label(format!("Built:    {}", lib::build_info::BUILD_DATE));
         ui.separator();
         ui.label("Third Party Acknowlegements");
         ui.separator();

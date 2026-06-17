@@ -1,0 +1,8 @@
+[package]
+name = "bavy"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+bevy = { workspace = true }

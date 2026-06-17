@@ -82,8 +82,9 @@ pub(crate) fn halfwidth_equiv() -> HashMap<char, char> {
     }
     // Fullwidth ASCII variants -> ASCII (FF01..=FF5E, offset 0xFEE0)
     for cp in 0xFF01u32..=0xFF5Eu32 {
-        let hw = char::from_u32(cp).unwrap();
-        let ascii = char::from_u32(cp - 0xFEE0).unwrap();
+        let hw = char::from_u32(cp).expect("0xFF01..=0xFF5E are all valid Unicode scalar values");
+        let ascii = char::from_u32(cp - 0xFEE0)
+            .expect("0x0021..=0x005E are all valid Unicode scalar values");
         m.insert(hw, ascii);
     }
     m

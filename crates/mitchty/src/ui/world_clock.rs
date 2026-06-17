@@ -35,7 +35,7 @@ impl SortColumn {
         }
     }
 
-    /// Serialise to the canonical slug used in CLI args and URL params.
+    /// Serialize to the canonical slug used in CLI args and URL params.
     pub fn to_slug(self) -> Option<&'static str> {
         match self {
             Self::None => None,
@@ -67,7 +67,7 @@ impl SortDir {
         }
     }
 
-    /// Serialise to the canonical slug.
+    /// Serialize to the canonical slug.
     pub fn to_slug(self) -> &'static str {
         match self {
             Self::Asc => "asc",
@@ -1288,7 +1288,7 @@ pub fn world_clock_window(
 
                     // During feedback the button background goes green so the
                     // success is obvious regardless of theme; text still follows
-                    // the theme colour so it reads on both light and dark green.
+                    // the theme color so it reads on both light and dark green.
                     let copy_btn = if showing_feedback {
                         egui::Button::new(egui::RichText::new("✔ Copied!").color(theme_text_color))
                             .fill(if is_light_mode {
@@ -1939,7 +1939,8 @@ mod tests {
     #[test]
     fn parse_two_form_plain_tz() {
         // Ye olde tz:epoch form
-        let (epoch, tz, label) = parse_alarm_entry("UTC:1893456000").unwrap();
+        let (epoch, tz, label) =
+            parse_alarm_entry("UTC:1893456000").expect("parse_alarm_entry failed");
         assert_eq!(epoch, 1893456000);
         assert_eq!(tz, "UTC");
         assert_eq!(label, None);
@@ -1948,7 +1949,8 @@ mod tests {
     #[test]
     fn parse_two_form_iana_slash_tz() {
         // IANA tz names contain '/'s which we don't want to parse as a uri indicator
-        let (epoch, tz, label) = parse_alarm_entry("America/New_York:1893456000").unwrap();
+        let (epoch, tz, label) =
+            parse_alarm_entry("America/New_York:1893456000").expect("parse_alarm_entry failed");
         assert_eq!(epoch, 1893456000);
         assert_eq!(tz, "America/New_York");
         assert_eq!(label, None);
@@ -1957,7 +1959,8 @@ mod tests {
     #[test]
     fn parse_three_form_with_label() {
         // new hotness 3 form with a label, such features!
-        let (epoch, tz, label) = parse_alarm_entry("Birthday:America/New_York:1893456000").unwrap();
+        let (epoch, tz, label) = parse_alarm_entry("Birthday:America/New_York:1893456000")
+            .expect("parse_alarm_entry failed");
         assert_eq!(epoch, 1893456000);
         assert_eq!(tz, "America/New_York");
         assert_eq!(label, Some("Birthday".to_string()));
@@ -1966,8 +1969,8 @@ mod tests {
     #[test]
     fn parse_three_form_label_with_space() {
         // Labels may contain spaces too cause yeah
-        let (epoch, tz, label) =
-            parse_alarm_entry("My Birthday:America/Chicago:1775012160").unwrap();
+        let (epoch, tz, label) = parse_alarm_entry("My Birthday:America/Chicago:1775012160")
+            .expect("parse_alarm_entry failed");
         assert_eq!(epoch, 1775012160);
         assert_eq!(tz, "America/Chicago");
         assert_eq!(label, Some("My Birthday".to_string()));
@@ -1977,7 +1980,8 @@ mod tests {
     fn parse_three_form_iana_tz_path() {
         // Some IANA names have two slashes e.g. America/Indiana/Indianapolis
         let (epoch, tz, label) =
-            parse_alarm_entry("Meeting:America/Indiana/Indianapolis:1893456000").unwrap();
+            parse_alarm_entry("Meeting:America/Indiana/Indianapolis:1893456000")
+                .expect("parse_alarm_entry failed");
         assert_eq!(epoch, 1893456000);
         assert_eq!(tz, "America/Indiana/Indianapolis");
         assert_eq!(label, Some("Meeting".to_string()));
@@ -1987,7 +1991,8 @@ mod tests {
     fn parse_trims_whitespace() {
         //  Tolerate surrounding whitespace from comma-split entries just in
         //  case someone starts building these manually like a weirdo.
-        let (epoch, tz, label) = parse_alarm_entry("  UTC : 1893456000 ").unwrap();
+        let (epoch, tz, label) =
+            parse_alarm_entry("  UTC : 1893456000 ").expect("parse_alarm_entry failed");
         assert_eq!(epoch, 1893456000);
         // The tz/label trimming is on the prefix/suffix, not mid-name
         assert_eq!(tz, "UTC");
@@ -2016,7 +2021,8 @@ mod tests {
         // TODO: future mitch brain on it longer
         // ":1893456000" prefix is empty string, tz would be "", which is
         // technically Some("") but we still return it (callers validate the tz)
-        let (epoch, tz, label) = parse_alarm_entry(":1893456000").unwrap();
+        let (epoch, tz, label) =
+            parse_alarm_entry(":1893456000").expect("parse_alarm_entry failed");
         assert_eq!(epoch, 1893456000);
         assert_eq!(tz, "");
         assert_eq!(label, None);
@@ -2059,7 +2065,7 @@ mod tests {
     #[test]
     fn round_trip_no_label() {
         let serialized = format_alarm_entry("Asia/Tokyo", 1893456000, None);
-        let (epoch, tz, label) = parse_alarm_entry(&serialized).unwrap();
+        let (epoch, tz, label) = parse_alarm_entry(&serialized).expect("parse_alarm_entry failed");
         assert_eq!(epoch, 1893456000);
         assert_eq!(tz, "Asia/Tokyo");
         assert_eq!(label, None);
@@ -2068,7 +2074,7 @@ mod tests {
     #[test]
     fn round_trip_with_label() {
         let serialized = format_alarm_entry("Europe/Paris", 1893456000, Some("New Year"));
-        let (epoch, tz, label) = parse_alarm_entry(&serialized).unwrap();
+        let (epoch, tz, label) = parse_alarm_entry(&serialized).expect("parse_alarm_entry failed");
         assert_eq!(epoch, 1893456000);
         assert_eq!(tz, "Europe/Paris");
         assert_eq!(label, Some("New Year".to_string()));
@@ -2078,7 +2084,7 @@ mod tests {
     fn round_trip_iana_tz_with_label() {
         let serialized =
             format_alarm_entry("America/Indiana/Indianapolis", 1893456000, Some("Sprint"));
-        let (epoch, tz, label) = parse_alarm_entry(&serialized).unwrap();
+        let (epoch, tz, label) = parse_alarm_entry(&serialized).expect("parse_alarm_entry failed");
         assert_eq!(epoch, 1893456000);
         assert_eq!(tz, "America/Indiana/Indianapolis");
         assert_eq!(label, Some("Sprint".to_string()));

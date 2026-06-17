@@ -20,7 +20,9 @@ pub fn get_asset_base_path(bevy_asset_path_env: Option<String>, manifest_dir: &s
         PathBuf::from(manifest_dir)
             .parent()
             .and_then(|p| p.parent())
-            .unwrap()
+            .expect(
+                "manifest_dir must have at least two parent directories to locate workspace root",
+            )
             .to_path_buf()
             .to_string_lossy()
             .to_string()
@@ -79,27 +81,25 @@ macro_rules! asset_path_raw {
 pub struct AssetConfigPlugin;
 
 impl Plugin for AssetConfigPlugin {
-    fn build(&self, _app: &mut App) {
+    #[allow(unused_variables)]
+    fn build(&self, app: &mut App) {
         // Only embed assets in release builds
         #[cfg(not(debug_assertions))]
         {
             // Environment maps for the cube hues
+            embedded_asset!(app, "assets/environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2");
             embedded_asset!(
-                _app,
-                "assets/environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2"
-            );
-            embedded_asset!(
-                _app,
+                app,
                 "assets/environment_maps/pisa_specular_rgb9e5_zstd.ktx2"
             );
 
             // Fonts for the 3d text thingy. I should make a 3d console/shell.... maybe?
-            embedded_asset!(_app, "assets/fonts/FiraMono-Medium.ttf");
+            embedded_asset!(app, "assets/fonts/FiraMono-Medium.ttf");
             // Japanese font used by the egui Recognizer sidebar.
-            embedded_asset!(_app, "assets/fonts/NotoSansJP-Regular.ttf");
+            embedded_asset!(app, "assets/fonts/NotoSansJP-Regular.ttf");
 
             // gltf model for default abuse loading
-            embedded_asset!(_app, "assets/mitchty.glb");
+            embedded_asset!(app, "assets/mitchty.glb");
         }
     }
 }

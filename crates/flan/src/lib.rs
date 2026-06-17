@@ -1,158 +1,250 @@
-use bevy::pbr::Material;
-use bevy::prelude::UiMaterialKey;
 use bevy::prelude::*;
-use bevy::render::alpha::AlphaMode;
-use bevy::render::render_resource::SpecializedMeshPipelineError;
+use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_resource::*;
-use bevy::shader::ShaderDefVal;
 use bevy::shader::ShaderRef;
-use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dKey, Material2dPlugin};
+
+// polars is only used in the test module and in other crates that import flan's
+// polars-based types, when I add more plot shaders it'll come back with a
+// vengeance methinks.
+//
+// The whole goal of this shader lib is to bolt polars onto shaders directly
+// transparently for crap like plot shaders. I have a better idea on how I'll do
+// that, think I'll just bolt a message onto a wrapper fn for updating the
+// dataframe that lets the render subsystem to update the storage buffer or
+// texture yeeting data betwixt the dataframe and the shader. Then any user land
+// code is just: update the Component dataframe and tag it as dirty and then
+// flan can take care of updating the underlying data and you're at most 2-3
+// frames away from seeing an update in your gooey.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(unused_imports)]
 use polars::prelude::*;
 
 #[cfg(not(feature = "webgl"))]
-use bevy::render::storage::ShaderStorageBuffer;
+use bevy::{
+    asset::RenderAssetUsages,
+    render::{
+        Render, RenderApp, RenderSystems,
+        render_asset::RenderAssets,
+        renderer::RenderQueue,
+        storage::{GpuShaderStorageBuffer, ShaderStorageBuffer},
+    },
+};
 
 pub mod layout;
 pub mod shaders;
 pub mod slug_text;
+pub mod slug_text_material;
+pub mod stats;
+pub mod text3d;
+pub mod text3d_font;
 
 pub use layout::{Horizontal, Layout, Vertical};
-pub use slug_text::{SlugPlugin, SlugTextFont, SlugTextMesh, SlugTextNode};
+pub use slug_text::{
+    SlugPlugin, SlugTextFont, SlugTextMesh, SlugTextNode, Text3dDirty, build_mesh_from_run,
+    normalize_run_3d,
+};
+#[cfg(not(feature = "webgl"))]
+pub use slug_text_material::{SlugAtlasBuffers, SlugText3dMaterial, SlugTextMaterial};
+pub use slug_text_material::{
+    SlugAtlasImages, SlugText3dTextureMaterial, SlugTextMaterialPlugin, SlugTextTextureMaterial,
+};
+pub use stats::overlay::{
+    StatsOverlayHandle, StatsOverlayMaterial, StatsOverlayMaterialPlugin, StatsOverlayParams,
+    StatsOverlayTextureMaterial, build_fps_points_image,
+};
+pub use text3d::{
+    ShowText3d, SlugText3dApply, SlugText3dFontValidation, SlugText3dPlugin, SlugText3dState,
+    SlugTextAnchor, Text3d, Text3dRenderer, spawn_text3d,
+};
+pub use text3d_font::Text3dFontId;
 
-#[cfg(all(feature = "render", not(target_arch = "wasm32")))]
-pub mod render;
-#[cfg(all(feature = "render", not(target_arch = "wasm32")))]
-pub mod snapshot;
-#[cfg(all(feature = "render", not(target_arch = "wasm32")))]
 pub mod wesl;
 
-/// Slug font atlas builder is mostly TTF/OTF curve datato GPU curve/band
-/// buffers for the Slug renderer. Uses ttf-parser and bytemuck for the evil.
+/// Selects which GPU data path a shader uses. I want this to be mostly
+/// transparent betwixt stupid, dum, annoying, makes me angy, seems to be the
+/// most annoying technology ever, webgl2 and basically every other shader type
+/// in existence. I can't wait to drop the texture paths for webgl2.
+///
+/// - `Default` = native / WebGPU path: data lives in storage buffers. This
+///   is what you want on desktop, native mobile, and WebGPU targets.
+/// - `Texture` = WebGL-compatible path: data is packed into 2-D `rgba32`
+///   data textures and read with `textureLoad`. Use this on WebGL2.
+///
+/// Both variants are always compiled; callers pick the right one at runtime.
+/// There are no `#[cfg(feature = "webgl")]` gates on individual types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ShaderVariant {
+    #[default]
+    Default,
+    Texture,
+}
+
+/// Shared test infrastructure for uniform structs, data helpers, and
+/// backend-specific render helpers for the custom wgpu renderer and pseudo bevy
+/// shader infra.
+///
+/// Exposed as a library so integration test binaries can import directly from
+/// `flan::test::lib::*` `flan::test::lib::wgpu::*` instead of copy/pasta all over.
+pub mod test;
+
+/// Slug font atlas builder is mostly just TTF/OTF curve data to GPU curve/band
+/// buffers for the Slug renderer to work. Uses ttf-parser and bytemuck for the
+/// evil.
 pub mod slug;
 
 /// Glyph extrusion to build side-wall geometry from flan slug bezier contours
-/// to replace bevy fontmeash usage so I don't have holes all over in kanji glyphs.
+/// to replace prior bevy-fontmeash usage so I don't have holes all over in
+/// kanji glyphs. I got other problems but 99 filled in holes isn't one now.
 pub mod extrude;
-pub use extrude::build_text_side_walls;
+pub use extrude::build_text_3d_mesh;
+pub use slug::OutlineType;
 
-/// Maximum number of plot points stored in a webgl uniform buffer. Must match
-/// the array size in the WESL shader source `array<vec4<f32>, 512>`.
-// TODO: I wonder if I could sync this magic number in build.rs to build a
-// constants.rs/constants.wesl instead of trying to remember to keep crap in
-// sync which I never do. I cannnnnnnnoot wait until webgpu works so I can ditch
-// this webgl bs.
-pub const MAX_PLOT_POINTS: usize = 512;
+// TODO: This is all a bit of a carry over of stupid approaches I took in the past.
+//
+// This all needs a general refactor "real soon now". Mostly need to brain a bit
+// on making this stuff generic across different shaders. I mostly copy/pasted
+// everything around without much concern to the design. But now that I've
+// started abusing it I can see where the shape of an api might be to start with.
+
+// Constants generated by build.rs for all the macro bs.
+include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 
 /// Marker component so the animation system can find the spawned plot UI node.
 #[derive(Component)]
 pub struct PlotUiNode;
 
 /// Marker component for an fps sparkline plot, abusing flan for this idea to
-/// benchmark crap.
+/// benchmark crap and test out my first idea at an api. I need to read more
+/// Bevy apps to see if this is good or bad.
 ///
 /// Callers spawn a `MaterialNode<PlotUiMaterial>` with this component attached
-/// and place it wherever they like. `flan` will sync data from
-/// [`SparklineDataFrame`] to every entity carrying this marker. All we do here
+/// and place it wherever they want. `flan` will sync data from
+/// `SparklineDataFrame` to every entity carrying this marker. All we do here
 /// is populate the dataframe with data.
+// TODO: Ressurect this when I start adding more plot style shaders to flan.
 #[derive(Component)]
 pub struct SparklineUiNode;
 
-/// How many of the most-recent DataFrame rows are windowed and uploaded to the
-/// shader each sync. The DataFrame itself can be arbitrarily large; only the
-/// tail `PLOT_WINDOW_SIZE` rows are ever sent to the GPU.
-pub const PLOT_WINDOW_SIZE: usize = 200;
-
-/// The backing polars DataFrame that owns all plot data.
+/// Raw bytes to upload to the sparkline GPU storage buffer each ECS tick if
+/// data changes.
 ///
-/// Callers own this resource and mutate it directly. After
-/// mutating, fire a `PlotDataUpdated` event and `flan` will sync the newest
-/// `PLOT_WINDOW_SIZE` rows to the shader automatically.
+/// The consumer fills this with `vec2<f32>` data at 8 bytes per point, x then y
+/// as little-endian f32. flan's render-world `upload_sparkline` system calls
+/// `write_buffer` on the pre-allocated GPU buffer so we don't leak bind group
+/// buffers in wgpu.
 ///
-/// Schema: must contain at least a column named `"y"` of dtype `Float32`.
-/// X coordinates are derived by `flan` from the row's position within the
-/// window. Callers never need to store or update them.
-#[derive(Resource)]
-pub struct PlotDataFrame {
-    pub df: DataFrame,
+// TODO: This whole system needs a rethink as my approach before leaked bind
+// groups like mad. I need to come up with a more opaque api for all these
+// shaders that hides all this nonsense. But I can't think of a good one so I'll
+// leave it to future sucker mitch.
+#[derive(Resource, Clone, Default, ExtractResource)]
+pub struct SparklineUpload {
+    pub bytes: Vec<u8>,
 }
 
-/// Send this message after mutating `PlotDataFrame` to tell `flan` to
-/// re-sync the shader buffer. `flan`s `sync_plot_data` system fires on this
-/// message and uploads the last `PLOT_WINDOW_SIZE` rows from the `"y"` column.
-// TODO: make the column selectable at some point so I can make this more
-// dynamic or whatever. This is a classic "FUTURE MITCH" problem past mitch is
-// punting on. Suck it future me.
-pub struct PlotDataUpdated;
-impl bevy::ecs::message::Message for PlotDataUpdated {}
-
-/// Backing DataFrame for the sparkline strip widget which for now is fps.
-/// If/when I do more future me problem on making a more complect approach.
+/// Handle to the pre-allocated `ShaderStorageBuffer`.
 ///
-/// Schema is a single `"y"` column of `Float32` values already normalized to
-/// `[0, 1]` by the caller. Null / `None` values are skipped during upload so
-/// the sparkline only draws the portion of the history that has real data so
-/// the plot doesn't look stupid with edge cases that likely aren't relevant.
-// TODO: This is all hold my beer approach. I think I need a plugin for flan to
-// cover how it can handle dataframes for us or something.
-#[derive(Resource)]
-pub struct SparklineDataFrame {
-    pub df: DataFrame,
+/// Set once by the consumer's sparkline setup system. The pre-allocated buffer
+/// must be created with `STORAGE | COPY_DST` usage so that the render-world
+/// `write_buffer` calls succeed.
+///
+// This whole things begging to be a callback the consumer calls and we use in
+// the struct impl somewhere. Or likely a struct field to yeet this out of the
+// ECS directly where it isn't all that useful.
+#[cfg(not(feature = "webgl"))]
+#[derive(Resource, Clone, Default, ExtractResource)]
+pub struct SparklineBufferHandle(pub Option<Handle<ShaderStorageBuffer>>);
+
+/// Raw bytes to upload to the line-graph plot GPU storage buffer each tick.
+///
+/// Same contract as `SparklineUpload` - tightly-packed `vec2<f32>` bytes.
+#[derive(Resource, Clone, Default, ExtractResource)]
+pub struct PlotUpload {
+    pub bytes: Vec<u8>,
 }
+
+/// Handle to the line-graph plot `ShaderStorageBuffer`.
+#[cfg(not(feature = "webgl"))]
+#[derive(Resource, Clone, Default, ExtractResource)]
+pub struct PlotBufferHandle(pub Option<Handle<ShaderStorageBuffer>>);
 
 pub struct PlotPlugin;
 
 impl Plugin for PlotPlugin {
     fn build(&self, app: &mut App) {
         // ShadersPlugin must already have been added by the consuming app.
-        // mitchty adds it in main before PlotPlugin for now.
-        //
-        // PlotDataFrame is NOT inserted here callers are
-        // responsible for inserting that data before Startup runs so that
-        // setup_plot_ui can do the initial upload. If no PlotDataFrame exists
-        // at startup an empty shader buffer is used so no plot for you sucker.
-        app.add_plugins(Material2dPlugin::<PlotMaterial>::default())
-            .add_plugins(UiMaterialPlugin::<PlotUiMaterial>::default())
-            .add_message::<PlotDataUpdated>()
+        #[cfg(not(feature = "webgl"))]
+        app.add_plugins(UiMaterialPlugin::<PlotUiMaterial>::default());
+        app.add_plugins(UiMaterialPlugin::<PlotUiMaterialTexture>::default())
             .add_systems(Startup, setup_plot_ui)
-            .add_systems(
-                Update,
-                (
-                    animate_plot_time,
-                    // Sync whenever the caller sends PlotDataUpdated.
-                    sync_plot_data.run_if(
-                        bevy::ecs::schedule::common_conditions::on_message::<PlotDataUpdated>,
-                    ),
-                    // Sync sparkline df whenever SparklineDataFrame is mutated.
-                    sync_sparkline_data.run_if(resource_changed::<SparklineDataFrame>),
-                ),
+            // ExtractResource pipelines for the upload byte buffers and
+            // stable buffer handles. These flow main-world to render-world
+            // every frame so shader upload systems always have the latest data.
+            .add_plugins(ExtractResourcePlugin::<SparklineUpload>::default())
+            .add_plugins(ExtractResourcePlugin::<PlotUpload>::default())
+            .init_resource::<SparklineUpload>()
+            .init_resource::<PlotUpload>();
+
+        #[cfg(not(feature = "webgl"))]
+        app.add_plugins(ExtractResourcePlugin::<SparklineBufferHandle>::default())
+            .add_plugins(ExtractResourcePlugin::<PlotBufferHandle>::default())
+            .init_resource::<SparklineBufferHandle>()
+            .init_resource::<PlotBufferHandle>();
+
+        #[cfg(not(feature = "webgl"))]
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            render_app.add_systems(
+                Render,
+                (upload_sparkline, upload_plot).in_set(RenderSystems::Queue),
             );
+        }
     }
 }
 
+/// Render-world system to write sparkline bytes into the GPU buffer. Runs in
+/// RenderSet::Queue so these bytes are on the GPU before the render pass
+/// begins.
+#[cfg(not(feature = "webgl"))]
+fn upload_sparkline(
+    upload: Res<SparklineUpload>,
+    handle: Res<SparklineBufferHandle>,
+    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    render_queue: Res<RenderQueue>,
+) {
+    if let (Some(h), false) = (&handle.0, upload.bytes.is_empty())
+        && let Some(gpu_buf) = gpu_bufs.get(h.id())
+    {
+        render_queue.write_buffer(&gpu_buf.buffer, 0, &upload.bytes);
+    }
+}
+
+/// Render-world system to write plot bytes into the GPU buffer.
+#[cfg(not(feature = "webgl"))]
+fn upload_plot(
+    upload: Res<PlotUpload>,
+    handle: Res<PlotBufferHandle>,
+    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    render_queue: Res<RenderQueue>,
+) {
+    if let (Some(h), false) = (&handle.0, upload.bytes.is_empty())
+        && let Some(gpu_buf) = gpu_bufs.get(h.id())
+    {
+        render_queue.write_buffer(&gpu_buf.buffer, 0, &upload.bytes);
+    }
+}
+
+/// Setup the plot UI node.
+#[cfg(not(feature = "webgl"))]
 fn setup_plot_ui(
     mut commands: Commands,
     mut ui_materials: ResMut<Assets<PlotUiMaterial>>,
-    plot_df: Option<Res<PlotDataFrame>>,
-    #[cfg(not(feature = "webgl"))] mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
+    mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
 ) {
-    // Iff the dataframes empty, the points are too (all 0's basically, good
-    // luck plotting nothing)
-    let points = plot_df
-        .as_ref()
-        .map(|r| df_tail_to_points(&r.df))
-        .unwrap_or_default();
-
-    #[cfg(not(feature = "webgl"))]
-    let points_binding = buffers.add(ShaderStorageBuffer::from(points.clone()));
-
-    #[cfg(feature = "webgl")]
-    let points_binding = {
-        let mut data = [Vec4::ZERO; MAX_PLOT_POINTS];
-        for (i, p) in points.iter().enumerate().take(MAX_PLOT_POINTS) {
-            data[i] = Vec4::new(p.x, p.y, 0.0, 0.0);
-        }
-        PlotPointsUniform { data }
-    };
+    let zeros = vec![0u8; MAX_PLOT_POINTS * 8];
+    let mut buf = ShaderStorageBuffer::new(&zeros, RenderAssetUsages::RENDER_WORLD);
+    buf.buffer_description.usage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
+    let points_handle = buffers.add(buf);
+    commands.insert_resource(PlotBufferHandle(Some(points_handle.clone())));
 
     let material = ui_materials.add(PlotUiMaterial {
         params: PlotUniform {
@@ -160,18 +252,21 @@ fn setup_plot_ui(
             max: Vec2::ONE,
             zoom: Vec2::ONE,
             offset: Vec2::ZERO,
-            count: points.len().min(MAX_PLOT_POINTS) as u32,
-            time: 0.0,
-            line_width: 0.003, // TODO: I should make this dynamic somehow future me problem
+            count: 0,
+            line_width: 0.003,
+            _pad: 0.000,
         },
-        points: points_binding,
+        points: points_handle,
     });
 
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
             left: Val::Px(10.0),
-            // Keep this vertically centered: top 50% minus half the widget height.
+            // Keep this vertically centered so that top 50% minus half the
+            // widget height. TODO: This is for the singleton currently in use,
+            // this all needs to become more dynamic and let me have the ability
+            // to spawn multiple Nodes in aggregate for more complex layouts.
             top: Val::Percent(50.0),
             margin: UiRect {
                 top: Val::Px(-100.0),
@@ -187,155 +282,41 @@ fn setup_plot_ui(
     ));
 }
 
-/// Triggered by Bevy change detection whenever [`SparklineDataFrame`] is mutated.
-///
-/// Reads the `"y"` column, filters null rows, and uploads to every
-/// [`SparklineUiNode`] entity's shader buffer. Y values must already be
-/// normalized to `[0, 1]` by the caller.
-fn sync_sparkline_data(
-    sparkline_df: Res<SparklineDataFrame>,
-    node_query: Query<&MaterialNode<PlotUiMaterial>, With<SparklineUiNode>>,
-    mut ui_materials: ResMut<Assets<PlotUiMaterial>>,
-    #[cfg(not(feature = "webgl"))] mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
-) {
-    // Reuse the shared helper to strip nulls from the source dataframe.
-    let points = df_to_points(&sparkline_df.df);
+/// Setup the plot UIMaterial node as a texture flavor.
+#[cfg(feature = "webgl")]
+fn setup_plot_ui(mut commands: Commands, mut ui_materials: ResMut<Assets<PlotUiMaterialTexture>>) {
+    let material = ui_materials.add(PlotUiMaterialTexture {
+        params: PlotUniform {
+            min: Vec2::ZERO,
+            max: Vec2::ONE,
+            zoom: Vec2::ONE,
+            offset: Vec2::ZERO,
+            count: 0,
+            line_width: 0.003,
+            _pad: 0.000,
+        },
+        points: PlotPointsUniform {
+            data: [Vec4::ZERO; MAX_PLOT_POINTS],
+        },
+    });
 
-    for material_node in node_query.iter() {
-        let Some(mat) = ui_materials.get_mut(material_node) else {
-            continue;
-        };
-
-        #[cfg(not(feature = "webgl"))]
-        if let Some(buf) = buffers.get_mut(&mat.points) {
-            *buf = ShaderStorageBuffer::from(points.clone());
-        }
-
-        #[cfg(feature = "webgl")]
-        {
-            let mut data = [Vec4::ZERO; MAX_PLOT_POINTS];
-            for (i, p) in points.iter().enumerate().take(MAX_PLOT_POINTS) {
-                data[i] = Vec4::new(p.x, p.y, 0.0, 0.0);
-            }
-            mat.points = PlotPointsUniform { data };
-        }
-
-        mat.params.count = points.len().min(MAX_PLOT_POINTS) as u32;
-    }
-}
-
-/// Convert the `"y"` column of a DataFrame to `Vec<Vec2>` with X ∈ [0, 1].
-///
-/// Rows are mapped from oldest to newest, left to right. Null values are
-/// ignored so callers can use null rows as sentinels for "not yet filled" slots
-/// for... god knows why right now its mostly to not have the plot go weird for
-/// no reason. Its just an fps plot its not critical it be perfect. Returns an
-/// empty Vec if the column is missing or the DataFrame is empty which means
-/// likely a caller won't show anything.
-fn df_to_points(df: &DataFrame) -> Vec<Vec2> {
-    let Ok(series) = df.column("y") else {
-        return Vec::new();
-    };
-    let ca = series.cast(&DataType::Float32).ok();
-    let ca = ca.as_ref().and_then(|s| s.f32().ok());
-    let Some(ca) = ca else {
-        return Vec::new();
-    };
-
-    // Collect only non-null values, I can't see what purpose it would be to use
-    // them in a plot like this yet.
-    let values: Vec<f32> = ca.into_iter().flatten().collect();
-
-    // Bail early if there is nothing to show
-    let n = values.len();
-    if n == 0 {
-        return Vec::new();
-    }
-
-    let denom = (n - 1).max(1) as f32;
-    values
-        .into_iter()
-        .enumerate()
-        .map(|(i, y)| Vec2::new(i as f32 / denom, y))
-        .collect()
-}
-
-/// Slice the tail `PLOT_WINDOW_SIZE` rows then delegate to [`df_to_points`].
-///
-/// Used by the main line-graph plot so the DataFrame the shader uses only sees
-/// the most recent window.
-fn df_tail_to_points(df: &DataFrame) -> Vec<Vec2> {
-    let Ok(series) = df.column("y") else {
-        return Vec::new();
-    };
-    let ca = series.cast(&DataType::Float32).ok();
-    let ca = ca.as_ref().and_then(|s| s.f32().ok());
-    let Some(ca) = ca else {
-        return Vec::new();
-    };
-
-    let total = ca.len();
-    let start = total.saturating_sub(PLOT_WINDOW_SIZE);
-    let sliced_series = ca
-        .slice(start as i64, PLOT_WINDOW_SIZE)
-        .into_series()
-        .with_name("y".into());
-    let windowed =
-        DataFrame::new(sliced_series.len(), vec![Column::from(sliced_series)]).unwrap_or_default();
-    df_to_points(&windowed)
-}
-
-/// Triggered by `PlotDataUpdated` events fired by the caller.
-///
-/// Reads the last `PLOT_WINDOW_SIZE` rows from the `"y"` column of
-/// `PlotDataFrame` and uploads them to every spawned plot UI node's shader
-/// buffer. If `PlotDataFrame` has not been inserted this system is a no-op.
-fn sync_plot_data(
-    plot_df: Option<Res<PlotDataFrame>>,
-    node_query: Query<&MaterialNode<PlotUiMaterial>, With<PlotUiNode>>,
-    mut ui_materials: ResMut<Assets<PlotUiMaterial>>,
-    #[cfg(not(feature = "webgl"))] mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
-) {
-    let Some(plot_df) = plot_df else { return };
-    let points = df_tail_to_points(&plot_df.df);
-
-    for material_node in node_query.iter() {
-        let Some(mat) = ui_materials.get_mut(material_node) else {
-            continue;
-        };
-
-        #[cfg(not(feature = "webgl"))]
-        if let Some(buf) = buffers.get_mut(&mat.points) {
-            *buf = ShaderStorageBuffer::from(points.clone());
-        }
-
-        #[cfg(feature = "webgl")]
-        {
-            let mut data = [Vec4::ZERO; MAX_PLOT_POINTS];
-            for (i, p) in points.iter().enumerate().take(MAX_PLOT_POINTS) {
-                data[i] = Vec4::new(p.x, p.y, 0.0, 0.0);
-            }
-            mat.points = PlotPointsUniform { data };
-            mat.params.count = points.len().min(MAX_PLOT_POINTS) as u32;
-        }
-    }
-}
-
-/// Keep `params.time` ticking so downstream code / future shaders can use it
-/// for time based changes to displaying data.
-///
-/// Here for future work where time might be used for something in the shaders
-/// different from the actual data shown.
-fn animate_plot_time(
-    time: Res<Time>,
-    node_query: Query<&MaterialNode<PlotUiMaterial>, With<PlotUiNode>>,
-    mut ui_materials: ResMut<Assets<PlotUiMaterial>>,
-) {
-    for material_node in node_query.iter() {
-        if let Some(mat) = ui_materials.get_mut(material_node) {
-            mat.params.time = time.elapsed_secs();
-        }
-    }
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(10.0),
+            top: Val::Percent(50.0),
+            margin: UiRect {
+                top: Val::Px(-100.0),
+                ..default()
+            },
+            width: Val::Px(200.0),
+            height: Val::Px(200.0),
+            ..default()
+        },
+        Visibility::Hidden,
+        MaterialNode(material),
+        PlotUiNode,
+    ));
 }
 
 /// Uniform data shared between the Rust side and every plot shader variant.
@@ -344,134 +325,79 @@ fn animate_plot_time(
 /// `arrayLength` instead), but it is always present so the WGSL struct layout
 /// is identical across all variants.
 ///
-/// `time` is elapsed seconds; increment it every frame to drive shader
-/// animation (e.g. a travelling sin-wave phase offset).
+/// 48 bytes to fit STD140 requirements. I punted on the padding of the struct a
+// bit. TODO: I was abusing bytemuck for this but explore using the bevy
+// approach for auto padding this commits crazy as it is.
 #[derive(Clone, Copy, ShaderType)]
 pub struct PlotUniform {
     pub min: Vec2,
     pub max: Vec2,
     pub zoom: Vec2,
     pub offset: Vec2,
-    /// Number of valid points in the `points` array. Set this to the actual
-    /// point count on every update; ignored on non-webgl builds at runtime.
     pub count: u32,
-    /// Elapsed time in seconds. Upload `time.elapsed_secs()` here every
-    /// frame so the shader can animate.
-    pub time: f32,
-    /// Antialiased half-width of the polyline in UV space.
-    /// #[shader(size(8))]: pads this field to 8 bytes so the struct is 48
-    /// bytes total (4xvec2 + u32 + f32 + f32 = 44 -> rounded to 48),
-    /// satisfying webgl's requirement that uniform bindings are multiples of 16.
+    // pad to 48 bytes for webgl bs
+    pub _pad: f32,
+    /// Antialiased half-width of the polyline in UV space. 16 byte aligned for webgl
     #[shader(size(8))]
     pub line_width: f32,
 }
 
-/// Points buffer used in webgl builds (uniform buffer, webgl feature).
+/// Points buffer for the texture (WebGL2-compatible) plot shader variant.
 ///
-/// Uses `Vec4` so that the Rust layout and the WGSL `array<vec4<f32>, 512>`
-/// layout agree exactly under std140 webgl GLSL uniform block rules.
-/// The `.xy` components hold the actual `(x, y)` data; `.zw` are unused.
-///
-/// Must match `MAX_PLOT_POINTS` and the WESL shader constant.
-#[cfg(feature = "webgl")]
+/// Uses `Vec4` so the Rust layout and the WGSL `array<vec4<f32>, MAX_PLOT_POINTS>`
+/// layout agree exactly under std140. The `.xy` components hold `(x, y)` data;
+/// `.zw` are zero-padded.
 #[derive(Clone, ShaderType)]
 pub struct PlotPointsUniform {
     pub data: [Vec4; MAX_PLOT_POINTS],
 }
 
-#[derive(Asset, AsBindGroup, TypePath, Clone)]
-pub struct PlotMaterial {
-    #[uniform(0)]
-    pub params: PlotUniform,
-
-    /// Storage buffer (native / WebGPU).
-    #[cfg(not(feature = "webgl"))]
-    #[storage(1, read_only)]
-    pub points: Handle<ShaderStorageBuffer>,
-
-    #[cfg(feature = "webgl")]
-    #[uniform(1)]
-    pub points: PlotPointsUniform,
-}
-
-impl Material2d for PlotMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "embedded://flan/2d/plot.wesl".into()
-    }
-
-    fn alpha_mode(&self) -> AlphaMode2d {
-        AlphaMode2d::Blend
-    }
-
-    fn specialize(
-        descriptor: &mut RenderPipelineDescriptor,
-        layout: &bevy::mesh::MeshVertexBufferLayoutRef,
-        _key: Material2dKey<Self>,
-    ) -> Result<(), SpecializedMeshPipelineError> {
-        let webgl = cfg!(all(
-            feature = "webgl",
-            target_arch = "wasm32",
-            not(feature = "webgpu")
-        ));
-        if let Some(ref mut fragment) = descriptor.fragment {
-            fragment
-                .shader_defs
-                .push(ShaderDefVal::Bool("WEBGL".into(), webgl));
-        }
-        let _ = layout;
-        Ok(())
-    }
-}
-
-/// UI Material version of the plot shader rendered as a Bevy UI node.
+/// Plot `UiMaterial` - native / WebGPU path.
 ///
-/// Binding layout mirrors [`PlotMaterial`] but targets `@group(1)` which is
-/// what Bevy's `UiMaterial` pipeline uses.
+/// Points live in a `ShaderStorageBuffer` at `@group(1) @binding(1)`.
+#[cfg(not(feature = "webgl"))]
 #[derive(Asset, AsBindGroup, TypePath, Clone)]
 pub struct PlotUiMaterial {
     #[uniform(0)]
     pub params: PlotUniform,
-
-    /// Storage buffer (native / WebGPU).
-    #[cfg(not(feature = "webgl"))]
     #[storage(1, read_only)]
     pub points: Handle<ShaderStorageBuffer>,
+}
 
-    #[cfg(feature = "webgl")]
+#[cfg(not(feature = "webgl"))]
+impl UiMaterial for PlotUiMaterial {
+    fn fragment_shader() -> ShaderRef {
+        ShaderRef::Handle(shaders::plot_default_shader_handle())
+    }
+
+    fn specialize(_descriptor: &mut RenderPipelineDescriptor, _key: UiMaterialKey<Self>) {}
+}
+
+/// Plot `UiMaterial`
+///
+/// Points are packed into a `PlotPointsUniform` uniform at `@group(1) @binding(1)`.
+#[derive(Asset, AsBindGroup, TypePath, Clone)]
+pub struct PlotUiMaterialTexture {
+    #[uniform(0)]
+    pub params: PlotUniform,
     #[uniform(1)]
     pub points: PlotPointsUniform,
 }
 
-impl UiMaterial for PlotUiMaterial {
+impl UiMaterial for PlotUiMaterialTexture {
     fn fragment_shader() -> ShaderRef {
-        "embedded://flan/2d/plot.wesl".into()
+        ShaderRef::Handle(shaders::plot_texture_shader_handle())
     }
 
-    fn specialize(descriptor: &mut RenderPipelineDescriptor, _key: UiMaterialKey<Self>) {
-        let webgl = cfg!(all(
-            feature = "webgl",
-            target_arch = "wasm32",
-            not(feature = "webgpu")
-        ));
-        if let Some(ref mut fragment) = descriptor.fragment {
-            fragment
-                .shader_defs
-                .push(ShaderDefVal::Bool("WEBGL".into(), webgl));
-            // Ensure the shader uses @group(1) bindings
-            fragment
-                .shader_defs
-                .push(ShaderDefVal::Bool("UI_MATERIAL".into(), true));
-        }
-    }
+    fn specialize(_descriptor: &mut RenderPipelineDescriptor, _key: UiMaterialKey<Self>) {}
 }
 
 // TODO: I'm copypastaing a lot of crap between wesl and rust. I should yeet
 // this into build.rs and have a shared consts file betwixt ye olde rust lande
 // and ye weirde gpu lande and the source of truth is always rust.
 //
-// Texture width for webgl data textures. Must match SLUG_TEX_WIDTH in
-// lib/slug/types.wesl.
-pub const SLUG_TEX_WIDTH: u32 = 2048;
+// SLUG_TEX_WIDTH is defined in build.rs and generated into constants.rs,
+// which is included below. This keeps it in sync with the shader automatically.
 
 // TODO: All this crap too is a good candidate for a refactor to keep the params
 // et al in sync.
@@ -483,13 +409,26 @@ pub const SLUG_TEX_WIDTH: u32 = 2048;
 ///                                     calling slugtext().
 ///   8   layout_flags : u32          - 4-bit packed Layout bitfield (see layout.rs).
 ///                                     Passed directly to slugtext() in ui_text.wesl.
-///   12  _pad         : u32
-#[derive(Clone, Copy, Default, ShaderType, bytemuck::Pod, bytemuck::Zeroable)]
+///   12  alpha_discard : f32 - coverage threshold below which the 3D fragment
+///                             shader discards the pixel and skips the depth write.
+///                             Defaults to 0.01 (preserves smooth sub-pixel AA).
+///                             Ignored by 2D/UI shader paths.
+#[derive(Clone, Copy, ShaderType, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct SlugParams {
     pub node_size: Vec2,
     pub layout_flags: u32,
-    pub _pad: u32,
+    pub alpha_discard: f32,
+}
+
+impl Default for SlugParams {
+    fn default() -> Self {
+        SlugParams {
+            node_size: Vec2::ZERO,
+            layout_flags: 0,
+            alpha_discard: 0.01,
+        }
+    }
 }
 
 /// Per-run descriptor uploaded once per shaped text string.
@@ -580,7 +519,6 @@ impl SlugAtlasLayout {
 
     /// Build a `texture_2d<f32>` rgba32float Image for the bezier curves data.
     /// Each curve occupies 2 texels: (p0.x,p0.y,p1.x,p1.y) and (p2.x,p2.y,0,0).
-    #[cfg(feature = "webgl")]
     pub fn curves_image(&self) -> bevy::prelude::Image {
         use bevy::asset::RenderAssetUsages;
         use bevy::prelude::Image;
@@ -591,16 +529,13 @@ impl SlugAtlasLayout {
         let width = SLUG_TEX_WIDTH;
         let height = ((texel_count as u32).div_ceil(width)).max(1);
 
-        // Pad to full texel rows.
         let total_texels = (width * height) as usize;
-        // 16 bytes per rgba32float texel
+
         let mut pixels = vec![0u8; total_texels * 16];
 
         for (ci, chunk) in self.curves_data.chunks_exact(24).enumerate() {
             let base = ci * 2 * 16;
-            // texel 0 is p0.x p0.y p1.x p1.y
             pixels[base..base + 16].copy_from_slice(&chunk[0..16]);
-            // texel 1 is p2.x p2.y 0 0
             pixels[base + 16..base + 24].copy_from_slice(&chunk[16..24]);
         }
 
@@ -619,7 +554,6 @@ impl SlugAtlasLayout {
 
     /// Build a `texture_2d<u32>` rgba32uint Image for the curve indices.
     /// 4 u32s are packed per texel.
-    #[cfg(feature = "webgl")]
     pub fn curve_indices_image(&self) -> bevy::prelude::Image {
         use bevy::asset::RenderAssetUsages;
         use bevy::prelude::Image;
@@ -648,8 +582,7 @@ impl SlugAtlasLayout {
     }
 
     /// Build a `texture_2d<u32>` rgba32uint Image for the glyph data.
-    /// Each SlugGlyph is 80 bytes = 5 x vec4<u32> that occupies 5 texels.
-    #[cfg(feature = "webgl")]
+    /// Each SlugGlyph is 80 bytes = 5 x `vec4<u32>` that occupies 5 texels.
     pub fn glyphs_image(&self) -> bevy::prelude::Image {
         use bevy::asset::RenderAssetUsages;
         use bevy::prelude::Image;
@@ -678,551 +611,506 @@ impl SlugAtlasLayout {
     }
 }
 
-// AsBindGroup is implemented manually so we can supply sub-range BufferBindings
-// pointing into different byte regions of the same underlying GPU buffer.
-// The 0.18 API gives us a `&BindGroupLayoutDescriptor` + `&PipelineCache`;
-// calling `pipeline_cache.get_bind_group_layout(layout)` yields the
-// `BindGroupLayout` we pass to `render_device.create_bind_group(...)`.
-/// Material for slug text rendering. Registered as both `UiMaterial` and
-/// `Material2d` so the same atlas data can be used in UI nodes and 2D meshes.
+/// Build a `texture_2d<f32>` rgba32float Image for a single `SlugRunDesc`.
 ///
-/// Binding layout (both paths):
-///   @binding(0)  uniform   SlugParams                16 bytes
-///   @binding(1)  storage   curves[]                  native; `texture_2d<f32>` webgl
-///   @binding(2)  storage   curve_indices[]           native; `texture_2d<u32>` webgl
-///   @binding(3)  storage   glyphs[]                  native; `texture_2d<u32>` webgl
+/// Layout: one texel = `(natural_advance, natural_height, glyph_offset as f32,
+/// glyph_count as f32)`. Matches `get_run()` in the texture-path shader.
+pub fn build_runs_image(run: &SlugRunDesc) -> bevy::prelude::Image {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::prelude::Image;
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+    use bytemuck::cast_slice;
+
+    let floats: [f32; 4] = [
+        run.natural_advance,
+        run.natural_height,
+        run.glyph_offset as f32,
+        run.glyph_count as f32,
+    ];
+    // MAIN_WORLD | RENDER_WORLD Bevy must keep a CPU copy so it can re-upload
+    // after a pipeline reset or render-world rebuild. RENDER_WORLD-only images
+    // are one-shot and disappear on the next frame/ecs tick.
+    Image::new(
+        Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        cast_slice::<f32, u8>(&floats).to_vec(),
+        TextureFormat::Rgba32Float,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
+/// Build a `texture_2d<f32>` rgba32float Image for a slice of `SlugGlyphLayout`.
 ///
-/// Native path: one packed ShaderStorageBuffer, three sub-range bindings.
-/// `curves_offset/size`, `curve_indices_offset/size`, `glyphs_offset/size`
-/// describe where each array lives inside the single buffer.
+/// Layout: 3 texels per entry:
+///   texel 0 - `screen_rect` (vec4f)
+///   texel 1 - `em_rect`     (vec4f)
+///   texel 2 - `glyph_index as f32, 0, 0, 0`
 ///
-/// webgl path: three data textures (rgba32float / rgba32uint) accessed via
-/// `textureLoad` with integer coordinates - no samplers needed.
-#[cfg(not(feature = "webgl"))]
-#[derive(Asset, TypePath, Clone)]
-pub struct SlugMaterial {
-    pub params: SlugParams,
-    /// RGBA linear color applied at the call site in ui_text.wesl.
-    /// Kept on the material because it is a per-draw-call concern, not a lib or
-    /// atlas concern. The shader reads it as a push-constant-style field from
-    /// the UiMaterial-local uniform instead of the slug lib uniform.
-    pub text_color: Vec4,
-    /// Pre-computed local-to-clip matrix for 3d Material path.
-    pub local_to_clip: [[f32; 4]; 4],
-    /// Single packed GPU buffer: [curves | curve_indices | glyphs] with alignment.
-    pub atlas_buffer: Option<Handle<ShaderStorageBuffer>>,
-    pub curves_offset: u64,
-    pub curves_size: u64,
-    pub curve_indices_offset: u64,
-    pub curve_indices_size: u64,
-    pub glyphs_offset: u64,
-    pub glyphs_size: u64,
-    /// SlugDrawData buffer: [runs | glyph_layout] with 256-byte alignment between.
-    /// Binding 4 = runs sub-range of N x 16 bytes, one SlugRunDesc each.
-    /// Binding 5 = glyph_layout sub-range of M x 48 bytes, one SlugGlyphLayout each.
-    pub draw_buffer: Option<Handle<ShaderStorageBuffer>>,
-    pub runs_offset: u64,
-    pub runs_size: u64,
-    pub glyph_layout_offset: u64,
-    pub glyph_layout_size: u64,
-}
+/// Matches `get_glyph_layout()` in the texture-path shader.
+pub fn build_glyph_layout_image(layouts: &[slug::SlugGlyphLayout]) -> bevy::prelude::Image {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::prelude::Image;
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+    use bytemuck::cast_slice;
 
-#[cfg(not(feature = "webgl"))]
-impl Default for SlugMaterial {
-    fn default() -> Self {
-        SlugMaterial {
-            params: SlugParams::default(),
-            text_color: Vec4::ONE,
-            local_to_clip: Mat4::IDENTITY.to_cols_array_2d(),
-            atlas_buffer: None,
-            curves_offset: 0,
-            curves_size: 0,
-            curve_indices_offset: 0,
-            curve_indices_size: 0,
-            glyphs_offset: 0,
-            glyphs_size: 0,
-            draw_buffer: None,
-            runs_offset: 0,
-            runs_size: 0,
-            glyph_layout_offset: 0,
-            glyph_layout_size: 0,
-        }
+    let count = layouts.len();
+    let texels = count * 3;
+    let width = SLUG_TEX_WIDTH;
+    let height = ((texels as u32).div_ceil(width)).max(1);
+    let total = (width * height) as usize * 4;
+    let mut floats = vec![0.0f32; total];
+    for (i, g) in layouts.iter().enumerate() {
+        let base = i * 3 * 4;
+        floats[base..base + 4].copy_from_slice(&g.screen_rect);
+        floats[base + 4..base + 8].copy_from_slice(&g.em_rect);
+        floats[base + 8] = g.glyph_index as f32;
     }
-}
-
-#[cfg(not(feature = "webgl"))]
-impl AsBindGroup for SlugMaterial {
-    type Data = ();
-    type Param = bevy::ecs::system::lifetimeless::SRes<
-        bevy::render::render_asset::RenderAssets<bevy::render::storage::GpuShaderStorageBuffer>,
-    >;
-
-    fn label() -> &'static str {
-        "slug_material"
-    }
-
-    fn bind_group_data(&self) -> Self::Data {}
-
-    fn as_bind_group(
-        &self,
-        layout: &BindGroupLayoutDescriptor,
-        render_device: &bevy::render::renderer::RenderDevice,
-        pipeline_cache: &bevy::render::render_resource::PipelineCache,
-        gpu_buffers: &mut bevy::ecs::system::SystemParamItem<'_, '_, Self::Param>,
-    ) -> Result<PreparedBindGroup, AsBindGroupError> {
-        // Retrieve the prepared GPU storage buffer.
-        let atlas_gpu = match &self.atlas_buffer {
-            Some(h) => gpu_buffers
-                .get(h)
-                .ok_or(AsBindGroupError::RetryNextUpdate)?,
-            None => return Err(AsBindGroupError::RetryNextUpdate),
-        };
-
-        let draw_gpu = match &self.draw_buffer {
-            Some(h) => gpu_buffers
-                .get(h)
-                .ok_or(AsBindGroupError::RetryNextUpdate)?,
-            None => return Err(AsBindGroupError::RetryNextUpdate),
-        };
-
-        let mut params_bytes = [0u8; 96];
-        params_bytes[..16].copy_from_slice(bytemuck::bytes_of(&self.params));
-        params_bytes[16..32].copy_from_slice(bytemuck::bytes_of(&self.text_color));
-        params_bytes[32..96].copy_from_slice(bytemuck::cast_slice(&self.local_to_clip));
-        let params_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("slug_params"),
-            contents: &params_bytes,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
-
-        let bg_layout = &pipeline_cache.get_bind_group_layout(layout);
-        let bind_group = render_device.create_bind_group(
-            Self::label(),
-            bg_layout,
-            &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: params_buf.as_entire_binding(),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Buffer(BufferBinding {
-                        buffer: &atlas_gpu.buffer,
-                        offset: self.curves_offset,
-                        size: BufferSize::new(self.curves_size),
-                    }),
-                },
-                BindGroupEntry {
-                    binding: 2,
-                    resource: BindingResource::Buffer(BufferBinding {
-                        buffer: &atlas_gpu.buffer,
-                        offset: self.curve_indices_offset,
-                        size: BufferSize::new(self.curve_indices_size),
-                    }),
-                },
-                BindGroupEntry {
-                    binding: 3,
-                    resource: BindingResource::Buffer(BufferBinding {
-                        buffer: &atlas_gpu.buffer,
-                        offset: self.glyphs_offset,
-                        size: BufferSize::new(self.glyphs_size),
-                    }),
-                },
-                // binding 4 is a runs[] array of (SlugRunDesc array, 16 bytes each)
-                BindGroupEntry {
-                    binding: 4,
-                    resource: BindingResource::Buffer(BufferBinding {
-                        buffer: &draw_gpu.buffer,
-                        offset: self.runs_offset,
-                        size: BufferSize::new(self.runs_size),
-                    }),
-                },
-                // binding 5 is a glyph_layout[] array of (SlugGlyphLayout array, 48 bytes each)
-                BindGroupEntry {
-                    binding: 5,
-                    resource: BindingResource::Buffer(BufferBinding {
-                        buffer: &draw_gpu.buffer,
-                        offset: self.glyph_layout_offset,
-                        size: BufferSize::new(self.glyph_layout_size),
-                    }),
-                },
-            ],
-        );
-
-        Ok(PreparedBindGroup {
-            bindings: BindingResources(vec![]),
-            bind_group,
-        })
-    }
-
-    fn unprepared_bind_group(
-        &self,
-        _layout: &BindGroupLayout,
-        _render_device: &bevy::render::renderer::RenderDevice,
-        _param: &mut bevy::ecs::system::SystemParamItem<'_, '_, Self::Param>,
-        _force_no_bindless: bool,
-    ) -> Result<UnpreparedBindGroup, AsBindGroupError> {
-        Err(AsBindGroupError::CreateBindGroupDirectly)
-    }
-
-    fn bind_group_layout_entries(
-        _: &bevy::render::renderer::RenderDevice,
-        _: bool,
-    ) -> Vec<BindGroupLayoutEntry>
-    where
-        Self: Sized,
-    {
-        // Helper closure for storage buffer layout entries.
-        let storage_entry = |binding: u32| BindGroupLayoutEntry {
-            binding,
-            visibility: ShaderStages::FRAGMENT,
-            ty: BindingType::Buffer {
-                ty: BufferBindingType::Storage { read_only: true },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
-
-        vec![
-            BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            storage_entry(1),
-            storage_entry(2),
-            storage_entry(3),
-            storage_entry(4),
-            storage_entry(5),
-        ]
-    }
-}
-
-// AsBindGroup is implemented manually for webgl because the derive macro does not have
-// a `#[texture_no_sampler]` attribute and these textures cannot have samplers as
-// textureLoad uses integer coordinates, not normalized UV sampling like native.
-
-#[cfg(feature = "webgl")]
-#[derive(Asset, TypePath, Clone)]
-pub struct SlugMaterial {
-    pub params: SlugParams,
-    /// RGBA linear color applied at the call site. Not in SlugParams which is a lib
-    /// concern. Kept here and packed into the uniform at binding 0 alongside
-    /// node_size, same as the native path.
-    pub text_color: Vec4,
-    /// Pre-computed local-to-clip matrix for 3d path only. Unused for the webgl
-    /// path but kept for struct parity.
-    pub local_to_clip: [[f32; 4]; 4],
-    /// curves_tex: texture_2d<f32>, rgba32float, 2 texels per curve.
-    pub curves_image: Handle<Image>,
-    /// curve_indices_tex: texture_2d<u32>, rgba32uint, 4 indices per texel.
-    pub curve_indices_image: Handle<Image>,
-    /// glyphs_tex: texture_2d<u32>, rgba32uint, 5 texels per glyph.
-    pub glyphs_image: Handle<Image>,
-    /// runs_tex: texture_2d<f32>, rgba32float, 1 texel per SlugRunDesc (16 bytes).
-    pub runs_image: Handle<Image>,
-    /// glyph_layout_tex: texture_2d<f32>, rgba32float, 3 texels per SlugGlyphLayout.
-    pub glyph_layout_image: Handle<Image>,
-}
-
-#[cfg(feature = "webgl")]
-impl Default for SlugMaterial {
-    fn default() -> Self {
-        SlugMaterial {
-            params: SlugParams::default(),
-            text_color: Vec4::ONE,
-            local_to_clip: Mat4::IDENTITY.to_cols_array_2d(),
-            curves_image: Handle::default(),
-            curve_indices_image: Handle::default(),
-            glyphs_image: Handle::default(),
-            runs_image: Handle::default(),
-            glyph_layout_image: Handle::default(),
-        }
-    }
-}
-
-fn slug_is_webgl() -> bool {
-    cfg!(all(
-        feature = "webgl",
-        target_arch = "wasm32",
-        not(feature = "webgpu")
-    ))
-}
-
-fn slug_push_shader_defs(
-    fragment: &mut bevy::render::render_resource::FragmentState,
-    ui_material: bool,
-) {
-    fragment
-        .shader_defs
-        .push(ShaderDefVal::Bool("WEBGL".into(), slug_is_webgl()));
-    fragment
-        .shader_defs
-        .push(ShaderDefVal::Bool("UI_MATERIAL".into(), ui_material));
-}
-
-// Binding layout:
-//   @binding(0)  uniform   SlugParams
-//   @binding(1)  texture   curves_tex        (texture_2d<f32>, rgba32float)
-//   @binding(2)  texture   curve_indices_tex (texture_2d<u32>, rgba32uint)
-//   @binding(3)  texture   glyphs_tex        (texture_2d<u32>, rgba32uint)
-
-/// webgl AsBindGroup: three data textures accessed via textureLoad, no samplers.
-/// Uses `as_bind_group` directly because texture views can't be owned in
-/// `OwnedBindingResource::TextureView` sadly.
-#[cfg(feature = "webgl")]
-impl AsBindGroup for SlugMaterial {
-    type Data = ();
-    type Param = (
-        bevy::ecs::system::lifetimeless::SRes<
-            bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>,
-        >,
-        bevy::ecs::system::lifetimeless::SRes<bevy::render::texture::FallbackImage>,
-    );
-
-    fn label() -> &'static str {
-        "slug_material_webgl"
-    }
-
-    fn bind_group_data(&self) -> Self::Data {}
-
-    fn as_bind_group(
-        &self,
-        layout: &BindGroupLayoutDescriptor,
-        render_device: &bevy::render::renderer::RenderDevice,
-        pipeline_cache: &bevy::render::render_resource::PipelineCache,
-        (images, _fallback): &mut bevy::ecs::system::SystemParamItem<'_, '_, Self::Param>,
-    ) -> Result<PreparedBindGroup, AsBindGroupError> {
-        let get_view = |handle: &Handle<Image>| -> Result<
-            &bevy::render::render_resource::TextureView,
-            AsBindGroupError,
-        > {
-            // TODO: How do I deal with this without this hack? God I hate webgl
-            // and all of its bullshit. I spend 300% more time keeping web stuff
-            // working than linux/macos/windows combined. Worst. Platform. Ever.
-            if handle.id() == bevy::asset::AssetId::default() {
-                return Err(AsBindGroupError::RetryNextUpdate);
-            }
-            images
-                .get(handle)
-                .map(|gpu| &gpu.texture_view)
-                .ok_or(AsBindGroupError::RetryNextUpdate)
-        };
-
-        let curves_view = get_view(&self.curves_image)?;
-        let indices_view = get_view(&self.curve_indices_image)?;
-        let glyphs_view = get_view(&self.glyphs_image)?;
-        let runs_view = get_view(&self.runs_image)?;
-        let layout_view = get_view(&self.glyph_layout_image)?;
-
-        let mut params_bytes = [0u8; 96];
-        params_bytes[..16].copy_from_slice(bytemuck::bytes_of(&self.params));
-        params_bytes[16..32].copy_from_slice(bytemuck::bytes_of(&self.text_color));
-        params_bytes[32..96].copy_from_slice(bytemuck::cast_slice(&self.local_to_clip));
-        let params_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("slug_params_webgl"),
-            contents: &params_bytes,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
-
-        let bg_layout = &pipeline_cache.get_bind_group_layout(layout);
-        let bind_group = render_device.create_bind_group(
-            Self::label(),
-            bg_layout,
-            &BindGroupEntries::sequential((
-                params_buf.as_entire_binding(),
-                curves_view,
-                indices_view,
-                glyphs_view,
-                runs_view,
-                layout_view,
-            )),
-        );
-
-        Ok(PreparedBindGroup {
-            bindings: BindingResources(vec![]),
-            bind_group,
-        })
-    }
-
-    fn unprepared_bind_group(
-        &self,
-        _layout: &BindGroupLayout,
-        _render_device: &bevy::render::renderer::RenderDevice,
-        _param: &mut bevy::ecs::system::SystemParamItem<'_, '_, Self::Param>,
-        _force_no_bindless: bool,
-    ) -> Result<UnpreparedBindGroup, AsBindGroupError> {
-        Err(AsBindGroupError::CreateBindGroupDirectly)
-    }
-
-    fn bind_group_layout_entries(
-        _: &bevy::render::renderer::RenderDevice,
-        _: bool,
-    ) -> Vec<BindGroupLayoutEntry>
-    where
-        Self: Sized,
-    {
-        let float_tex = |binding: u32| BindGroupLayoutEntry {
-            binding,
-            visibility: ShaderStages::FRAGMENT,
-            ty: BindingType::Texture {
-                sample_type: TextureSampleType::Float { filterable: false },
-                view_dimension: TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let uint_tex = |binding: u32| BindGroupLayoutEntry {
-            binding,
-            visibility: ShaderStages::FRAGMENT,
-            ty: BindingType::Texture {
-                sample_type: TextureSampleType::Uint,
-                view_dimension: TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
-
-        vec![
-            BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            float_tex(1),
-            uint_tex(2),
-            uint_tex(3),
-            float_tex(4),
-            float_tex(5),
-        ]
-    }
-}
-
-impl UiMaterial for SlugMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "embedded://flan/slug/ui_text.wesl".into()
-    }
-
-    fn specialize(descriptor: &mut RenderPipelineDescriptor, _key: UiMaterialKey<Self>) {
-        if let Some(ref mut fragment) = descriptor.fragment {
-            slug_push_shader_defs(fragment, true);
-        }
-    }
-}
-
-impl Material2d for SlugMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "embedded://flan/slug/text.wesl".into()
-    }
-
-    fn alpha_mode(&self) -> AlphaMode2d {
-        AlphaMode2d::Blend
-    }
-
-    fn specialize(
-        descriptor: &mut RenderPipelineDescriptor,
-        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
-        _key: Material2dKey<Self>,
-    ) -> Result<(), SpecializedMeshPipelineError> {
-        if let Some(ref mut fragment) = descriptor.fragment {
-            slug_push_shader_defs(fragment, false);
-        }
-        Ok(())
-    }
-}
-
-/// 3D Material impl for slug text meshes placed in world space.
-///
-/// Adds a third rendering surface alongside Material2d and UiMaterial.
-/// The mesh geometry is normalized to 1 world unit tall; Transform handles
-/// placement and scale. Uses the same atlas buffers and bind group layout as
-/// the 2D path. Only the vertex shader differs
-#[cfg(not(feature = "webgl"))]
-impl Material for SlugMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "embedded://flan/slug/mesh3d.wesl".into()
-    }
-
-    fn vertex_shader() -> ShaderRef {
-        "embedded://flan/slug/mesh3d.wesl".into()
-    }
-
-    fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Blend
-    }
-
-    fn specialize(
-        _pipeline: &bevy::pbr::MaterialPipeline,
-        descriptor: &mut RenderPipelineDescriptor,
-        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
-        _key: bevy::pbr::MaterialPipelineKey<Self>,
-    ) -> Result<(), SpecializedMeshPipelineError> {
-        descriptor
-            .vertex
-            .shader_defs
-            .push(ShaderDefVal::Bool("MATERIAL_3D".into(), true));
-        if let Some(ref mut fragment) = descriptor.fragment {
-            slug_push_shader_defs(fragment, false);
-            fragment
-                .shader_defs
-                .push(ShaderDefVal::Bool("MATERIAL_3D".into(), true));
-        }
-        // Disable backface culling so the text is readable from both sides.
-        descriptor.primitive.cull_mode = None;
-        Ok(())
-    }
-}
-
-/// 3D Material impl for webgl uses data textures at group 3
-#[cfg(feature = "webgl")]
-impl Material for SlugMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "embedded://flan/slug/mesh3d.wesl".into()
-    }
-
-    fn vertex_shader() -> ShaderRef {
-        "embedded://flan/slug/mesh3d.wesl".into()
-    }
-
-    fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Blend
-    }
-
-    fn specialize(
-        _pipeline: &bevy::pbr::MaterialPipeline,
-        descriptor: &mut RenderPipelineDescriptor,
-        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
-        _key: bevy::pbr::MaterialPipelineKey<Self>,
-    ) -> Result<(), SpecializedMeshPipelineError> {
-        descriptor
-            .vertex
-            .shader_defs
-            .push(ShaderDefVal::Bool("MATERIAL_3D".into(), true));
-        if let Some(ref mut fragment) = descriptor.fragment {
-            slug_push_shader_defs(fragment, false);
-            fragment
-                .shader_defs
-                .push(ShaderDefVal::Bool("MATERIAL_3D".into(), true));
-        }
-        descriptor.primitive.cull_mode = None;
-        Ok(())
-    }
+    Image::new(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        cast_slice::<f32, u8>(&floats).to_vec(),
+        TextureFormat::Rgba32Float,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
 }
 
 /// Marker component for entities that are managed slug text nodes.
 #[derive(Component)]
 pub struct SlugText;
+
+// SlugMaterial params upload pipeline, cause this is all more complex that it
+// probably needs to be but I'm still learning to abuse the ECS with custom shaders.
+
+/// Per `atlas_buffer` packed bytes for the native SlugMaterial upload pipeline.
+///
+/// Keyed by `AssetId` of the pre-allocated `atlas_buffer`
+/// `ShaderStorageBuffer`. Set by `upload_layout_native` when the new atlas data
+/// fits within the existing buffer capacity; the render-world system
+/// `upload_slug_atlas` calls `write_buffer` to push the bytes to the GPU. When
+/// capacity is exceeded a new buffer is allocated which causes a new Bind Group
+/// but thats hard to avoid, in which case no entry is added.
+#[cfg(not(feature = "webgl"))]
+#[derive(Resource, Clone, Default, ExtractResource)]
+pub struct SlugAtlasUploadMap {
+    pub entries: std::collections::HashMap<bevy::asset::AssetId<ShaderStorageBuffer>, Vec<u8>>,
+}
+
+/// Render-world system to write atlas bytes into `atlas_buffer` SSBs.
+#[cfg(not(feature = "webgl"))]
+pub fn upload_slug_atlas(
+    upload_map: Res<SlugAtlasUploadMap>,
+    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    render_queue: Res<RenderQueue>,
+) {
+    for (id, bytes) in &upload_map.entries {
+        if let Some(gpu_buf) = gpu_bufs.get(*id) {
+            render_queue.write_buffer(&gpu_buf.buffer, 0, bytes);
+        }
+    }
+}
+
+/// Per `draw_buffer` packed bytes for the native SlugMaterial upload pipeline.
+#[cfg(not(feature = "webgl"))]
+#[derive(Resource, Clone, Default, ExtractResource)]
+pub struct SlugDrawUploadMap {
+    pub entries: std::collections::HashMap<bevy::asset::AssetId<ShaderStorageBuffer>, Vec<u8>>,
+}
+
+/// Render-world system: write draw bytes to pre-allocated `draw_buffer` SSBs.
+#[cfg(not(feature = "webgl"))]
+pub fn upload_slug_draw(
+    upload_map: Res<SlugDrawUploadMap>,
+    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    render_queue: Res<RenderQueue>,
+) {
+    for (id, bytes) in &upload_map.entries {
+        if let Some(gpu_buf) = gpu_bufs.get(*id) {
+            render_queue.write_buffer(&gpu_buf.buffer, 0, bytes);
+        }
+    }
+}
+
+/// Per `params_buf` payload for the native SlugMaterial upload pipeline.
+///
+/// Each entry maps the `AssetId` of a pre-allocated `params_buf`
+/// `ShaderStorageBuffer` to the 96 bytes that should be written into it this frame
+///
+#[cfg(not(feature = "webgl"))]
+#[derive(Resource, Clone, Default, ExtractResource)]
+pub struct SlugParamsUploadMap {
+    pub entries: std::collections::HashMap<bevy::asset::AssetId<ShaderStorageBuffer>, [u8; 96]>,
+}
+
+/// Render-world system for every entry in `SlugParamsUploadMap`, write the
+/// uniform into the entity's pre-allocated `params_buf` SSB.
+#[cfg(not(feature = "webgl"))]
+pub fn upload_slug_params(
+    upload_map: Res<SlugParamsUploadMap>,
+    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    render_queue: Res<RenderQueue>,
+) {
+    for (id, bytes) in &upload_map.entries {
+        if let Some(gpu_buf) = gpu_bufs.get(*id) {
+            render_queue.write_buffer(&gpu_buf.buffer, 0, bytes);
+        }
+    }
+}
+
+const DISPLAY_RANGE_ALPHA: f32 = 0.04;
+
+/// Minimum Y-axis range exposed to the shader in whatever units bevy reported
+/// for fps.
+///
+/// Prevents the sparkline from zooming into tiny sub-fps variations and making
+/// a steady ~60 ish fps signal oscillate weirdly. It oscillates weirdly
+/// differently now but I don't care its a winter me task to fix.
+const DISPLAY_MIN_RANGE: f32 = 15.0;
+
+#[derive(Resource)]
+pub struct StatsOverlayData {
+    /// Raw fps history, latest at the tail end.
+    history: Vec<f32>,
+    /// True after the first fps > 0.0 has been pushed for history.
+    primed: bool,
+    /// EMA-smoothed lower bound of the displayed Y range.
+    ema_min: f32,
+    /// EMA-smoothed upper bound of the displayed Y range.
+    ema_max: f32,
+}
+
+impl Default for StatsOverlayData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StatsOverlayData {
+    pub fn new() -> Self {
+        Self {
+            history: Vec::with_capacity(STATS_OVERLAY_HISTORY_SIZE),
+            primed: false,
+            ema_min: 0.0,
+            ema_max: 0.0,
+        }
+    }
+
+    // TODO: This could use some noodling, bevy reports some weird af numbers
+    // sometimes that make zero sense like 400fps for a 120fps render hardware
+    // chain.
+
+    /// Push the current FPS value into the stored history.
+    ///
+    /// Values below 0.0???? are silently dropped before and after
+    /// initialization so stale diagnostic readings during startup never appear
+    /// in the plot.
+    ///
+    /// After each push the EMA display range is updated:
+    /// - expands instantly when the actual recorded range widens
+    /// - contracts more slowly via the time constant of about 2.5 s when it narrows
+    // Its a bit jank still but I can fiddle with it later.
+    pub fn push_fps(&mut self, fps: f32) {
+        if fps <= 0.0 {
+            return;
+        }
+        if !self.primed {
+            self.history.resize(STATS_OVERLAY_HISTORY_SIZE, fps);
+            self.primed = true;
+            self.ema_min = fps;
+            self.ema_max = fps;
+            return;
+        }
+        if self.history.len() >= STATS_OVERLAY_HISTORY_SIZE {
+            self.history.remove(0);
+        }
+        self.history.push(fps);
+
+        // Compute the actual min/max from the averaged 256-point windows.
+        let pts = self.averaged_points();
+        let actual_min = pts.iter().copied().fold(f32::INFINITY, f32::min).max(0.0);
+        let actual_max = pts
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max)
+            .max(0.0);
+
+        // Expand instantly and contract slowly via asymmetric EMA.
+        self.ema_max = if actual_max > self.ema_max {
+            actual_max
+        } else {
+            DISPLAY_RANGE_ALPHA * actual_max + (1.0 - DISPLAY_RANGE_ALPHA) * self.ema_max
+        };
+        self.ema_min = if actual_min < self.ema_min {
+            actual_min
+        } else {
+            DISPLAY_RANGE_ALPHA * actual_min + (1.0 - DISPLAY_RANGE_ALPHA) * self.ema_min
+        };
+    }
+
+    /// Return an array of 256 TODO wat was the const again? averaged FPS values.
+    ///
+    /// The history is divided into 256 chunks of 10 samples each so each chunk
+    /// is averaged into a single `f32` sent to the shader to plot. If the
+    /// history has fewer than `STATS_OVERLAY_HISTORY_SIZE` entries aka before
+    /// the first push or at startup, the result is all zeros.
+    pub fn averaged_points(&self) -> [f32; STATS_OVERLAY_POINT_COUNT] {
+        let mut out = [0.0f32; STATS_OVERLAY_POINT_COUNT];
+        if self.history.len() < STATS_OVERLAY_HISTORY_SIZE {
+            return out;
+        }
+        let chunk = STATS_OVERLAY_HISTORY_SIZE / STATS_OVERLAY_POINT_COUNT; // = 10
+        for (i, slot) in out.iter_mut().enumerate() {
+            let start = i * chunk;
+            let end = (start + chunk).min(self.history.len());
+            if start >= end {
+                break;
+            }
+            let sum: f32 = self.history[start..end].iter().sum();
+            *slot = sum / (end - start) as f32;
+        }
+        out
+    }
+
+    /// Return the most recently pushed FPS value or 0.0 if nothing has been pushed.
+    pub fn latest_fps(&self) -> f32 {
+        self.history.last().copied().unwrap_or(0.0)
+    }
+
+    /// Return the raw minimum of the current 256 averaged points.
+    pub fn min_fps(&self) -> f32 {
+        self.averaged_points()
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min)
+            .max(0.0)
+    }
+
+    /// Return the raw maximum of the current 256 averaged points.
+    pub fn max_fps(&self) -> f32 {
+        self.averaged_points()
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max)
+            .max(0.0)
+    }
+
+    /// Return the display minimum for the shader Y axis.
+    ///
+    /// Applies the EMA-smoothed lower bound and the minimum range floor so
+    /// the sparkline Y axis contracts slowly and never zooms weirdly into sub-fps
+    /// noise which was pissing me off.
+    pub fn display_min_fps(&self) -> f32 {
+        let center = (self.ema_min + self.ema_max) * 0.5;
+        let half = ((self.ema_max - self.ema_min) * 0.5).max(DISPLAY_MIN_RANGE * 0.5);
+        (center - half).max(0.0)
+    }
+
+    /// Return the display maximum for the shader Y axis.
+    pub fn display_max_fps(&self) -> f32 {
+        let center = (self.ema_min + self.ema_max) * 0.5;
+        let half = ((self.ema_max - self.ema_min) * 0.5).max(DISPLAY_MIN_RANGE * 0.5);
+        center + half
+    }
+
+    /// Encode the 256 averaged FPS values as LE f32 bytes for `write_buffer`.
+    pub fn fps_points_bytes(&self) -> Vec<u8> {
+        self.averaged_points()
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod stats_overlay_tests {
+    use super::*;
+
+    #[test]
+    fn prime_fills_history_with_first_fps() {
+        let mut d = StatsOverlayData::new();
+        d.push_fps(45.0);
+        assert_eq!(d.history.len(), STATS_OVERLAY_HISTORY_SIZE);
+        assert!(d.history.iter().all(|&v| (v - 45.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn no_prime_on_zero_fps() {
+        let mut d = StatsOverlayData::new();
+        d.push_fps(0.0);
+        assert!(!d.primed, "zero fps must not prime the history");
+        assert!(d.history.is_empty());
+    }
+
+    #[test]
+    fn zero_fps_dropped_after_priming() {
+        let mut d = StatsOverlayData::new();
+        d.push_fps(60.0); // prime
+        let len_before = d.history.len();
+        d.push_fps(0.0); // must be ignored
+        assert_eq!(
+            d.history.len(),
+            len_before,
+            "zero must not be pushed after prime"
+        );
+    }
+
+    #[test]
+    fn negative_fps_dropped() {
+        let mut d = StatsOverlayData::new();
+        d.push_fps(-1.0);
+        assert!(!d.primed, "negative fps must not prime");
+        d.push_fps(60.0);
+        let len = d.history.len();
+        d.push_fps(-5.0);
+        assert_eq!(
+            d.history.len(),
+            len,
+            "negative fps must not be pushed after prime"
+        );
+    }
+
+    #[test]
+    fn history_caps_at_history_size() {
+        let mut d = StatsOverlayData::new();
+        for i in 0..STATS_OVERLAY_HISTORY_SIZE + 100 {
+            d.push_fps(i as f32 + 1.0);
+        }
+        assert_eq!(d.history.len(), STATS_OVERLAY_HISTORY_SIZE);
+    }
+
+    #[test]
+    fn latest_fps_returns_last_pushed() {
+        let mut d = StatsOverlayData::new();
+        d.push_fps(60.0);
+        d.push_fps(72.5);
+        assert!((d.latest_fps() - 72.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn averaged_points_all_same_when_constant_fps() {
+        let mut d = StatsOverlayData::new();
+        d.push_fps(60.0);
+        for _ in 0..STATS_OVERLAY_HISTORY_SIZE {
+            d.push_fps(60.0);
+        }
+        let pts = d.averaged_points();
+        for (i, &v) in pts.iter().enumerate() {
+            assert!((v - 60.0).abs() < 1e-4, "point {i} expected ~60.0, got {v}");
+        }
+    }
+
+    #[test]
+    fn averaged_points_returns_zeros_before_prime() {
+        let d = StatsOverlayData::new();
+        let pts = d.averaged_points();
+        assert!(pts.iter().all(|&v| v == 0.0), "before prime all zeros");
+    }
+
+    #[test]
+    fn fps_points_bytes_length() {
+        let d = StatsOverlayData::new();
+        assert_eq!(
+            d.fps_points_bytes().len(),
+            STATS_OVERLAY_POINT_COUNT * 4,
+            "must be exactly 256 * 4 = 1024 bytes"
+        );
+    }
+
+    #[test]
+    fn min_max_fps_after_prime() {
+        let mut d = StatsOverlayData::new();
+        d.push_fps(60.0);
+        let min = d.min_fps();
+        let max = d.max_fps();
+        assert!(
+            (min - 60.0).abs() < 1e-4,
+            "min_fps expected ~60.0, got {min}"
+        );
+        assert!(
+            (max - 60.0).abs() < 1e-4,
+            "max_fps expected ~60.0, got {max}"
+        );
+    }
+
+    #[test]
+    fn ema_seeded_on_prime() {
+        let mut d = StatsOverlayData::new();
+        d.push_fps(60.0);
+        assert!(
+            (d.ema_min - 60.0).abs() < 1e-4,
+            "ema_min seeded at prime value"
+        );
+        assert!(
+            (d.ema_max - 60.0).abs() < 1e-4,
+            "ema_max seeded at prime value"
+        );
+    }
+
+    #[test]
+    fn display_range_has_minimum_floor() {
+        let mut d = StatsOverlayData::new();
+        d.push_fps(60.0);
+        let lo = d.display_min_fps();
+        let hi = d.display_max_fps();
+        assert!(
+            hi - lo >= DISPLAY_MIN_RANGE - 1e-4,
+            "display range must be at least {DISPLAY_MIN_RANGE}, got {}",
+            hi - lo
+        );
+        assert!(
+            (lo + hi) / 2.0 - 60.0 < 1e-4,
+            "display range must be centered on ~60, center={}",
+            (lo + hi) / 2.0
+        );
+    }
+
+    #[test]
+    fn display_max_expands_instantly_on_spike() {
+        let mut d = StatsOverlayData::new();
+        d.push_fps(60.0);
+        for _ in 0..STATS_OVERLAY_HISTORY_SIZE {
+            d.push_fps(120.0);
+        }
+        assert!(
+            d.display_max_fps() >= 119.0,
+            "display max must track spikes up, got {}",
+            d.display_max_fps()
+        );
+    }
+
+    #[test]
+    fn display_min_never_negative() {
+        let mut d = StatsOverlayData::new();
+        d.push_fps(5.0);
+        assert!(
+            d.display_min_fps() >= 0.0,
+            "display_min must be non-negative, got {}",
+            d.display_min_fps()
+        );
+    }
+
+    #[test]
+    fn overlay_point_count_is_256() {
+        assert_eq!(STATS_OVERLAY_POINT_COUNT, 256);
+    }
+
+    #[test]
+    fn overlay_history_size_is_2560() {
+        assert_eq!(STATS_OVERLAY_HISTORY_SIZE, 2560);
+    }
+
+    #[test]
+    fn history_size_is_10x_point_count() {
+        assert_eq!(STATS_OVERLAY_HISTORY_SIZE, STATS_OVERLAY_POINT_COUNT * 10);
+    }
+}
 
 #[cfg(test)]
 mod tests {

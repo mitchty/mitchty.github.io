@@ -19,17 +19,13 @@ pub mod build_info {
     /// Whether or not the git checkout was dirty/had uncommitted changes.
     pub const GIT_DIRTY: bool = env!("GIT_DIRTY").as_bytes()[0] == b't';
 
-    /// UTC date/time for compilation.
-    pub const BUILD_DATE: &str = env!("BUILD_DATE");
-
     /// Full version string suitable for clap's `long_version`.
     /// Format: "semver git-commit profile rustc rustc-version built date"
     pub const VERSTR: &str = const_format::formatcp!(
-        "{} {} {} rustc {} built {}",
+        "{} {} {} rustc {}",
         env!("CARGO_PKG_VERSION"),
         GIT_COMMIT,
         BUILD_PROFILE,
         RUSTC_VERSION,
-        BUILD_DATE,
     );
 }

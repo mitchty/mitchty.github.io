@@ -725,7 +725,8 @@ pub fn data_viewer_window(
                     )
 			.changed();
 
-                    let ds = state.dataset.as_ref().unwrap();
+                    // dataset.is_none() early return is above this block.
+                    let ds = state.dataset.as_ref().expect("dataset is Some; guarded above");
 
                     // Build the list of class indices, then sort.
                     let mut matching: Vec<usize> = (0..ds.n_classes)
@@ -822,7 +823,8 @@ pub fn data_viewer_window(
                 ui.separator();
 
                 ui.vertical(|ui| {
-                    let ds = state.dataset.as_ref().unwrap();
+                    // dataset.is_none() early return is above this block.
+                    let ds = state.dataset.as_ref().expect("dataset is Some; guarded above");
                     let sel = state.selected_class;
                     let ch = ds.class_char(sel);
                     let count = ds.class_count(sel);
@@ -894,7 +896,7 @@ pub fn data_viewer_window(
                                             .on_hover_text(
 						"Pipeline quality for visible images.\n\
 						 Q = 0.6xFDR_tent + 0.4x(otsu_var/5000)\n\
-						 W ≥ 0.60  ⚠ 0.30–0.59  L < 0.30\n\
+						 W >= 0.60  ⚠ 0.30–0.59  L < 0.30\n\
 						 Near-blank or near-solid outputs score 0 or near to it.",
                                             );
                                     },
@@ -972,7 +974,7 @@ pub fn data_viewer_window(
                                                             Some(AutoMethod::Otsu) => "Otsu",
                                                             Some(AutoMethod::SauvolaWide) => "S11",
                                                             Some(AutoMethod::SauvolaNarrow) => "S7",
-                                                            None => "…",
+                                                            None => "...",
                                                         };
                                                     let q = q_opt.unwrap_or(0.0);
                                                     let color = if q >= 0.6 {
@@ -1025,8 +1027,10 @@ pub fn data_viewer_window(
                                                     scale,
                                                 )
                                             } else {
-                                                let px =
-                                                    cache.entries.get(&img_idx).unwrap();
+                                                let px = cache
+                                                    .entries
+                                                    .get(&img_idx)
+                                                    .expect("img_idx must be in cache when show_original is false");
                                                 draw_image(ui, px, iw, ih, scale)
                                             };
 
@@ -1042,7 +1046,7 @@ pub fn data_viewer_window(
                                                         .auto_method
                                                         .get(&img_idx)
                                                         .map(|m| m.to_string())
-                                                        .unwrap_or_else(|| "…".into());
+                                                        .unwrap_or_else(|| "...".into());
                                                     let q_str = q_opt
                                                         .map(|q| format!("{q:.2}"))
                                                         .unwrap_or_else(|| "?".into());

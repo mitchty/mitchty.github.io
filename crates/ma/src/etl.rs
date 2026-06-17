@@ -214,7 +214,7 @@ pub struct EtlBatch {
 /// Discover and read all supported ETL datasets under `root`.
 ///
 /// `root` is the parent directory that contains sub-directories named
-/// `ETL1`, `ETL2`, …, `ETL9G`. Each recognised sub-directory is read with
+/// `ETL1`, `ETL2`, ..., `ETL9G`. Each recognised sub-directory is read with
 /// its correct [`EtlFormat`]. Unrecognised sub-directories and sub-directories
 /// that are absent on disk are silently skipped (with a log warning so the
 /// caller knows something was skipped).
@@ -1092,7 +1092,7 @@ pub fn write_npz(path: &str, data: &[u8], shape: &[usize], dtype: &str) -> io::R
 /// ```text
 /// {out_dir}/m-train-imgs.npz   {out_dir}/m-train-labels.npz
 /// {out_dir}/m-test-imgs.npz    {out_dir}/m-test-labels.npz
-/// … (same for b- and g- prefixes)
+/// ... (same for b- and g- prefixes)
 /// {out_dir}/classmap.json
 /// {out_dir}/stats.json
 /// ```
@@ -1116,7 +1116,7 @@ pub fn convert_etlcdb(
     // Build a single shared label map from ALL records across all batches so
     // that class indices are globally consistent between the per-family npz files.
     // Apply character filters first so excluded chars never appear in the label map.
-    // equiv is passed through so halfwidth chars normalise to the same canonical
+    // equiv is passed through so halfwidth chars normalize to the same canonical
     // label as their fullwidth counterparts without mutating any records.
     let all_records: Vec<&EtlRecord> = batches
         .iter()
@@ -1447,7 +1447,7 @@ pub fn convert_to_npz(
         "writing npz files"
     );
 
-    // Bytes per label in its serialised form
+    // Bytes per label in its serialized form
     let label_stride = if use_u16 { 2 } else { 1 };
 
     match (&paths.test_imgs, &paths.test_labels) {
@@ -1908,7 +1908,7 @@ fn record_progress_bar(total: u64, verb: &str) -> ProgressBar {
             "{spinner:.cyan} [{elapsed_precise}] {bar:45.cyan/blue} {human_pos}/{human_len} \
              records {per_sec:.dim} eta {eta} {msg}",
         )
-        .unwrap()
+        .expect("static progress bar template is valid")
         .progress_chars("█▉▊▋▌▍▎▏  "),
     );
     pb.set_message(verb.to_owned());
@@ -1924,7 +1924,7 @@ fn write_progress_bar(total_bytes: u64, msg: &str) -> ProgressBar {
             "{spinner:.green} [{elapsed_precise}] {bar:45.green/dim} {bytes}/{total_bytes} \
              {bytes_per_sec:.dim} eta {eta} {msg}",
         )
-        .unwrap()
+        .expect("static progress bar template is valid")
         .progress_chars("█▉▊▋▌▍▎▏  "),
     );
     pb.set_message(msg.to_owned());
@@ -1933,7 +1933,7 @@ fn write_progress_bar(total_bytes: u64, msg: &str) -> ProgressBar {
 }
 
 /// Write `{out_dir}/classmap.json` a glorified JSON array of single-char strings in
-/// label-index order, e.g. `["あ","い","う",…,"一","二",…]`.
+/// label-index order, e.g. `["あ","い","う",...,"一","二",...]`.
 ///
 /// The array index equals the class label used in the npz files, so
 /// `classmap[i]` is the Unicode character for class `i`. This file is
@@ -1968,7 +1968,7 @@ pub fn write_classmap(out_dir: &str, label_map: &HashMap<char, u32>) -> io::Resu
 /// Online Welford accumulator for per-pixel mean and variance.
 ///
 /// Accumulates statistics one pixel slice at a time so callers never need to
-/// materialise a flat all-pixels buffer just to compute `stats.json`. All
+/// materialize a flat all-pixels buffer just to compute `stats.json`. All
 /// arithmetic is in `f64`; pixel values are normalized to `[0, 1]` on the fly.
 ///
 /// # Example
@@ -2024,7 +2024,7 @@ impl WelfordStats {
 ///
 /// `images` is the flat `u8` pixel buffer, `pixels_per_image` is `height * width`
 /// for whatever native resolution the dataset uses. Stats are computed over all
-/// pixels at once, values scaled to `[0, 1]`, for use as normalisation constants
+/// pixels at once, values scaled to `[0, 1]`, for use as normalization constants
 /// at training/inference time.
 ///
 /// For streaming use (no large pixel buffer), prefer [`write_stats_computed`]
@@ -2732,7 +2732,7 @@ mod tests {
     fn write_npz_round_trip_u8() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("test.npz");
-        let path_str = path.to_str().unwrap();
+        let path_str = path.to_str().expect("tempdir path is valid UTF-8");
 
         let data: Vec<u8> = (0..6).collect();
         write_npz(path_str, &data, &[2, 3], "|u1").expect("write_npz");
@@ -2757,7 +2757,7 @@ mod tests {
     fn write_npz_round_trip_u16() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("test16.npz");
-        let path_str = path.to_str().unwrap();
+        let path_str = path.to_str().expect("tempdir path is valid UTF-8");
 
         // 3 u16 values: 0, 300, 1000
         let values: Vec<u16> = vec![0, 300, 1000];
@@ -2867,7 +2867,11 @@ mod tests {
         let path = dir.path().join("ETL8B_test");
         fs::write(&path, &file_bytes).expect("write test file");
 
-        let records = read_etl_file(path.to_str().unwrap(), EtlFormat::B8).expect("read_etl_file");
+        let records = read_etl_file(
+            path.to_str().expect("tempdir path is valid UTF-8"),
+            EtlFormat::B8,
+        )
+        .expect("read_etl_file");
 
         // Should have exactly 1 record (dummy record 0 was skipped)
         assert_eq!(records.len(), 1);
@@ -2886,7 +2890,11 @@ mod tests {
         let path = dir.path().join("ETL1_test");
         fs::write(&path, &file_bytes).expect("write test file");
 
-        let records = read_etl_file(path.to_str().unwrap(), EtlFormat::M).expect("read_etl_file");
+        let records = read_etl_file(
+            path.to_str().expect("tempdir path is valid UTF-8"),
+            EtlFormat::M,
+        )
+        .expect("read_etl_file");
 
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].character, Some('A'));
@@ -2920,8 +2928,12 @@ mod tests {
         let info_bytes = vec![0x5fu8; 14723];
         fs::write(dir.path().join("ETL8INFO"), &info_bytes).expect("write info");
 
-        let records =
-            read_etl_dir(dir.path().to_str().unwrap(), EtlFormat::B8, &[]).expect("read_etl_dir");
+        let records = read_etl_dir(
+            dir.path().to_str().expect("tempdir path is valid UTF-8"),
+            EtlFormat::B8,
+            &[],
+        )
+        .expect("read_etl_dir");
 
         // Only the one real record from the data file should appear.
         assert_eq!(

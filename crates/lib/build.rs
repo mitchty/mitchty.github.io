@@ -1,15 +1,9 @@
 use git_version::git_version;
-use jiff::Timestamp;
 use rustc_version::version;
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-env-changed=NIX_GIT_REV");
-
-    let build_date = Timestamp::now()
-        .strftime("%Y-%m-%d %H:%M:%S UTC")
-        .to_string();
-    println!("cargo:rustc-env=BUILD_DATE={build_date}");
 
     let rustc_ver = version().expect("failed to get rustc version");
     println!("cargo:rustc-env=RUSTC_VERSION={rustc_ver}");

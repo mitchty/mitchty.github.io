@@ -69,13 +69,15 @@ pub fn spawn_camera(
     mut commands: Commands,
     config: Res<CameraConfig>,
     asset_server: Res<AssetServer>,
-    effects_enabled: Res<EffectsEnabled>,
+    // Option because PostProcessPlugin may be disabled via --without-plugins.
+    // When None the camera is spawned without PostProcessSettings and the
+    // post-process render node is simply absent.
+    effects_enabled: Option<Res<EffectsEnabled>>,
 ) {
     let diffuse_path = asset_path("environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2");
     let specular_path = asset_path("environment_maps/pisa_specular_rgb9e5_zstd.ktx2");
-    let intensity = if effects_enabled.0 { 1.0 } else { 0.0 };
 
-    commands.spawn((
+    let mut camera = commands.spawn((
         Camera3d::default(),
         Camera {
             order: -1,
@@ -92,12 +94,15 @@ pub fn spawn_camera(
         config.orbit,
         MainCamera,
         GizmoCamera,
-        PostProcessSettings {
-            intensity,
-            time: 0.0,
-        },
         RenderLayers::layer(0),
     ));
+
+    if let Some(enabled) = effects_enabled {
+        camera.insert(PostProcessSettings {
+            intensity: if enabled.0 { 1.0 } else { 0.0 },
+            ..Default::default()
+        });
+    }
 }
 
 // TODO: I need to think through how I want to handle all input slightly better

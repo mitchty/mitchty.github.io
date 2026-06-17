@@ -12,7 +12,7 @@
 //
 //TODO: This synthetic data is incomplete and needs augmentation. That is a
 // future me task.
-use std::{collections::HashMap, io};
+use std::{collections::HashMap, io, sync::LazyLock};
 
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
@@ -196,7 +196,7 @@ pub fn convert_kanjivg_dir(
         ));
     }
 
-    // Build label map directly from filtered entries, normalising through equiv
+    // Build label map directly from filtered entries, normalizing through equiv
     // at lookup time - no need to mutate or clone the entries list.
     // entries is already sorted by char (unicode point order).
     let canonical_chars: Vec<char> = entries
@@ -288,7 +288,19 @@ pub fn convert_kanjivg_dir(
         let svg_stripped = strip_namespaces(&svg_raw);
         let svg_clean = strip_stroke_numbers(&svg_stripped);
         let canonical = crate::kana_merging::equiv_char(*ch, equiv);
-        let label = *label_map.get(&canonical).unwrap();
+        let label = match label_map.get(&canonical) {
+            Some(&l) => l,
+            None => {
+                tracing::warn!(
+                    "skipping U+{:X} '{}': canonical U+{:X} '{}' not in label_map",
+                    *ch as u32,
+                    ch,
+                    canonical as u32,
+                    canonical
+                );
+                continue;
+            }
+        };
 
         // Collect all samples for this character into a temporary per-char
         // buffer, then route them into train/test based on position.
@@ -449,7 +461,7 @@ fn strip_stroke_numbers(svg: &str) -> String {
         return svg.to_owned();
     };
 
-    // Walk forward from `start`, counting <g … > / </g> nesting depth so we
+    // Walk forward from `start`, counting <g ... > / </g> nesting depth so we
     // find the correct matching </g> even for groups that contain sub-groups.
     let tail = &svg[start..];
     let mut depth = 0usize;
@@ -475,33 +487,43 @@ fn strip_stroke_numbers(svg: &str) -> String {
     svg.to_owned()
 }
 
+// Static regexes compiled once for strip_namespaces avoids per-call
+// allocation and removes all Regex::new().unwrap() call sites.
+static RE_XML_PROLOG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<\?xml[^>]*\?>").expect("static regex is valid"));
+static RE_DOCTYPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)<!DOCTYPE[^>]*?(?:\[[\s\S]*?\])?\s*>").expect("static regex is valid")
+});
+static RE_KVG_ATTR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\s+kvg:[\w-]+=(?:"[^"]*"|'[^']*')"#).expect("static regex is valid")
+});
+static RE_XMLNS_PREF: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\s+xmlns:[A-Za-z_][\w-]*=(?:"[^"]*"|'[^']*')"#).expect("static regex is valid")
+});
+static RE_NS_ATTR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\s+[A-Za-z_][\w-]*:[\w-]+=(?:"[^"]*"|'[^']*')"#).expect("static regex is valid")
+});
+
 /// Strip namespace-related declarations and attributes from KanjiVG svg so we
 /// can render it with resvg. Which hates the namespace crap in it.
 ///
 /// Could really use a unit test but whatever.
 fn strip_namespaces(svg: &str) -> String {
     // Remove XML prolog (<?xml ... ?>)
-    let mut s = Regex::new(r"(?is)<\?xml[^>]*\?>")
-        .unwrap()
-        .replace_all(svg, "")
-        .to_string();
+    let mut s = RE_XML_PROLOG.replace_all(svg, "").to_string();
 
     // Remove DOCTYPE including optional internal subset and trailing '>'
     // This matches: <!DOCTYPE ...> and <!DOCTYPE ... [ ... ]>
-    let re_doctype = Regex::new(r"(?is)<!DOCTYPE[^>]*?(?:\[[\s\S]*?\])?\s*>").unwrap();
-    s = re_doctype.replace_all(&s, "").to_string();
+    s = RE_DOCTYPE.replace_all(&s, "").to_string();
 
     // Remove kvg: namespaced attributes aka kvg:element="..."
-    let re_kvg_attr = Regex::new(r#"\s+kvg:[\w-]+=(?:"[^"]*"|'[^']*')"#).unwrap();
-    s = re_kvg_attr.replace_all(&s, "").to_string();
+    s = RE_KVG_ATTR.replace_all(&s, "").to_string();
 
     // Remove xmlns:prefix declarations but preserve default xmlns="..."
-    let re_xmlns_pref = Regex::new(r#"\s+xmlns:[A-Za-z_][\w-]*=(?:"[^"]*"|'[^']*')"#).unwrap();
-    s = re_xmlns_pref.replace_all(&s, "").to_string();
+    s = RE_XMLNS_PREF.replace_all(&s, "").to_string();
 
     // Remove any other attributes with a namespace prefix aka e.g. foo:bar='...'
-    let re_ns_attr = Regex::new(r#"\s+[A-Za-z_][\w-]*:[\w-]+=(?:"[^"]*"|'[^']*')"#).unwrap();
-    s = re_ns_attr.replace_all(&s, "").to_string();
+    s = RE_NS_ATTR.replace_all(&s, "").to_string();
 
     // Ensure the string starts at the <svg ...> root element. Some files include
     // comments or other headers before the svg; `usvg` requires a root node.

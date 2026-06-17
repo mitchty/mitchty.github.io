@@ -1,4 +1,4 @@
-// Custom post-processing system that dynamically loads shaders from flan/fullscreen/
+// Custom post-processing system for full screen post processing effect shaders.
 use bevy::{
     core_pipeline::core_3d::graph::{Core3d, Node3d},
     ecs::query::QueryItem,
@@ -10,6 +10,7 @@ use bevy::{
             UniformComponentPlugin,
         },
         extract_resource::{ExtractResource, ExtractResourcePlugin},
+        globals::GlobalsBuffer,
         render_graph::{
             NodeRunError, RenderGraphContext, RenderGraphExt, RenderLabel, ViewNode, ViewNodeRunner,
         },
@@ -20,6 +21,7 @@ use bevy::{
     shader::ShaderDefVal,
 };
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 /// Plugin that manages post-processing effects with dynamic shader loading.
 ///
@@ -62,17 +64,22 @@ impl Plugin for PostProcessPlugin {
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
 struct PostProcessLabel;
 
-/// Component that configures post-processing settings for a camera
+/// Component that configures post-processing settings for a camera.
 #[derive(Component, Default, Clone, Copy, ExtractComponent, ShaderType)]
 #[require(Camera3d)]
 pub struct PostProcessSettings {
-    /// Effect intensity 0.0 passthrough 1.0 = most effect of effect
+    /// Effect intensity: 0.0 = passthrough, 1.0 = full effect.
+    // TODO: This is an old human tail from the wesl/wgsl setup. I've got a
+    // better way to disable things now. Just need to wire this up into the ui
+    // as a slider so users can change the shaders effects at runtime.
     pub intensity: f32,
-    /// Time value for animated effects.
-    /// #[shader(size(12))]: pads this field to 12 bytes so the struct is 16
-    /// byte aligned.
-    #[shader(size(12))]
-    pub time: f32,
+    // webgl 16 byte alignment bs. So sick of webgls bs.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub _pad0: f32,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub _pad1: f32,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub _pad2: f32,
 }
 
 /// Resource listing all available shader files
@@ -148,8 +155,22 @@ pub struct EffectsEnabled(pub bool);
 #[derive(Resource)]
 struct PostProcessPipeline {
     layout: BindGroupLayout,
+    globals_layout: BindGroupLayout,
     sampler: Sampler,
     pipelines: HashMap<String, CachedRenderPipelineId>,
+    /// Cached bind group for `GlobalsBuffer` (group 1).
+    ///
+    /// `GlobalsBuffer` is a single wgpu buffer that Bevy allocates once at
+    /// startup and updates in-place every frame. The bind group just holds a
+    /// reference to itself, so it never needs to be recreated. Initialized lazily
+    /// on the first rendered frame so the buffer is guaranteed to exist.
+    ///
+    /// `Mutex` is used for interior mutability because `ViewNode::run` only
+    /// receives `world: &World` (no `&mut`). The lock is uncontended in
+    /// practice since render nodes run sequentially on the render thread.
+    ///
+    /// Remove the Mutex at your own peril future mitch. It sucks to debug.
+    cached_globals_bind_group: Mutex<Option<BindGroup>>,
 }
 
 impl FromWorld for PostProcessPipeline {
@@ -191,6 +212,20 @@ impl FromWorld for PostProcessPipeline {
             ),
         );
 
+        let globals_layout = render_device.create_bind_group_layout(
+            "post_process_globals_bind_group_layout",
+            &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(bevy::render::globals::GlobalsUniform::min_size()),
+                },
+                count: None,
+            }],
+        );
+
         let sampler = render_device.create_sampler(&SamplerDescriptor::default());
 
         let mut pipelines = HashMap::new();
@@ -210,8 +245,16 @@ impl FromWorld for PostProcessPipeline {
                 .load("embedded://bevy_core_pipeline/fullscreen_vertex_shader/fullscreen.wgsl");
 
             for shader_info in &available_shaders.shaders {
-                let embedded_path = format!("embedded://flan/fullscreen/{}.wesl", shader_info.name);
-                let shader_handle: Handle<Shader> = asset_server.load(embedded_path);
+                // TODO: This all needs to be dynamic this is a huge af hack.
+                let shader_handle: Handle<Shader> = match shader_info.name.as_str() {
+                    "chromatic-aberration" => flan::shaders::chromatic_aberration_shader_handle(),
+                    "vhs-effect" => flan::shaders::vhs_effect_shader_handle(),
+                    "em-interference" => flan::shaders::em_interference_shader_handle(),
+                    "oil-painting" => flan::shaders::oil_painting_shader_handle(),
+                    "edge-cartoon" => flan::shaders::edge_cartoon_shader_handle(),
+                    "cartoon-filter" => flan::shaders::cartoon_filter_shader_handle(),
+                    other => panic!("unknown fullscreen shader: {other}"),
+                };
                 shader_handles.push((
                     shader_info.name.clone(),
                     shader_handle,
@@ -224,37 +267,54 @@ impl FromWorld for PostProcessPipeline {
         for (name, shader_handle, fullscreen_shader) in shader_handles {
             let pipeline_id = pipeline_cache.queue_render_pipeline(RenderPipelineDescriptor {
                 label: Some(format!("post_process_pipeline_{}", name).into()),
-                layout: vec![BindGroupLayoutDescriptor {
-                    label: "post_process_bind_group_layout_desc".into(),
-                    entries: vec![
-                        BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: ShaderStages::FRAGMENT,
-                            ty: BindingType::Texture {
-                                sample_type: TextureSampleType::Float { filterable: true },
-                                view_dimension: TextureViewDimension::D2,
-                                multisampled: false,
+                layout: vec![
+                    BindGroupLayoutDescriptor {
+                        label: "post_process_bind_group_layout_desc".into(),
+                        entries: vec![
+                            BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: ShaderStages::FRAGMENT,
+                                ty: BindingType::Texture {
+                                    sample_type: TextureSampleType::Float { filterable: true },
+                                    view_dimension: TextureViewDimension::D2,
+                                    multisampled: false,
+                                },
+                                count: None,
                             },
-                            count: None,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: ShaderStages::FRAGMENT,
-                            ty: BindingType::Sampler(SamplerBindingType::Filtering),
-                            count: None,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: 2,
+                            BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: ShaderStages::FRAGMENT,
+                                ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                                count: None,
+                            },
+                            BindGroupLayoutEntry {
+                                binding: 2,
+                                visibility: ShaderStages::FRAGMENT,
+                                ty: BindingType::Buffer {
+                                    ty: BufferBindingType::Uniform,
+                                    has_dynamic_offset: true,
+                                    min_binding_size: Some(PostProcessSettings::min_size()),
+                                },
+                                count: None,
+                            },
+                        ],
+                    },
+                    BindGroupLayoutDescriptor {
+                        label: "post_process_globals_layout_desc".into(),
+                        entries: vec![BindGroupLayoutEntry {
+                            binding: 0,
                             visibility: ShaderStages::FRAGMENT,
                             ty: BindingType::Buffer {
                                 ty: BufferBindingType::Uniform,
-                                has_dynamic_offset: true,
-                                min_binding_size: Some(PostProcessSettings::min_size()),
+                                has_dynamic_offset: false,
+                                min_binding_size: Some(
+                                    bevy::render::globals::GlobalsUniform::min_size(),
+                                ),
                             },
                             count: None,
-                        },
-                    ],
-                }],
+                        }],
+                    },
+                ],
                 vertex: VertexState {
                     shader: fullscreen_shader,
                     shader_defs: vec![],
@@ -284,8 +344,10 @@ impl FromWorld for PostProcessPipeline {
 
         Self {
             layout,
+            globals_layout,
             sampler,
             pipelines,
+            cached_globals_bind_group: Mutex::new(None),
         }
     }
 }
@@ -298,23 +360,43 @@ impl ViewNode for PostProcessNode {
     type ViewQuery = (
         &'static ViewTarget,
         &'static DynamicUniformIndex<PostProcessSettings>,
+        &'static PostProcessSettings,
     );
 
     fn run(
         &self,
         _graph: &mut RenderGraphContext,
         render_context: &mut RenderContext,
-        (view_target, settings_index): QueryItem<Self::ViewQuery>,
+        (view_target, settings_index, settings): QueryItem<Self::ViewQuery>,
         world: &World,
     ) -> Result<(), NodeRunError> {
-        let pipeline = world.resource::<PostProcessPipeline>();
+        // Replaced the old intensity toggle approach to turning post process
+        // shaders on/off at runtime with this. Its a huge hack but it works
+        // better, saves on gpu cycles. I'll replace this with an entity query
+        // in future or add it as another condition for early exit.
+        if settings.intensity == 0.0 {
+            return Ok(());
+        }
+
         let pipeline_cache = world.resource::<PipelineCache>();
         let available_shaders = world.resource::<AvailableShaders>();
         let active_shader = world.resource::<ActiveShader>();
+        let settings_uniforms = world.resource::<ComponentUniforms<PostProcessSettings>>();
+        let globals_buffer = world.resource::<GlobalsBuffer>();
 
-        let active_shader_name = &available_shaders.shaders[active_shader.index].name;
+        let Some(settings_binding) = settings_uniforms.uniforms().binding() else {
+            return Ok(());
+        };
 
-        let Some(pipeline_id) = pipeline.pipelines.get(active_shader_name) else {
+        let active_shader_name = available_shaders.shaders[active_shader.index].name.clone();
+
+        let Some(globals_binding) = globals_buffer.buffer.binding() else {
+            return Ok(());
+        };
+
+        let pipeline = world.resource::<PostProcessPipeline>();
+
+        let Some(pipeline_id) = pipeline.pipelines.get(&active_shader_name) else {
             return Ok(());
         };
 
@@ -322,13 +404,30 @@ impl ViewNode for PostProcessNode {
             return Ok(());
         };
 
-        let settings_uniforms = world.resource::<ComponentUniforms<PostProcessSettings>>();
-        let Some(settings_binding) = settings_uniforms.uniforms().binding() else {
+        // Lazily create the globals bind group just once and reuse it every
+        // frame. GlobalsBuffer is a single wgpu buffer Bevy keeps for the
+        // lifetime of the app and updates in-place, so the bind group never
+        // becomes stale. The Mutex provides interior mutability since
+        // ViewNode::run only has &World. It is uncontended in practice normally
+        // as render nodes run sequentially. If the lock is poisoned, which
+        // should only be possible if a previous frame panicked while holding
+        // the mutex, which should never be possible to happen here skip this
+        // frame.
+        let Ok(mut globals_cache) = pipeline.cached_globals_bind_group.lock() else {
             return Ok(());
         };
+        let globals_bind_group = globals_cache.get_or_insert_with(|| {
+            render_context.render_device().create_bind_group(
+                "post_process_globals_bind_group",
+                &pipeline.globals_layout,
+                &BindGroupEntries::single(globals_binding.clone()),
+            )
+        });
 
         let post_process = view_target.post_process_write();
 
+        // The source bind group must be created every frame as post_process_write()
+        // returns a fresh TextureView each frame as it swaps targets.
         let bind_group = render_context.render_device().create_bind_group(
             "post_process_bind_group",
             &pipeline.layout,
@@ -354,6 +453,7 @@ impl ViewNode for PostProcessNode {
 
         render_pass.set_render_pipeline(render_pipeline);
         render_pass.set_bind_group(0, &bind_group, &[settings_index.index()]);
+        render_pass.set_bind_group(1, globals_bind_group, &[]);
         render_pass.draw(0..3, 0..1);
 
         Ok(())

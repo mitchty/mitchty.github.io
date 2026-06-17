@@ -1,357 +1,336 @@
-//! FPS display, sparkline, and plot-data plugins and related shenanigans.
-//!
-//! Owns the FPS text overlay, the sparkline UI node, the `FpsHistory`
-//! circular buffer, and the random-walk `PlotDataFrame` that feeds the flan
-//! plot shader.
-// TODO: remove the stupid flan 2d plot shader its a bit of a human tail of me experimenting
-
+//! FPS overlay plugin stats overlay shader specialization.
+#[cfg(not(feature = "webgl"))]
+use bevy::asset::RenderAssetUsages;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
-use polars::prelude::*;
-use rand::RngExt;
+#[cfg(not(feature = "webgl"))]
+use bevy::render::{
+    Render, RenderApp, RenderSystems,
+    extract_resource::{ExtractResource, ExtractResourcePlugin},
+    render_asset::RenderAssets,
+    render_resource::BufferUsages,
+    renderer::RenderQueue,
+    storage::{GpuShaderStorageBuffer, ShaderStorageBuffer},
+};
+#[cfg(not(feature = "webgl"))]
+use bytemuck;
 
-/// Marker component for the FPS text entity.
-#[derive(Component)]
-pub struct FpsText;
+use flan::{
+    SlugAtlasLayout, SlugRunDesc, StatsOverlayData, StatsOverlayHandle, StatsOverlayMaterial,
+    StatsOverlayMaterialPlugin, StatsOverlayParams,
+};
 
-/// Which renderer is used to draw the FPS counter.
-///
-/// `BevyText` uses the standard Bevy text pipeline.
-/// `SlugText` uses the Slug GPU font renderer with `flan`.
-#[derive(Resource, Default, PartialEq, Eq, Clone, Copy, Debug)]
-pub enum FpsTextRenderer {
-    BevyText,
-    // Note this is not going to live here forever, I just decided to abuse the
-    // fps overlay to test out what writing a shader with the slug algorithm
-    // would look like. I'll likely stick with the bevy renderer for this long term.
-    //
-    // But who knows what evil lurks in future Mitch's heart? Well him but for
-    // now this is all kinda throw away.
-    #[default]
-    SlugText,
-}
-
-/// Marker component: while present the FPS readout and its requisite sparkline
-/// are visible this controls both ui elements.
+/// Marker component: while present the FPS stats overlay is visible.
 #[derive(Component, Default)]
 pub struct FpsDisplay;
 
-/// Number of FPS samples retained - 100 x 100 ms ≈ 10 s of history.
-pub const FPS_HISTORY_SAMPLES: usize = 100;
+#[derive(Component)]
+pub(crate) struct StatsOverlayNode;
 
-/// Preallocated circular buffer of recent FPS measurements.
-///
-/// Slots start as `None` and fill in as samples arrive. Once full, the oldest
-/// sample is overwritten so things act as a poor mans circular buffer.
+#[cfg(not(feature = "webgl"))]
+#[derive(Resource, Clone, Default, ExtractResource)]
+struct OverlayFpsHandle(Option<Handle<ShaderStorageBuffer>>);
+
+#[cfg(not(feature = "webgl"))]
+#[derive(Resource, Clone, Default, ExtractResource)]
+struct OverlayRunsHandle(Option<Handle<ShaderStorageBuffer>>);
+
+#[cfg(not(feature = "webgl"))]
+#[derive(Resource, Clone, Default, ExtractResource)]
+struct OverlayGlyphLayoutHandle(Option<Handle<ShaderStorageBuffer>>);
+
+#[cfg(not(feature = "webgl"))]
+#[derive(Resource, Clone, Default, ExtractResource)]
+struct UploadFps {
+    bytes: Vec<u8>,
+}
+
+#[cfg(not(feature = "webgl"))]
+#[derive(Resource, Clone, Default, ExtractResource)]
+struct UploadRuns {
+    bytes: Vec<u8>,
+}
+
+#[cfg(not(feature = "webgl"))]
+#[derive(Resource, Clone, Default, ExtractResource)]
+struct UploadGlyphLayout {
+    bytes: Vec<u8>,
+}
+
+#[cfg(feature = "webgl")]
+#[derive(Resource, Default)]
+struct OverlayTextureImages {
+    fps: Option<Handle<Image>>,
+    runs: Option<Handle<Image>>,
+    layout: Option<Handle<Image>>,
+}
+
 #[derive(Resource)]
-pub struct FpsHistory {
-    pub data: [Option<f32>; FPS_HISTORY_SAMPLES],
-    /// Index of the *next* slot to write into.
-    pub index: usize,
+struct OverlayAtlas {
+    atlas: flan::slug::SlugAtlas,
+    font_id: flan::slug::FontId,
+    font_size: f32,
 }
 
-impl Default for FpsHistory {
-    fn default() -> Self {
-        Self {
-            data: [None; FPS_HISTORY_SAMPLES],
-            index: 0,
-        }
-    }
-}
+pub struct FpsPlugin;
 
-impl FpsHistory {
-    /// Write `fps` into the current slot and advance the write cursor.
-    pub fn push(&mut self, fps: f32) {
-        self.data[self.index] = Some(fps);
-        self.index = (self.index + 1) % FPS_HISTORY_SAMPLES;
-    }
-
-    /// Return filled samples in chronological order, normalized so the maximum
-    /// observed value maps to `1.0`.
-    pub fn to_normalized_values(&self) -> Vec<f32> {
-        let raw: Vec<f32> = (0..FPS_HISTORY_SAMPLES)
-            .map(|offset| (self.index + offset) % FPS_HISTORY_SAMPLES)
-            .filter_map(|slot| self.data[slot])
-            .collect();
-
-        if raw.is_empty() {
-            return Vec::new();
-        }
-
-        let max_fps = self
-            .data
-            .iter()
-            .filter_map(|v| *v)
-            .fold(f32::NEG_INFINITY, f32::max);
-
-        let scale = if max_fps > 0.0 { max_fps } else { 1.0 };
-
-        // Invert y so higher FPS is rendered lower on the sparkline strip.
-        raw.iter()
-            .map(|&fps| 1.0 - (fps / scale).clamp(0.0, 1.0))
-            .collect()
-    }
-}
-
-const FPS_FONT: &[u8] = include_bytes!("../assets/fonts/FiraMono-Medium.ttf");
-
-/// Startup system: register the FPS font, warm the glyph cache for the FPS
-/// charset, and spawn the slug text entity.
-pub fn setup_fps_slug_node(
-    mut commands: Commands,
-    mut atlas: ResMut<flan::slug::SlugAtlas>,
-    mut materials: ResMut<Assets<flan::SlugMaterial>>,
-    ui_state: Res<crate::ui::state::UiState>,
-) {
-    let font_id = match atlas.register_font(FPS_FONT.to_vec()) {
-        Ok(id) => id,
-        Err(e) => {
-            bevy::log::error!("SlugAtlas: failed to register FPS font: {e}");
+impl Plugin for FpsPlugin {
+    fn build(&self, app: &mut App) {
+        if bavy::disabled::is_disabled(app.world(), "plot") {
             return;
         }
-    };
 
-    // Pre-warm the cache for all characters that will ever appear in the FPS counter.
-    let result = atlas.validate_glyphs(font_id, "0123456789.fps ");
-    if !result.missing.is_empty() {
-        bevy::log::warn!("FPS font missing glyphs: {:?}", result.missing);
+        let font_bytes = include_bytes!("../assets/fonts/FiraMono-Medium.ttf").to_vec();
+
+        app.add_plugins(StatsOverlayMaterialPlugin)
+            .init_resource::<StatsOverlayData>()
+            .add_systems(PostStartup, reposition_overlay_node)
+            .add_systems(Update, sync_overlay_visibility)
+            .add_systems(
+                Update,
+                sample_fps_for_overlay.run_if(bevy::time::common_conditions::on_timer(
+                    std::time::Duration::from_millis(753),
+                )),
+            )
+            .add_systems(Update, toggle_fps_display);
+
+        #[cfg(not(feature = "webgl"))]
+        {
+            app.init_resource::<OverlayFpsHandle>()
+                .init_resource::<OverlayRunsHandle>()
+                .init_resource::<OverlayGlyphLayoutHandle>()
+                .init_resource::<UploadFps>()
+                .init_resource::<UploadRuns>()
+                .init_resource::<UploadGlyphLayout>()
+                .add_plugins(ExtractResourcePlugin::<OverlayFpsHandle>::default())
+                .add_plugins(ExtractResourcePlugin::<OverlayRunsHandle>::default())
+                .add_plugins(ExtractResourcePlugin::<OverlayGlyphLayoutHandle>::default())
+                .add_plugins(ExtractResourcePlugin::<UploadFps>::default())
+                .add_plugins(ExtractResourcePlugin::<UploadRuns>::default())
+                .add_plugins(ExtractResourcePlugin::<UploadGlyphLayout>::default())
+                .add_systems(Startup, setup_overlay_ssb(font_bytes));
+
+            if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+                render_app.add_systems(
+                    Render,
+                    (upload_fps_ssb, upload_runs_ssb, upload_glyph_layout_ssb)
+                        .in_set(RenderSystems::Queue),
+                );
+            }
+        }
+
+        #[cfg(feature = "webgl")]
+        app.init_resource::<OverlayTextureImages>()
+            .add_systems(Startup, setup_overlay_texture(font_bytes));
     }
-
-    let top = if ui_state.backend == crate::ui::state::UiBackend::Egui {
-        Val::Px(40.0)
-    } else {
-        Val::Px(10.0)
-    };
-
-    let node_w = 130.0_f32;
-    let node_h = 24.0_f32;
-
-    let material = materials.add(flan::SlugMaterial::default());
-
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(10.0),
-            top,
-            width: Val::Px(node_w),
-            height: Val::Px(node_h),
-            ..default()
-        },
-        Visibility::Hidden,
-        MaterialNode(material),
-        flan::SlugTextNode {
-            text: "00.0 fps".into(),
-            font_size: 18.0,
-            color: [0, 255, 0, 255],
-            layout: flan::Layout::new()
-                .with_vertical(flan::Vertical::Center)
-                .with_horizontal(flan::Horizontal::Right),
-            ..default()
-        },
-        flan::SlugTextFont(font_id),
-        flan::SlugText,
-    ));
 }
 
-/// Startup system to spawn the FPS text node in the upper-right corner.
-pub fn setup_fps_ui(mut commands: Commands, ui_state: Res<crate::ui::state::UiState>) {
-    let top = if ui_state.backend == crate::ui::state::UiBackend::Egui {
-        Val::Px(40.0)
-    } else {
-        Val::Px(10.0)
-    };
-
-    commands.spawn((
-        Text::new(""),
-        TextFont {
-            font_size: 20.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.0, 1.0, 0.0)),
-        Node {
-            position_type: PositionType::Absolute,
-            top,
-            right: Val::Px(10.0),
-            ..default()
-        },
-        FpsText,
-    ));
-}
-
-/// Startup system to spawn the FPS sparkline UI node.
-pub fn setup_fps_sparkline_ui(
-    mut commands: Commands,
-    mut ui_materials: ResMut<Assets<flan::PlotUiMaterial>>,
-    ui_state: Res<crate::ui::state::UiState>,
-    #[cfg(not(feature = "webgl"))] mut buffers: ResMut<
-        Assets<bevy::render::storage::ShaderStorageBuffer>,
-    >,
+#[allow(clippy::type_complexity)]
+#[cfg(not(feature = "webgl"))]
+fn setup_overlay_ssb(
+    font_bytes: Vec<u8>,
+) -> impl Fn(
+    Commands,
+    ResMut<Assets<ShaderStorageBuffer>>,
+    ResMut<Assets<StatsOverlayMaterial>>,
+    ResMut<OverlayFpsHandle>,
+    ResMut<OverlayRunsHandle>,
+    ResMut<OverlayGlyphLayoutHandle>,
 ) {
-    #[cfg(not(feature = "webgl"))]
-    let points_binding = buffers.add(bevy::render::storage::ShaderStorageBuffer::from(
-        Vec::<Vec2>::new(),
-    ));
+    move |mut commands, mut buffers, mut materials, mut fps_h, mut runs_h, mut layout_h| {
+        let (atlas_res, initial_run, layout) = build_atlas(&font_bytes);
 
-    #[cfg(feature = "webgl")]
-    let points_binding = flan::PlotPointsUniform {
-        data: [Vec4::ZERO; flan::MAX_PLOT_POINTS],
+        let mk = |data: &[u8]| {
+            let mut b = ShaderStorageBuffer::new(data, RenderAssetUsages::RENDER_WORLD);
+            b.buffer_description.usage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
+            b
+        };
+
+        let curves_buf = buffers.add(mk(&layout.curves_data));
+        let curve_indices_buf = buffers.add(mk(&layout.curve_indices_data));
+        let glyphs_buf = buffers.add(mk(&layout.glyphs_data));
+
+        let run_desc = SlugRunDesc {
+            natural_advance: initial_run.natural_advance,
+            natural_height: initial_run.natural_height,
+            glyph_offset: 0,
+            glyph_count: initial_run.glyph_layout.len() as u32,
+        };
+        let runs_buf = buffers.add(mk(bytemuck::bytes_of(&run_desc)));
+        runs_h.0 = Some(runs_buf.clone());
+
+        const MAX_FPS_GLYPHS: usize = 12;
+        let init_layout = bytemuck::cast_slice::<_, u8>(&initial_run.glyph_layout).to_vec();
+        let cap = init_layout.len().max(MAX_FPS_GLYPHS * 48);
+        let mut layout_alloc = vec![0u8; cap];
+        layout_alloc[..init_layout.len()].copy_from_slice(&init_layout);
+        let glyph_layout_buf = buffers.add(mk(&layout_alloc));
+        layout_h.0 = Some(glyph_layout_buf.clone());
+
+        let zeros = vec![0u8; flan::STATS_OVERLAY_POINT_COUNT * 4];
+        let fps_buf = buffers.add(mk(&zeros));
+        fps_h.0 = Some(fps_buf.clone());
+
+        let mat = materials.add(StatsOverlayMaterial {
+            params: StatsOverlayParams::default(),
+            fps_points: fps_buf,
+            curves: curves_buf,
+            curve_indices: curve_indices_buf,
+            glyphs: glyphs_buf,
+            runs: runs_buf,
+            glyph_layout: glyph_layout_buf,
+        });
+
+        let handle = StatsOverlayHandle::Default(mat.clone());
+        commands.insert_resource(handle);
+        commands.insert_resource(atlas_res);
+        spawn_overlay_node(&mut commands, MaterialNode(mat));
+    }
+}
+
+#[cfg(feature = "webgl")]
+fn setup_overlay_texture(
+    font_bytes: Vec<u8>,
+) -> impl Fn(
+    Commands,
+    ResMut<Assets<Image>>,
+    ResMut<Assets<flan::StatsOverlayTextureMaterial>>,
+    ResMut<OverlayTextureImages>,
+) {
+    use flan::{
+        StatsOverlayTextureMaterial, build_fps_points_image, build_glyph_layout_image,
+        build_runs_image,
     };
 
-    let material = ui_materials.add(flan::PlotUiMaterial {
-        params: flan::PlotUniform {
-            min: Vec2::ZERO,
-            max: Vec2::ONE,
-            zoom: Vec2::ONE,
-            offset: Vec2::ZERO,
-            count: 0,
-            time: 0.0,
-            line_width: 0.01,
-        },
-        points: points_binding,
-    });
+    move |mut commands, mut images, mut materials, mut tex_images| {
+        let (atlas_res, initial_run, layout) = build_atlas(&font_bytes);
 
-    let top = if ui_state.backend == crate::ui::state::UiBackend::Egui {
-        Val::Px(40.0)
-    } else {
-        Val::Px(10.0)
+        let zeros = [0.0f32; 256];
+        let fps_img_h = images.add(build_fps_points_image(&zeros));
+        let curves_img_h = images.add(layout.curves_image());
+        let ci_img_h = images.add(layout.curve_indices_image());
+        let glyphs_img_h = images.add(layout.glyphs_image());
+
+        let run_desc = SlugRunDesc {
+            natural_advance: initial_run.natural_advance,
+            natural_height: initial_run.natural_height,
+            glyph_offset: 0,
+            glyph_count: initial_run.glyph_layout.len() as u32,
+        };
+        let runs_img_h = images.add(build_runs_image(&run_desc));
+        let layout_img_h = images.add(build_glyph_layout_image(&initial_run.glyph_layout));
+
+        tex_images.fps = Some(fps_img_h.clone());
+        tex_images.runs = Some(runs_img_h.clone());
+        tex_images.layout = Some(layout_img_h.clone());
+
+        let mat = materials.add(StatsOverlayTextureMaterial {
+            params: StatsOverlayParams::default(),
+            fps_points_image: fps_img_h,
+            curves_image: curves_img_h,
+            curve_indices_image: ci_img_h,
+            glyphs_image: glyphs_img_h,
+            runs_image: runs_img_h,
+            glyph_layout_image: layout_img_h,
+        });
+
+        let handle = StatsOverlayHandle::Texture(mat.clone());
+        commands.insert_resource(handle);
+        commands.insert_resource(atlas_res);
+        spawn_overlay_node(&mut commands, MaterialNode(mat));
+    }
+}
+
+/// Build the font atlas and an initial shaped run.
+fn build_atlas(font_bytes: &[u8]) -> (OverlayAtlas, flan::slug::SlugTextRun, SlugAtlasLayout) {
+    let fps_chars = "0123456789. fps";
+    let mut atlas = flan::slug::SlugAtlas::default();
+    let font_id = atlas
+        .register_font(font_bytes.to_vec())
+        .expect("FiraMono-Medium must be valid TTF");
+    atlas.validate_glyphs(font_id, fps_chars);
+    let glyph_ids = atlas.collect_glyph_ids(font_id, fps_chars);
+    atlas.build_frame_atlas(&[(font_id, glyph_ids)]);
+    let font_size = 24.0_f32;
+
+    let initial_run = atlas
+        .shape(font_id, "00.0 fps", font_size, [0, 0, 0, 255])
+        .expect("initial shape must succeed");
+
+    let layout = SlugAtlasLayout {
+        curves_data: atlas.frame.curves.clone(),
+        curve_indices_data: atlas.frame.curve_indices.clone(),
+        glyphs_data: atlas.frame.glyphs.clone(),
     };
 
+    let atlas_res = OverlayAtlas {
+        atlas,
+        font_id,
+        font_size,
+    };
+    (atlas_res, initial_run, layout)
+}
+
+/// Spawn the 230×40 UI node and attach the given `MaterialNode`.
+fn spawn_overlay_node<M: Component>(commands: &mut Commands, mat_node: M) {
     commands.spawn((
+        StatsOverlayNode,
+        mat_node,
         Node {
             position_type: PositionType::Absolute,
-            right: Val::Px(140.0),
-            top,
-            width: Val::Px(100.0),
+            right: Val::Px(10.0),
+            top: Val::Px(10.0),
+            width: Val::Px(230.0),
             height: Val::Px(40.0),
             ..default()
         },
         Visibility::Hidden,
-        MaterialNode(material),
-        flan::SparklineUiNode,
     ));
 }
 
-/// Sync visibility of the Bevy text node, flan slug text node, and sparkline
-/// based on `FpsDisplay` marker presence and the active `FpsTextRenderer`.
-///
-/// Runs every frame so renderer switches take effect immediately without
-/// waiting for a timer tick.
-#[allow(clippy::type_complexity)]
-pub fn sync_fps_visibility(
-    fps_display_query: Query<(), With<FpsDisplay>>,
-    fps_renderer: Res<FpsTextRenderer>,
-    mut fps_text_query: Query<(&mut Text, &mut Visibility), With<FpsText>>,
-    mut sparkline_query: Query<
-        &mut Visibility,
-        (
-            With<flan::SparklineUiNode>,
-            Without<FpsText>,
-            Without<flan::SlugText>,
-        ),
-    >,
-    mut slug_text_query: Query<
-        &mut Visibility,
-        (
-            With<flan::SlugText>,
-            Without<FpsText>,
-            Without<flan::SparklineUiNode>,
-        ),
-    >,
+fn reposition_overlay_node(
+    ui_state: Res<crate::ui::state::UiState>,
+    mut nodes: Query<&mut Node, With<StatsOverlayNode>>,
 ) {
-    let show = !fps_display_query.is_empty();
-    let use_slug = *fps_renderer == FpsTextRenderer::SlugText;
-
-    let bevy_vis = if show && !use_slug {
-        Visibility::Visible
+    let top = if ui_state.backend == crate::ui::state::UiBackend::Egui {
+        Val::Px(40.0)
     } else {
-        Visibility::Hidden
+        Val::Px(10.0)
     };
-    let slug_vis = if show && use_slug {
-        Visibility::Visible
-    } else {
-        Visibility::Hidden
-    };
-    let spark_vis = if show {
-        Visibility::Visible
-    } else {
-        Visibility::Hidden
-    };
-
-    for (mut text, mut vis) in fps_text_query.iter_mut() {
-        if *vis != bevy_vis {
-            *vis = bevy_vis;
-        }
-        if bevy_vis == Visibility::Hidden && !text.0.is_empty() {
-            text.0.clear();
-        }
+    for mut node in nodes.iter_mut() {
+        node.top = top;
     }
-    for mut vis in sparkline_query.iter_mut() {
-        if *vis != spark_vis {
-            *vis = spark_vis;
-        }
-    }
-    for mut vis in slug_text_query.iter_mut() {
-        if *vis != slug_vis {
-            *vis = slug_vis;
+}
+
+fn sync_overlay_visibility(
+    fps_display: Query<(), With<FpsDisplay>>,
+    mut overlay: Query<&mut Visibility, With<StatsOverlayNode>>,
+) {
+    let target = if fps_display.is_empty() {
+        Visibility::Hidden
+    } else {
+        Visibility::Visible
+    };
+    for mut vis in overlay.iter_mut() {
+        if *vis != target {
+            *vis = target;
         }
     }
 }
 
-/// Write the current FPS into the Bevy `Text` node.
-///
-/// Only runs when `FpsDisplay` is present and `BevyText` renderer is selected.
-// TODO: future mitch maybe make the display timer something that can be
-// configured at runtime dynamically?
-pub fn update_fps_text_content(
+#[allow(clippy::too_many_arguments)]
+fn sample_fps_for_overlay(
     diagnostics: Res<DiagnosticsStore>,
-    fps_display_query: Query<(), With<FpsDisplay>>,
-    fps_renderer: Res<FpsTextRenderer>,
-    mut fps_text_query: Query<&mut Text, With<FpsText>>,
-) {
-    if fps_display_query.is_empty() || *fps_renderer != FpsTextRenderer::BevyText {
-        return;
-    }
-    let Some(fps) = diagnostics
-        .get(&FrameTimeDiagnosticsPlugin::FPS)
-        .and_then(|d| d.smoothed())
-    else {
-        return;
-    };
-    for mut text in fps_text_query.iter_mut() {
-        text.0 = format!("{:.1} fps", fps);
-    }
-}
-
-/// Write the current FPS into the `SlugTextNode` component for the GPU slug
-/// renderer.
-///
-/// Only runs when `FpsDisplay` is present; visibility is handled by
-/// `sync_fps_visibility`.
-pub fn write_fps_slug_content(
-    diagnostics: Res<DiagnosticsStore>,
-    fps_display_query: Query<(), With<FpsDisplay>>,
-    mut slug_query: Query<&mut flan::SlugTextNode, With<flan::SlugText>>,
-) {
-    if fps_display_query.is_empty() {
-        return;
-    }
-    let Some(fps) = diagnostics
-        .get(&FrameTimeDiagnosticsPlugin::FPS)
-        .and_then(|d| d.smoothed())
-    else {
-        return;
-    };
-    let text = format!("{:.1} fps", fps);
-    for mut node in slug_query.iter_mut() {
-        node.text = text.clone();
-    }
-}
-
-/// Sample the current FPS into `FpsHistory` roughly every 100 ms.
-pub fn sample_fps_history(
-    diagnostics: Res<DiagnosticsStore>,
-    mut fps_history: ResMut<FpsHistory>,
-    mut sparkline_df: ResMut<flan::SparklineDataFrame>,
+    mut data: ResMut<StatsOverlayData>,
+    atlas: Res<OverlayAtlas>,
+    handle: Res<StatsOverlayHandle>,
+    mut materials: ResMut<Assets<StatsOverlayMaterial>>,
+    mut tex_mats: ResMut<Assets<flan::StatsOverlayTextureMaterial>>,
+    #[cfg(not(feature = "webgl"))] mut upload_fps: ResMut<UploadFps>,
+    #[cfg(not(feature = "webgl"))] mut upload_runs: ResMut<UploadRuns>,
+    #[cfg(not(feature = "webgl"))] mut upload_layout: ResMut<UploadGlyphLayout>,
+    #[cfg(feature = "webgl")] tex_images: Res<OverlayTextureImages>,
+    #[cfg(feature = "webgl")] mut images: ResMut<Assets<Image>>,
 ) {
     let Some(fps) = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
@@ -359,15 +338,120 @@ pub fn sample_fps_history(
     else {
         return;
     };
+    let fps = fps as f32;
+    data.push_fps(fps);
 
-    fps_history.push(fps as f32);
+    let run = atlas.atlas.shape(
+        atlas.font_id,
+        &format!("{fps:5.1} fps"),
+        atlas.font_size,
+        [0, 0, 0, 255],
+    );
 
-    let values = fps_history.to_normalized_values();
-    let n = values.len();
-    sparkline_df.df = DataFrame::new(n, vec![Column::new("y".into(), values)]).unwrap_or_default();
+    handle.set_params(
+        StatsOverlayParams {
+            node_size: Vec2::new(230.0, 40.0),
+            min_fps: data.display_min_fps(),
+            max_fps: data.display_max_fps(),
+            line_width: 0.01,
+            layout_flags: 0x08,
+            alpha_discard: 0.01,
+            _pad: 0.0,
+            text_color: Vec4::new(0.0, 0.0, 0.0, 1.0),
+            background_color: Vec4::ZERO,
+        },
+        &mut materials,
+        &mut tex_mats,
+    );
+
+    #[cfg(not(feature = "webgl"))]
+    {
+        upload_fps.bytes = data.fps_points_bytes();
+        if let Some(run) = &run {
+            let run_desc = SlugRunDesc {
+                natural_advance: run.natural_advance,
+                natural_height: run.natural_height,
+                glyph_offset: 0,
+                glyph_count: run.glyph_layout.len() as u32,
+            };
+            upload_runs.bytes = bytemuck::bytes_of(&run_desc).to_vec();
+            upload_layout.bytes = bytemuck::cast_slice(&run.glyph_layout).to_vec();
+        }
+    }
+
+    #[cfg(feature = "webgl")]
+    {
+        use flan::{build_fps_points_image, build_glyph_layout_image, build_runs_image};
+
+        let fps_pts = data.averaged_points();
+        if let Some(h) = &tex_images.fps {
+            if let Some(img) = images.get_mut(h) {
+                *img = build_fps_points_image(&fps_pts);
+            }
+        }
+        if let Some(run) = &run {
+            let run_desc = SlugRunDesc {
+                natural_advance: run.natural_advance,
+                natural_height: run.natural_height,
+                glyph_offset: 0,
+                glyph_count: run.glyph_layout.len() as u32,
+            };
+            if let Some(h) = &tex_images.runs {
+                if let Some(img) = images.get_mut(h) {
+                    *img = build_runs_image(&run_desc);
+                }
+            }
+            if let Some(h) = &tex_images.layout {
+                if let Some(img) = images.get_mut(h) {
+                    *img = build_glyph_layout_image(&run.glyph_layout);
+                }
+            }
+        }
+    }
 }
 
-/// Toggle `FpsDisplay` marker on/off with the `F` key.
+#[cfg(not(feature = "webgl"))]
+fn upload_fps_ssb(
+    upload: Res<UploadFps>,
+    handle: Res<OverlayFpsHandle>,
+    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    render_queue: Res<RenderQueue>,
+) {
+    if let (Some(h), false) = (&handle.0, upload.bytes.is_empty())
+        && let Some(buf) = gpu_bufs.get(h.id())
+    {
+        render_queue.write_buffer(&buf.buffer, 0, &upload.bytes);
+    }
+}
+
+#[cfg(not(feature = "webgl"))]
+fn upload_runs_ssb(
+    upload: Res<UploadRuns>,
+    handle: Res<OverlayRunsHandle>,
+    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    render_queue: Res<RenderQueue>,
+) {
+    if let (Some(h), false) = (&handle.0, upload.bytes.is_empty())
+        && let Some(buf) = gpu_bufs.get(h.id())
+    {
+        render_queue.write_buffer(&buf.buffer, 0, &upload.bytes);
+    }
+}
+
+#[cfg(not(feature = "webgl"))]
+fn upload_glyph_layout_ssb(
+    upload: Res<UploadGlyphLayout>,
+    handle: Res<OverlayGlyphLayoutHandle>,
+    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    render_queue: Res<RenderQueue>,
+) {
+    if let (Some(h), false) = (&handle.0, upload.bytes.is_empty())
+        && let Some(buf) = gpu_bufs.get(h.id())
+    {
+        render_queue.write_buffer(&buf.buffer, 0, &upload.bytes);
+    }
+}
+
 pub fn toggle_fps_display(
     keyboard: Res<ButtonInput<KeyCode>>,
     fps_query: Query<Entity, With<FpsDisplay>>,
@@ -384,110 +468,5 @@ pub fn toggle_fps_display(
         } else {
             commands.spawn(FpsDisplay);
         }
-    }
-}
-
-// TODO: The plot and dataframe stuff is likely better located in the lib crate.
-
-/// Build the initial random-walk `DataFrame` used by the flan plot shader.
-pub fn initial_plot_df() -> DataFrame {
-    let mut rng = rand::rng();
-    let mut y = rng.random_range(0.0f32..=1.0f32);
-
-    let ys: Vec<f32> = (0..flan::PLOT_WINDOW_SIZE)
-        .map(|_| {
-            let step: f32 = rng.random_range(-0.1..=0.1);
-            y = (y + step).clamp(0.0, 1.0);
-            y
-        })
-        .collect();
-
-    let height = flan::PLOT_WINDOW_SIZE;
-    DataFrame::new(height, vec![Column::new("y".into(), ys)])
-        .expect("initial plot DataFrame construction failed")
-}
-
-/// Append a new random-walk row to the plot `DataFrame` and cap at
-/// `PLOT_WINDOW_SIZE` rows.
-pub fn tick_plot_data(
-    mut plot_df: ResMut<flan::PlotDataFrame>,
-    mut events: bevy::ecs::message::MessageWriter<flan::PlotDataUpdated>,
-) {
-    let mut rng = rand::rng();
-
-    let last_y = plot_df
-        .df
-        .column("y")
-        .ok()
-        .and_then(|s| s.f32().ok().map(|ca| ca.get(ca.len().saturating_sub(1))))
-        .flatten()
-        .unwrap_or(0.5);
-
-    let step: f32 = rng.random_range(-0.1..=0.1);
-    let next_y = (last_y + step).clamp(0.0, 1.0);
-
-    let new_row = DataFrame::new(1, vec![Column::new("y".into(), vec![next_y])])
-        .expect("new plot row construction failed");
-
-    let combined = plot_df
-        .df
-        .vstack(&new_row)
-        .expect("plot DataFrame vstack failed");
-
-    let len = combined.height();
-    plot_df.df = if len > flan::PLOT_WINDOW_SIZE {
-        combined.slice(
-            (len - flan::PLOT_WINDOW_SIZE) as i64,
-            flan::PLOT_WINDOW_SIZE,
-        )
-    } else {
-        combined
-    };
-
-    events.write(flan::PlotDataUpdated);
-}
-
-pub struct FpsPlugin;
-
-impl Plugin for FpsPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_plugins(flan::SlugPlugin);
-        app.add_systems(Startup, setup_fps_slug_node);
-
-        app.init_resource::<FpsTextRenderer>()
-            .init_resource::<FpsHistory>()
-            .insert_resource(flan::PlotDataFrame {
-                df: initial_plot_df(),
-            })
-            .insert_resource(flan::SparklineDataFrame {
-                df: DataFrame::empty(),
-            })
-            .add_systems(Startup, (setup_fps_ui, setup_fps_sparkline_ui))
-            .add_systems(Update, sync_fps_visibility)
-            .add_systems(
-                Update,
-                update_fps_text_content.run_if(bevy::time::common_conditions::on_timer(
-                    std::time::Duration::from_millis(500),
-                )),
-            )
-            .add_systems(
-                Update,
-                write_fps_slug_content.run_if(bevy::time::common_conditions::on_timer(
-                    std::time::Duration::from_millis(500),
-                )),
-            )
-            .add_systems(
-                Update,
-                sample_fps_history.run_if(bevy::time::common_conditions::on_timer(
-                    std::time::Duration::from_millis(100),
-                )),
-            )
-            .add_systems(
-                Update,
-                tick_plot_data.run_if(bevy::time::common_conditions::on_timer(
-                    std::time::Duration::from_millis(100),
-                )),
-            )
-            .add_systems(Update, toggle_fps_display);
     }
 }

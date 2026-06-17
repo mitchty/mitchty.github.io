@@ -13,14 +13,15 @@ mod theme_toggle;
 use crate::CameraMode;
 use crate::ai::infer::InferenceEngine;
 use crate::plugins::camera::MainCamera;
-use crate::plugins::fps::{FpsDisplay, FpsTextRenderer};
+use crate::plugins::fonts::{PendingFontRegistration, RegisteredFonts};
+use crate::plugins::fps::FpsDisplay;
 use crate::plugins::hue::HueAnimation;
 use crate::plugins::reveries::{ActiveReverie, ReverieDisplayName, ReverieKey};
 use crate::plugins::scene::{
     ColorState, SceneConfig, SceneTransformConfig, SceneUrlState, ShowSceneModel,
 };
 use crate::plugins::text3d::{
-    ShowText3d, Text3dDefaultPending, Text3dDepthPending, Text3dRenderer,
+    FlanFontId, SlugText3dFontValidation, SlugText3dState, Text3dRenderer,
 };
 use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled};
 use crate::ui::config::UiConfig;
@@ -72,10 +73,44 @@ pub struct EguiWantsInput {
 #[derive(Component)]
 pub struct ShowEgui;
 
+/// Marker component that is spawned by `load_egui_noto_font` at startup and
+/// despawned by `configure_egui_style` once font/theme setup completes.
+#[derive(Component)]
+pub struct EguiStyleConfiguring;
+
 /// Non-Send wrapper around `egui_file_dialog::FileDialog`, Resource needs to
 /// match Send to work.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct SceneFileDialog(pub FileDialog);
+
+/// Wrapper marker component for font file picking dialog.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct FontFileDialog(pub FileDialog);
+
+/// Track font assets added at runtime. Each entry is `(display_name, handle)`
+/// where `display_name` is the font file name stem aka `"MyFont.ttf"` and the
+/// handle points to a `bevy::text::Font` asset in the Bevy asset server.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Resource, Default)]
+pub struct DynamicFontHandles(pub Vec<(String, Handle<Font>)>);
+
+/// Bundle the native-only (for now) file-dialog and dynamic-font params.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct FontPanelParams<'w> {
+    pub font_file_dialog: NonSendMut<'w, FontFileDialog>,
+    pub dynamic_fonts: ResMut<'w, DynamicFontHandles>,
+    pub asset_server: Res<'w, AssetServer>,
+    pub embedded_fonts: Option<Res<'w, EmbeddedFontHandles>>,
+}
+
+/// Bundle 3d text font-picker state.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Text3dFontParams<'w> {
+    pub registered: Res<'w, RegisteredFonts>,
+    pub validation: Res<'w, SlugText3dFontValidation>,
+    pub active_font: Option<Res<'w, FlanFontId>>,
+}
 
 /// Message for when camera projection needs to change.
 ///
@@ -179,7 +214,7 @@ impl Plugin for SettingsUiPlugin {
             .add_message::<crate::ui::losant::DeviceStateEvent>()
             .init_resource::<CameraProjectionToggleRequested>()
             .insert_non_send_resource(engine)
-            .add_systems(Startup, setup_egui)
+            .add_systems(Startup, (setup_egui, load_egui_noto_font))
             .add_systems(
                 Update,
                 (
@@ -205,16 +240,25 @@ impl Plugin for SettingsUiPlugin {
         let app = app
             .init_resource::<DataViewerState>()
             .init_resource::<ImageProcessingCache>()
+            .init_resource::<DynamicFontHandles>()
             .insert_non_send_resource(SceneFileDialog(
                 FileDialog::new()
                     .title("Load Scene GLTF")
                     .add_file_filter_extensions("GLTF / GLB", vec!["gltf", "glb"]),
+            ))
+            .insert_non_send_resource(FontFileDialog(
+                FileDialog::new()
+                    .title("Add Font")
+                    .add_file_filter_extensions("Font files", vec!["ttf", "otf"])
+                    .default_file_filter("Font files"),
             ));
 
         app.add_systems(
             EguiPrimaryContextPass,
             (
-                configure_egui_style.in_set(EguiThemeSet),
+                configure_egui_style
+                    .run_if(|q: Query<(), With<EguiStyleConfiguring>>| !q.is_empty())
+                    .in_set(EguiThemeSet),
                 settings_ui,
                 recognizer_window,
                 #[cfg(not(target_arch = "wasm32"))]
@@ -240,8 +284,45 @@ impl Plugin for SettingsUiPlugin {
     }
 }
 
-/// Here for the recognizer, I need a CJK font to display kanji/hiragana/katakana
-static NOTO_SANS_JP: &[u8] = include_bytes!("../../assets/fonts/NotoSansJP-Regular.ttf");
+/// Persistent strong handle for the NotoSansJP font used by egui's
+/// `configure_egui_style` to set the CJK fallback once it loads.
+#[derive(Resource)]
+pub struct EguiNotoFontHandle(pub Handle<Font>);
+
+/// Persistent strong handles for the two always-present embedded fonts.
+///
+/// These must live for the lifetime of the app so Bevy keeps the assets alive.
+#[derive(Resource)]
+pub struct EmbeddedFontHandles {
+    pub noto: Handle<Font>,
+    pub fira: Handle<Font>,
+}
+
+/// Startup system to load embedded fonts into the asset server (for now) and
+/// let egui use the raw font data as well.
+///
+/// Also spawns the `EguiStyleConfiguring` marker so that `configure_egui_style`
+/// knows asset setup is still running.
+pub fn load_egui_noto_font(mut commands: Commands, asset_server: Res<AssetServer>) {
+    use crate::assets::asset_path;
+    // TODO: build.rs lazy bum
+    let noto = asset_server.load(asset_path("fonts/NotoSansJP-Regular.ttf"));
+    let fira = asset_server.load(asset_path("fonts/FiraMono-Medium.ttf"));
+    commands.insert_resource(EguiNotoFontHandle(noto.clone()));
+    commands.insert_resource(EmbeddedFontHandles {
+        noto: noto.clone(),
+        fira: fira.clone(),
+    });
+    commands.spawn(PendingFontRegistration {
+        name: "NotoSansJP-Regular.ttf".to_string(),
+        handle: noto,
+    });
+    commands.spawn(PendingFontRegistration {
+        name: "FiraMono-Medium.ttf".to_string(),
+        handle: fira,
+    });
+    commands.spawn(EguiStyleConfiguring);
+}
 
 /// Default model config JSON for the default model for now, future will be to
 /// be able to pick different models.
@@ -251,20 +332,26 @@ static DEFAULT_MODEL_CONFIG: &[u8] = include_bytes!("../../assets/models/default
 static DEFAULT_MODEL_WEIGHTS: &[u8] = include_bytes!("../../assets/models/default/model.mpk");
 
 /// Bump up egui text, register NotoSansJP as a CJK fallback, and apply the
-/// resolved startup theme.
-///
-/// Oneshot system: after insertion noto sans jp is inserted to the end of every
-/// fontfamily so that latin/ascii uses the default font and other codepoints
-/// hopefully get hit with noto sans jp for kanji et al.
+/// resolved startup theme. Note only runs until the font asset finishes
+/// loading.
 fn configure_egui_style(
     mut contexts: EguiContexts,
     ui_config: Res<UiConfig>,
-    mut done: Local<bool>,
+    noto_handle: Option<Res<EguiNotoFontHandle>>,
+    font_assets: Res<Assets<Font>>,
+    configuring_query: Query<Entity, With<EguiStyleConfiguring>>,
+    mut commands: Commands,
 ) -> Result {
-    if *done {
+    // Wait until the font bytes are available before finishing setup.
+    //
+    // Early return so we keep running until `EguiStyleConfiguring` is
+    // despawned at the end.
+    let Some(handle) = noto_handle else {
         return Ok(());
-    }
-    *done = true;
+    };
+    let Some(font) = font_assets.get(&handle.0) else {
+        return Ok(());
+    };
 
     let ctx = contexts.ctx_mut()?;
 
@@ -275,7 +362,7 @@ fn configure_egui_style(
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         "NotoSansJP".to_owned(),
-        egui::FontData::from_static(NOTO_SANS_JP).into(),
+        egui::FontData::from_owned(font.data.to_vec()).into(),
     );
 
     // Only use noto sans jp for anything that fails to render in a latin subset
@@ -290,6 +377,11 @@ fn configure_egui_style(
         }
     });
 
+    // Ensure this system doesn't run again, it doesn't need to run again now.
+    if let Ok(entity) = configuring_query.single() {
+        commands.entity(entity).despawn();
+    }
+
     Ok(())
 }
 
@@ -301,15 +393,17 @@ fn configure_egui_style(
 /// as normal nothing from here is reused at runtime.
 fn setup_egui(
     mut commands: Commands,
-    mut effects_enabled: ResMut<EffectsEnabled>,
+    mut effects_enabled: Option<ResMut<EffectsEnabled>>,
     mut active_reverie: ResMut<ActiveReverie>,
     ui_config: Res<UiConfig>,
     reveries: Query<(Entity, &ReverieKey, &ReverieDisplayName)>,
     mut ui_state: ResMut<UiState>,
     panel_query: Query<&UiPanel>,
 ) {
-    // Start with effects enabled by default
-    effects_enabled.0 = true;
+    // Start with effects enabled by default nop when PostProcessPlugin is disabled.
+    if let Some(ref mut enabled) = effects_enabled {
+        enabled.0 = true;
+    }
 
     // Initialize the initial UiState, `settings_ui` reads this every frame to
     // decide what to draw and how. This is a bit silly for now but it'll make
@@ -453,16 +547,17 @@ fn draw_scene_url_popup(ctx: &egui::Context, state: &mut SceneUrlState) {
 fn scene_config_window(
     mut contexts: EguiContexts,
     scene_config_query: Query<Entity, With<ShowSceneConfig>>,
-    show_text3d_query: Query<Entity, With<ShowText3d>>,
     show_scene_model_query: Query<Entity, With<ShowSceneModel>>,
     mut scene_transform: ResMut<SceneTransformConfig>,
     mut gizmo_options: ResMut<GizmoOptions>,
-    mut text3d_pending: ResMut<Text3dDefaultPending>,
-    mut text3d_renderer: ResMut<Text3dRenderer>,
-    mut text3d_depth_pending: ResMut<Text3dDepthPending>,
+    mut text3d_state: ResMut<SlugText3dState>,
     mut scene_config: ResMut<SceneConfig>,
     mut scene_url_state: ResMut<SceneUrlState>,
     #[cfg(not(target_arch = "wasm32"))] mut scene_file_dialog: NonSendMut<SceneFileDialog>,
+    #[cfg(not(target_arch = "wasm32"))] mut font_params: FontPanelParams<'_>,
+    #[cfg(target_arch = "wasm32")] asset_server: Res<AssetServer>,
+    #[cfg(target_arch = "wasm32")] embedded_fonts: Option<Res<EmbeddedFontHandles>>,
+    font3d_params: Text3dFontParams<'_>,
     mut commands: Commands,
 ) -> Result {
     if scene_config_query.is_empty() {
@@ -476,6 +571,26 @@ fn scene_config_window(
         scene_file_dialog.0.update(ctx);
         if let Some(path) = scene_file_dialog.0.take_picked() {
             scene_config.custom_scene = Some(path.to_string_lossy().into_owned());
+        }
+
+        // Drive font file picker dialog, load picked font into the asset server.
+        font_params.font_file_dialog.0.update(ctx);
+        if let Some(path) = font_params.font_file_dialog.0.take_picked() {
+            let display_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            let handle: Handle<Font> = font_params
+                .asset_server
+                .load(path.to_string_lossy().into_owned());
+            font_params
+                .dynamic_fonts
+                .0
+                .push((display_name.clone(), handle.clone()));
+            commands.spawn(PendingFontRegistration {
+                name: display_name,
+                handle,
+            });
         }
     }
 
@@ -637,37 +752,82 @@ fn scene_config_window(
             ui.separator();
 
             ui.label(egui::RichText::new("3D Text").strong());
-            let show_text3d_entity = show_text3d_query.single().ok();
-            let show_text3d = show_text3d_entity.is_some();
-            if ui.selectable_label(show_text3d, "Show 3D Text").clicked() {
-                if let Some(entity) = show_text3d_entity {
-                    commands.entity(entity).despawn();
-                } else {
-                    commands.spawn(ShowText3d);
-                }
+            // Visibility toggle write state.visible directly, debounce fires SlugText3dApply later.
+            if ui
+                .selectable_label(text3d_state.visible, "Show 3D Text")
+                .clicked()
+            {
+                text3d_state.visible = !text3d_state.visible;
             }
+
+            // Renderer selector.
             ui.horizontal(|ui| {
                 ui.label("Renderer:");
                 if ui
-                    .selectable_label(*text3d_renderer == Text3dRenderer::SlugText3d, "SlugText3d")
+                    .selectable_label(
+                        text3d_state.renderer == Text3dRenderer::SlugText3d,
+                        "SlugText3d",
+                    )
                     .clicked()
+                    && text3d_state.renderer != Text3dRenderer::SlugText3d
                 {
-                    *text3d_renderer = Text3dRenderer::SlugText3d;
+                    text3d_state.renderer = Text3dRenderer::SlugText3d;
                 }
-
                 if ui
-                    .selectable_label(*text3d_renderer == Text3dRenderer::SlugText, "SlugText")
+                    .selectable_label(
+                        text3d_state.renderer == Text3dRenderer::SlugText,
+                        "SlugText",
+                    )
                     .clicked()
+                    && text3d_state.renderer != Text3dRenderer::SlugText
                 {
-                    *text3d_renderer = Text3dRenderer::SlugText;
+                    text3d_state.renderer = Text3dRenderer::SlugText;
                 }
             });
-            if *text3d_renderer == Text3dRenderer::SlugText3d {
+
+            // Font picker writes state.font_id and apply_slug_text3d validates next debounce.
+            {
+                let registered = &font3d_params.registered.0;
+                let active_id = font3d_params.active_font.as_deref().map(|f| f.0);
+                let selected_label = active_id
+                    .and_then(|id| registered.iter().find(|e| e.font_id == id))
+                    .map(|e| e.name.as_str())
+                    .unwrap_or("(none)");
+                ui.horizontal(|ui| {
+                    ui.label("Font:");
+                    egui::ComboBox::from_id_salt("text3d_font_picker")
+                        .selected_text(selected_label)
+                        .show_ui(ui, |ui| {
+                            for entry in registered {
+                                let is_selected = active_id == Some(entry.font_id);
+                                if ui.selectable_label(is_selected, &entry.name).clicked()
+                                    && !is_selected
+                                {
+                                    text3d_state.font_id = Some(entry.font_id);
+                                }
+                            }
+                        });
+                });
+                let missing = &font3d_params.validation.missing_glyphs;
+                if !missing.is_empty() {
+                    let chars: String = missing
+                        .iter()
+                        .map(|c| format!("{c:?}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    ui.label(
+                        egui::RichText::new(format!("❌ Missing glyphs: {chars}"))
+                            .small()
+                            .color(egui::Color32::from_rgb(220, 80, 80)),
+                    );
+                }
+            }
+
+            // Depth drag widget write state.depth directly.
+            if text3d_state.renderer == Text3dRenderer::SlugText3d {
                 ui.horizontal(|ui| {
                     ui.label("Depth:");
-                    // Read the current value without marking the resource as
-                    // changed through the debounce system.
-                    let mut depth_val = text3d_depth_pending.bypass_change_detection().0;
+                    let mut depth_val = text3d_state.bypass_change_detection().depth;
                     if ui
                         .add(
                             egui::DragValue::new(&mut depth_val)
@@ -677,15 +837,20 @@ fn scene_config_window(
                         )
                         .changed()
                     {
-                        text3d_depth_pending.0 = depth_val;
+                        text3d_state.depth = depth_val;
                     }
                 });
             }
-            // Bind the textbox to the ecs staging resource so the field is
-            // fully responsive and just writes to a dum af string from its
-            // pov. Spawning in tick was a baaaad idea and typing fast made
-            // things go boom needlessly.
-            let mut pending_buf = text3d_pending.0.clone();
+
+            // Note the debounce system in use here may not be needed any
+            // longer as its a leftover/holdover from fontmesh which took
+            // forever to generate meshes. The current system is both faster at
+            // making Mesh and caches glyphs to make this mostly unneeded. Maybe
+            // I make the debounce just 100ms.
+
+            // Default-text textbox writes state.default_text on every keystroke.
+            // Any change is immediately visible to the debounce system via is_changed().
+            let mut pending_buf = text3d_state.bypass_change_detection().default_text.clone();
             ui.horizontal(|ui| {
                 ui.label("Default Text:");
                 let resp = ui.add(
@@ -694,9 +859,111 @@ fn scene_config_window(
                         .desired_width(160.0),
                 );
                 if resp.changed() {
-                    text3d_pending.0 = pending_buf;
+                    text3d_state.default_text = pending_buf.clone();
+                    // Also push to live text immediately so there's less gap
+                    // between typing and seeing the change reverie sync will
+                    // override this each second when it is active need to
+                    // rethink that approach and get the node graph system in
+                    // place to make a truly dynamic display runtime setup.
+                    text3d_state.text = pending_buf;
                 }
             });
+
+            // Color picker write state.color directly.
+            ui.horizontal(|ui| {
+                ui.label("Text Color:");
+                let [r, g, b, a] = text3d_state.bypass_change_detection().color;
+                let mut egui_color = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
+                if ui.color_edit_button_srgba(&mut egui_color).changed() {
+                    let [r2, g2, b2, a2] = egui_color.to_array();
+                    text3d_state.color = [r2, g2, b2, a2];
+                }
+                const DEFAULT_COLOR: [u8; 4] = [0, 0, 0, 255];
+                if ui
+                    .add_enabled(
+                        text3d_state.bypass_change_detection().color != DEFAULT_COLOR,
+                        egui::Button::new("↩ Reset"),
+                    )
+                    .on_disabled_hover_text("Already default color")
+                    .clicked()
+                {
+                    text3d_state.color = DEFAULT_COLOR;
+                }
+            });
+
+            ui.add_space(6.0);
+            ui.separator();
+
+            ui.label(egui::RichText::new("Fonts").strong());
+
+            // TODO: Get the font picker to accept a uri so wasm can add font files too.
+            #[cfg(not(target_arch = "wasm32"))]
+            if ui.button("📂 Add Font").clicked() {
+                font_params.font_file_dialog.0.pick_file();
+            }
+
+            // Obtain asset server and embedded font handles regardless of
+            // platform. On native they live inside FontPanelParams, on wasm
+            // they are direct system params.
+            #[cfg(not(target_arch = "wasm32"))]
+            let srv = &*font_params.asset_server;
+            #[cfg(target_arch = "wasm32")]
+            let srv = &*asset_server;
+
+            #[cfg(not(target_arch = "wasm32"))]
+            let embedded = font_params.embedded_fonts.as_deref();
+            #[cfg(target_arch = "wasm32")]
+            let embedded = embedded_fonts.as_deref();
+
+            // Helper: map a bevy LoadState to a short status icon + tooltip.
+            let load_state_label = |handle: &Handle<Font>| -> (&'static str, &'static str) {
+                use bevy::asset::LoadState;
+                match srv.get_load_state(handle) {
+                    Some(LoadState::Loaded) => ("✅", "Loaded"),
+                    Some(LoadState::Loading) => ("⏳", "Loading..."),
+                    Some(LoadState::Failed(_)) => ("❌", "Failed to load"),
+                    Some(LoadState::NotLoaded) | None => ("❓", "Not loaded"),
+                }
+            };
+
+            // Build the list of (display_name, handle_ref) for all known fonts.
+            // Embedded fonts use the persistent handles from EmbeddedFontHandles
+            // so Bevy always has a strong-handle owner and the asset stays loaded.
+            // Calling asset_server.load() every frame and dropping the handle
+            // caused FiraMono to stay stuck at ⏳ because no owner kept it alive.
+            //
+            // TODO: This is all very jank. "I'll fix it in post". Promise...
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical()
+                .id_salt("fonts_scroll")
+                .max_height(120.0)
+                .show(ui, |ui| {
+                    if let Some(ef) = embedded {
+                        for (name, handle) in [
+                            ("NotoSansJP-Regular.ttf", &ef.noto),
+                            ("FiraMono-Medium.ttf", &ef.fira),
+                        ] {
+                            let (icon, tip) = load_state_label(handle);
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(icon));
+                                ui.label(name)
+                                    .on_hover_text(format!("Embedded font - {tip}"));
+                            });
+                        }
+                    }
+
+                    // Dynamically added at runtime fonts come after the embeds.
+                    // TODO: How do I handle duplicates? I punted on this cause lazy.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    for (name, handle) in &font_params.dynamic_fonts.0 {
+                        let (icon, tip) = load_state_label(handle);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(icon));
+                            ui.label(name.as_str())
+                                .on_hover_text(format!("Runtime font - {tip}"));
+                        });
+                    }
+                });
         });
 
     Ok(())
@@ -714,31 +981,29 @@ fn scene_config_window(
 fn settings_ui(
     mut contexts: EguiContexts,
     mut color_state: ResMut<ColorState>,
-    mut effects_enabled: ResMut<EffectsEnabled>,
+    mut effects_enabled: Option<ResMut<EffectsEnabled>>,
     ui_state: Res<UiState>,
     mut marker_queries: ParamSet<(
-        Query<Entity, With<FpsDisplay>>,                      // p0
-        Query<Entity, With<HueAnimation>>,                    // p1
-        Query<Entity, With<ShowRecognizer>>,                  // p2
-        Query<Entity, With<ShowWorldClock>>,                  // p3
-        Query<(Entity, &Visibility), With<flan::PlotUiNode>>, // p4
-        Query<Entity, With<ShowSceneConfig>>,                 // p5
+        Query<Entity, With<FpsDisplay>>,                            // p0
+        Query<Entity, With<HueAnimation>>,                          // p1
+        Query<Entity, With<ShowRecognizer>>,                        // p2
+        Query<Entity, With<ShowWorldClock>>,                        // p3
+        Query<Entity, With<crate::plugins::fps::StatsOverlayNode>>, // p4 unused slot for now kept for future refactor
+        Query<Entity, With<ShowSceneConfig>>,                       // p5
     )>,
     #[cfg(not(target_arch = "wasm32"))] data_viewer_query: Query<Entity, With<ShowDataViewer>>,
     losant_query: Query<Entity, With<ShowLosant>>,
     mut active_reverie: ResMut<ActiveReverie>,
     reverie_query: Query<(Entity, &ReverieKey, &ReverieDisplayName)>,
-    mut active_shader: ResMut<ActiveShader>,
-    available_shaders: Res<AvailableShaders>,
+    mut active_shader: Option<ResMut<ActiveShader>>,
+    available_shaders: Option<Res<AvailableShaders>>,
     mut commands: Commands,
     mut ui_config: ResMut<UiConfig>,
-    mut camera_proj: ParamSet<(
-        Res<CameraMode>,
-        ResMut<CameraProjectionToggleRequested>,
-        ResMut<FpsTextRenderer>,
-    )>,
+    mut camera_proj: ParamSet<(Res<CameraMode>, ResMut<CameraProjectionToggleRequested>)>,
     mut reset_camera_events: MessageWriter<ResetCamera>,
-    #[cfg(debug_assertions)] mut plugin_registry: ResMut<PluginRegistry>,
+    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))] mut plugin_registry: ResMut<
+        PluginRegistry,
+    >,
 ) -> Result {
     if !ui_state.enabled || !ui_state.menu_bar_visible {
         return Ok(());
@@ -755,13 +1020,8 @@ fn settings_ui(
     let recognizer_entity = marker_queries.p2().single().ok();
     // p3 ShowWorldClock
     let clock = marker_queries.p3().single().ok();
-    // p4 PlotUiNode visibility
-    let line_graph = {
-        let q = marker_queries.p4();
-        q.single()
-            .ok()
-            .map(|(e, vis)| (e, *vis != Visibility::Hidden))
-    };
+    // p4 StatsOverlayNode slot kept for index stability not used in gooey can remove but this commits gihugic enough as it is and I don't want to change pN things right now the diff for this craps huge.
+    let _overlay_entity = marker_queries.p4().single().ok();
     // p5 ShowSceneConfig
     let scene_cfg_entity = marker_queries.p5().single().ok();
 
@@ -776,18 +1036,18 @@ fn settings_ui(
     let current_camera_mode = *camera_proj.p0();
     let mut gooey_data = gooey::GooeyRenderData {
         fps_entity,
-        fps_renderer: *camera_proj.p2(),
         hue_entity,
         camera_mode: current_camera_mode,
         proj_toggle_requested: false,
-        effects_enabled: effects_enabled.0,
-        active_shader_index: active_shader.index,
-        shader_entries: available_shaders
-            .shaders
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (i, s.display_name.clone()))
-            .collect(),
+        effects_enabled: effects_enabled.as_deref().map(|e| e.0),
+        active_shader_index: active_shader.as_deref().map(|s| s.index),
+        shader_entries: available_shaders.as_ref().map(|a| {
+            a.shaders
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (i, s.display_name.clone()))
+                .collect()
+        }),
         color: color_state.color,
         theme: ui_config.theme,
     };
@@ -816,13 +1076,13 @@ fn settings_ui(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 theme_toggle::render_theme_toggle_menu(ui, &mut ui_config);
                 about::render_about_menu(ui);
-                #[cfg(debug_assertions)]
+                #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
                 debug::render_debug_menu(ui, &mut plugin_registry);
                 experiments::render_experiments_menu(
                     ui,
                     experiments::ExperimentsRenderData {
                         recognizer_entity,
-                        line_graph,
+                        line_graph: None, // TODO: plot things gone need to rip this old crap out fully
                         #[cfg(not(target_arch = "wasm32"))]
                         data_viewer_entity,
                         losant_entity,
@@ -837,17 +1097,21 @@ fn settings_ui(
     if gooey_data.proj_toggle_requested {
         camera_proj.p1().0 = true;
     }
-    effects_enabled.0 = gooey_data.effects_enabled;
-    if active_shader.index != gooey_data.active_shader_index {
-        active_shader.index = gooey_data.active_shader_index;
-        trace!(
-            "shader effect changed to {}",
-            active_shader.display_name(&available_shaders)
-        );
+    if let (Some(ref mut enabled), Some(new_val)) =
+        (effects_enabled.as_deref_mut(), gooey_data.effects_enabled)
+    {
+        enabled.0 = new_val;
+    }
+    if let (Some(ref mut shader), Some(shaders), Some(new_idx)) = (
+        active_shader.as_deref_mut(),
+        available_shaders.as_deref(),
+        gooey_data.active_shader_index,
+    ) && shader.index != new_idx
+    {
+        shader.index = new_idx;
+        trace!("shader effect changed to {}", shader.display_name(shaders));
     }
     color_state.color = gooey_data.color;
-    *camera_proj.p2() = gooey_data.fps_renderer;
-
     Ok(())
 }
 
@@ -1454,10 +1718,10 @@ fn draw_inference_sidebar(
     result: &InferenceResult,
     engine: Option<&InferenceEngine>,
 ) {
-    if engine.is_none() {
+    let Some(engine) = engine else {
         ui.label(egui::RichText::new("No model loaded.").weak().italics());
         return;
-    }
+    };
 
     if result.matches.is_empty() {
         ui.label(
@@ -1467,8 +1731,6 @@ fn draw_inference_sidebar(
         );
         return;
     }
-
-    let engine = engine.unwrap();
 
     ui.label(egui::RichText::new("Top matches:").strong());
     ui.add_space(4.0);

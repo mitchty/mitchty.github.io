@@ -3,7 +3,7 @@ use bevy_egui::egui;
 
 use super::{EguiMenuBarItem, ResetCamera};
 use crate::CameraMode;
-use crate::plugins::fps::{FpsDisplay, FpsTextRenderer};
+use crate::plugins::fps::FpsDisplay;
 use crate::plugins::hue::HueAnimation;
 use crate::plugins::theme::theme_default_color;
 use crate::ui::config::ThemeChoice;
@@ -37,8 +37,6 @@ impl Plugin for GooeyMenuPlugin {
 pub struct GooeyRenderData {
     /// If the fps thingy needs to display or not.
     pub fps_entity: Option<Entity>,
-    /// Which renderer backs the FPS counter.
-    pub fps_renderer: FpsTextRenderer,
     /// This is probably gonna get ripped out soon its not used.
     pub hue_entity: Option<Entity>,
 
@@ -49,11 +47,15 @@ pub struct GooeyRenderData {
     pub proj_toggle_requested: bool,
 
     /// If fullscreen shaders are enabled or not.
-    pub effects_enabled: bool,
+    /// `None` when `PostProcessPlugin` is disabled - the Effects section of the
+    /// Gooey menu is hidden entirely in that case.
+    pub effects_enabled: Option<bool>,
     /// Index into the available shaders list for active fullscreen shader to render with.
-    pub active_shader_index: usize,
+    /// `None` when `PostProcessPlugin` is disabled.
+    pub active_shader_index: Option<usize>,
     /// Flat list of `(index, display_name)` for the shader pickers to abuse.
-    pub shader_entries: Vec<(usize, String)>,
+    /// `None` when `PostProcessPlugin` is disabled.
+    pub shader_entries: Option<Vec<(usize, String)>>,
 
     /// `None` means "use theme default whatever the hell that is".
     pub color: Option<Srgba>,
@@ -88,20 +90,21 @@ pub fn render_gooey_menu(
             ui.close();
         }
 
-        ui.separator();
-
-        ui.label(egui::RichText::new("Effects").strong());
-        if ui
-            .checkbox(&mut data.effects_enabled, "Fullscreen Effect [E]")
-            .changed()
-        {
-            // value already flipped in place and caller writes it back this is a nop in this context
-        }
-        ui.label("Shader:");
-        for (idx, name) in &data.shader_entries {
-            let selected = data.active_shader_index == *idx;
-            if ui.selectable_label(selected, name).clicked() {
-                data.active_shader_index = *idx;
+        // Effects section only shown when PostProcessPlugin is active.
+        if let (Some(ref mut enabled), Some(ref mut shader_idx), Some(entries)) = (
+            data.effects_enabled.as_mut(),
+            data.active_shader_index.as_mut(),
+            data.shader_entries.as_ref(),
+        ) {
+            ui.separator();
+            ui.label(egui::RichText::new("Effects").strong());
+            ui.checkbox(enabled, "Fullscreen Effect [E]");
+            ui.label("Shader:");
+            for (idx, name) in entries.iter() {
+                let selected = **shader_idx == *idx;
+                if ui.selectable_label(selected, name).clicked() {
+                    **shader_idx = *idx;
+                }
             }
         }
 
@@ -117,24 +120,6 @@ pub fn render_gooey_menu(
                 commands.entity(e).despawn();
             }
         }
-        if fps_on {
-            ui.horizontal(|ui| {
-                ui.label("Renderer:");
-                if ui
-                    .selectable_label(data.fps_renderer == FpsTextRenderer::BevyText, "Bevy")
-                    .clicked()
-                {
-                    data.fps_renderer = FpsTextRenderer::BevyText;
-                }
-                if ui
-                    .selectable_label(data.fps_renderer == FpsTextRenderer::SlugText, "Slug")
-                    .clicked()
-                {
-                    data.fps_renderer = FpsTextRenderer::SlugText;
-                }
-            });
-        }
-
         let mut hue_on = data.hue_entity.is_some();
         if ui.checkbox(&mut hue_on, "Hue Animation [H]").changed() {
             if hue_on {

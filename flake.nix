@@ -192,6 +192,7 @@
             (lib.fileset.fileFilter (file: file.hasExt "glb") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "mpk") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "json") ./crates)
+            (lib.fileset.fileFilter (file: file.hasExt "png") ./crates)
             ./deny.toml
             ./Cargo.toml
             ./Cargo.lock
@@ -286,10 +287,16 @@
           inherit src;
           strictDeps = true;
 
-          nativeBuildInputs = with pkgs; [
-            git
-            pkg-config
-          ];
+          nativeBuildInputs =
+            with pkgs;
+            [
+              git
+              pkg-config
+            ]
+            ++ lib.optionals pkgs.stdenv.isLinux [
+              mold
+              llvmPackages.lld
+            ];
 
           buildInputs =
             with pkgs;
@@ -297,8 +304,6 @@
             ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
               vulkan-loader
               wayland
-              pkgs.mold
-              pkgs.lld
             ]
             ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux commonXinputs
             ++ lib.optionals pkgs.stdenv.isDarwin [
@@ -309,6 +314,9 @@
 
           # Additional environment variables can be set directly
           LD_LIBRARY_PATH = lib.optionalString pkgs.stdenv.isLinux (lib.makeLibraryPath (commonXinputs));
+          # Use clang as the C linker, fenix gcc-ld seems to be breaking with
+          # latest update for -fuse-ld.
+          CC = lib.optionalString pkgs.stdenv.isLinux "${pkgs.llvmPackages.clang}/bin/clang";
         };
 
         commonArgsWasm = {
@@ -329,9 +337,21 @@
         # Macos env vars shared between the derivation environment and the devshell env
         commonEnvDarwin = {
           LIBCLANG_PATH = lib.optionalString pkgs.stdenv.isDarwin "${pkgs.llvmPackages.libclang.lib}/lib";
+          # cc-rs calls clang++ directly, bypassing whatever is on PATH. Point
+          # it at libcxxClang which is a nix-wrapped clang++ that already has libc++
+          # headers wired in via -isystem. The bare clang-N binary doesn't
+          # bundle c++ or v1 headers and the apple-sdk deliberately strips them,
+          # so any crate that compiles C++ from source e.g. tracy-client-sys
+          # needs this to find <atomic>, <string>, etc.
+          CXX = lib.optionalString pkgs.stdenv.isDarwin "${pkgs.llvmPackages.libcxxClang}/bin/clang++";
         };
 
         darwinLldFlags = lib.optionalString pkgs.stdenv.isDarwin "-C link-arg=-fuse-ld=${pkgs.llvmPackages.lld}/bin/ld64.lld";
+
+        # Use mold for faster linking on Linux.
+        # -fuse-ld=mold expects the mold wrapper on PATH; the wrapper handles
+        # argument translation that raw mold can't parse directly
+        linuxMoldFlags = lib.optionalString pkgs.stdenv.isLinux "-C link-arg=-fuse-ld=mold";
 
         # Common arguments for Darwin builds (system libraries only)
         commonArgsDarwin =
@@ -394,6 +414,8 @@
                 # autoAddDriverRunpath patches ELF RPATH entries so the CUDA
                 # libs are found at runtime even outside of NixOS, veeery needed.
                 autoAddDriverRunpath
+                mold
+                llvmPackages.lld
               ];
 
               buildInputs =
@@ -406,13 +428,14 @@
                   cudaPackages.libcublas
                   vulkan-loader
                   wayland
-                  mold
-                  lld
                 ]
                 ++ commonXinputs;
 
               # Need to set this up for the cuda compilation to work, this is to
               # enable the compilation to work at runtime within the devshell.
+              #
+              # Also use clang as the C linker driver to work around weird af build issues.
+              CC = "${pkgs.llvmPackages.clang}/bin/clang";
               CUDA_PATH = "${cudaMerged}";
               LD_LIBRARY_PATH = lib.makeLibraryPath (
                 commonXinputs
@@ -422,6 +445,7 @@
                   cudaPackages.libcublas
                 ])
               );
+              RUSTFLAGS = linuxMoldFlags;
             }
           else
             { };
@@ -456,10 +480,24 @@
         # feature but this is a future sucker mitch task.
         cargoArtifactsWasm = craneLibWasm.buildDepsOnly (
           commonArgsWasm
-          // releaseArgs
+          // wasmReleaseArgs
           // {
             src = srcDeps;
             cargoExtraArgs = "-p mitchty --features mitchty/webgl";
+          }
+        );
+
+        # Cargo artifacts for the WASM webgpu compile-check.
+        #
+        # mitchty/webgpu enables flan/render which pulls in wgpu, image,
+        # pollster and wesl - deps not present in the webgl cache. A separate
+        # cache avoids a full rebuild every time the check runs.
+        cargoArtifactsWasmWebgpu = craneLibWasm.buildDepsOnly (
+          commonArgsWasm
+          // wasmReleaseArgs
+          // {
+            src = srcDeps;
+            cargoExtraArgs = "-p mitchty --features mitchty/webgpu";
           }
         );
 
@@ -501,7 +539,7 @@
 
         cargoArtifactsWindows = craneLibWindows.buildDepsOnly (
           commonArgsWindows
-          // releaseArgs
+          // windowsReleaseArgs
           // {
             src = srcDeps;
           }
@@ -709,11 +747,6 @@
             '';
           };
 
-        # TODO: While this is now fixed for the dep caches, I need to probably also make the builds be deterministic so that say:
-        # mitchty --version
-        # mitchty 0.0.16 3717e04 debug rustc 1.94.0 built 2026-04-17 01:09:06 UTC
-        # has a constant SOURCE_DATE_EPOCH, or maybe even drop it entirely. This
-        # is, as is tradition a future mitch problem.
         nixEnvArgs = {
           NIX_GIT_REV = version;
           # Clippy lints can be set in source via attributes instead
@@ -725,13 +758,31 @@
 
         releaseArgs = {
           CARGO_PROFILE = "release";
+          RUSTFLAGS = "-D warnings ${lib.optionalString pkgs.stdenv.isLinux linuxMoldFlags}";
+        };
+
+        # Like releaseArgs but without the mold linker flag: mold is a native
+        # ELF linker and rust-lld (wasm flavor) does not understand -fuse-ld=mold.
+        # Use this everywhere craneLibWasm is involved.
+        wasmReleaseArgs = {
+          CARGO_PROFILE = "release";
           RUSTFLAGS = "-D warnings";
         };
 
-        # Like releaseArgs but uses the release-fast profile for quicker iteration
+        # Like releaseArgs but without the mold linker flag: the mingw32 cross
+        # linker (x86_64-w64-mingw32-cc) does not understand -fuse-ld=mold.
+        # Use this everywhere craneLibWindows is involved.
+        windowsReleaseArgs = {
+          CARGO_PROFILE = "release";
+          RUSTFLAGS = "-D warnings";
+        };
+
+        # Like releaseArgs but uses the release-fast profile for quicker
+        # iteration, also skips the fatal warnings spiel under the same
+        # assumption in that I might be iterating and vars might be temp off and
+        # idgaf.
         releaseFastArgs = {
           CARGO_PROFILE = "release-fast";
-          RUSTFLAGS = "-D warnings";
         };
 
         # Build the top-level crates of the workspace as individual derivations.
@@ -776,6 +827,38 @@
               --set BEVY_ASSET_PATH ${mitchty-dev-asset-root} \
               ${lib.optionalString pkgs.stdenv.isLinux "--prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath commonXinputs}"}
           '';
+        };
+
+        # Tracy-instrumented debug build for memory/performance profiling.
+        # Built as a derivation so the stdenv properly wires up the C++
+        # toolchain for tracy-client-sys (which compiles TracyClient.cpp).
+        # Use: nix run .#mitchty-tracy  (start Tracy GUI first)
+        mitchty-tracy-unwrapped = craneLib.buildPackage (
+          individualCrateArgs
+          // nixEnvArgs
+          // devArgs
+          // {
+            pname = "mitchty-tracy";
+            cargoExtraArgs = "-p mitchty --features mitchty/tracy";
+            src = fileSetForCrate ./crates/mitchty;
+            doCheck = false;
+          }
+        );
+
+        mitchty-tracy = pkgs.symlinkJoin {
+          name = "mitchty-tracy";
+          paths = [ mitchty-tracy-unwrapped ];
+          nativeBuildInputs = [
+            pkgs.makeWrapper
+          ];
+          postBuild = ''
+            wrapProgram $out/bin/mitchty \
+              --set BEVY_ASSET_PATH ${mitchty-dev-asset-root} \
+              ${lib.optionalString pkgs.stdenv.isLinux "--prefix LD_LIBRARY_PATH : ${
+                lib.makeLibraryPath (commonXinputs ++ [ pkgs.stdenv.cc.cc.lib ])
+              }"}
+          '';
+          meta.mainProgram = "mitchty";
         };
 
         # Optimized LTO build with release profile
@@ -875,7 +958,7 @@
             wasmBuild = craneLibWasm.buildPackage (
               commonArgsWasm
               // nixEnvArgs
-              // releaseArgs
+              // wasmReleaseArgs
               // {
                 pname = "mitchty-wasm-lto";
                 version = version;
@@ -1017,7 +1100,7 @@
         mitchty-release-windows = craneLibWindows.buildPackage (
           commonArgsWindows
           // nixEnvArgs
-          // releaseArgs
+          // windowsReleaseArgs
           // {
             pname = "mitchty-release";
             version = version;
@@ -1048,7 +1131,7 @@
 
           nativeBuildInputs = [
             pkgs.graphviz
-            cargo-deny-0_19_0
+            cargo-deny-0_19
           ];
 
           # crane requires artifacts but like cargoDeny set this to null
@@ -1070,18 +1153,18 @@
           '';
         };
 
-        cargo-deny-0_19_0 = pkgs.rustPlatform.buildRustPackage rec {
+        cargo-deny-0_19 = pkgs.rustPlatform.buildRustPackage rec {
           pname = "cargo-deny";
-          version = "0.19.0";
+          version = "0.19.9";
 
           src = pkgs.fetchFromGitHub {
             owner = "EmbarkStudios";
             repo = "cargo-deny";
             rev = version;
-            hash = "sha256-kDjRP+UXYzsXTrcsPbomtATzDVTSZqXoRXf6qqCGOZw=";
+            hash = "sha256-b3p4UxMDUNMKusgGDji3A0myfAfYU+o4DFnhM4mrWao=";
           };
 
-          cargoHash = "sha256-Lu1KhQmsQGvzgozFTcv9/hY3ZXOuaxkv0I+QPmAdZBU=";
+          cargoHash = "sha256-+FWEA2T8CASg3MmTb7WpN4MO8lwiLZtsVDuWMddkUgA=";
 
           nativeBuildInputs = with pkgs; [ pkg-config ];
           buildInputs = with pkgs; [ zstd ] ++ lib.optionals stdenv.hostPlatform.isDarwin [ apple-sdk ];
@@ -1174,11 +1257,144 @@
               # Dump more stuff from wgpu and naga to try debugging gh runner stuff.
               RUST_LOG = "wgpu=warn,naga=warn";
             }
-            # On Linux force wgpu to use vulkan software renderer in case this
-            # is the problem.
+            # On Linux provide Mesa lavapipe so wgpu can get a real software
+            # Vulkan adapter inside the Nix sandbox. Without this, vulkan-loader
+            # finds no ICDs and every render test hits has_no_adapter() and
+            # silently skips - the check stays green but zero GPU tests ran.
+            #
+            # VK_ICD_FILENAMES pins the loader to lavapipe only (no hardware
+            # probing, fully deterministic). LIBGL_ALWAYS_SOFTWARE is a
+            # belt-and-suspenders fallback for the GL backend path.
             // lib.optionalAttrs pkgs.stdenv.isLinux {
+              buildInputs = commonArgs.buildInputs ++ [ pkgs.mesa ];
               WGPU_BACKEND = "vulkan";
               WGPU_POWER_PREFERENCE = "none";
+              VK_ICD_FILENAMES = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json";
+              LIBGL_ALWAYS_SOFTWARE = "1";
+            }
+          );
+
+        }
+        # wasm specific compile-checks, are gated just to linux for now. Reason
+        # is I get odd build failures on macos which as soon as I try to debug
+        # them after they fail it works. Given ci runs on linux as long as I do
+        # a nix flake check on linux which I already do before pushing to github
+        # this is FINE just gives linux 4 more dep chains to rebuild but eh whatever.
+        // lib.optionalAttrs pkgs.stdenv.isLinux {
+          # Compile-check the flan crate WASM/webgl code path without running
+          # any tests.
+          #
+          # wasm32-unknown-unknown cannot run tests in a Nix sandbox (no browser
+          # event loop for wgpu/JS). This check catches cfg-gated WASM regressions:
+          # missing getrandom feature flags, webgl AsBindGroup type errors, anything
+          # that compiles on native but breaks when target_arch = "wasm32". It reuses
+          # cargoArtifactsWasm so the dep build is already cached.
+          flan-check-wasm-webgl = craneLibWasm.mkCargoDerivation (
+            commonArgsWasm
+            // wasmReleaseArgs
+            // nixEnvArgs
+            // {
+              cargoArtifacts = cargoArtifactsWasm;
+              pname = "flan-check-wasm-webgl";
+              pnameSuffix = "";
+              doInstallCargoArtifacts = false;
+              buildPhaseCargoCommand = ''
+                cargo check \
+                  --target wasm32-unknown-unknown \
+                  -p flan \
+                  --features flan/webgl \
+                  --message-format short
+              '';
+            }
+          );
+
+          # Same as flan-check-wasm-webgl but with flan/webgpu - uses
+          # cargoArtifactsWasmWebgpu since bevy/webgpu pulls in extra deps not
+          # present in cargoArtifactsWasm.
+          flan-check-wasm-webgpu = craneLibWasm.mkCargoDerivation (
+            commonArgsWasm
+            // wasmReleaseArgs
+            // nixEnvArgs
+            // {
+              cargoArtifacts = cargoArtifactsWasmWebgpu;
+              pname = "flan-check-wasm-webgpu";
+              pnameSuffix = "";
+              doInstallCargoArtifacts = false;
+              buildPhaseCargoCommand = ''
+                cargo check \
+                  --target wasm32-unknown-unknown \
+                  -p flan \
+                  --features flan/webgpu \
+                  --message-format short
+              '';
+            }
+          );
+
+          # Same as flan-check-wasm-webgl but checks the mitchty crate with the
+          # webgl feature - explicit counterpart to mitchty-check-wasm-webgpu.
+          mitchty-check-wasm-webgl = craneLibWasm.mkCargoDerivation (
+            commonArgsWasm
+            // wasmReleaseArgs
+            // nixEnvArgs
+            // {
+              cargoArtifacts = cargoArtifactsWasm;
+              pname = "mitchty-check-wasm-webgl";
+              pnameSuffix = "";
+              doInstallCargoArtifacts = false;
+              buildPhaseCargoCommand = ''
+                cargo check \
+                  --target wasm32-unknown-unknown \
+                  -p mitchty \
+                  --features mitchty/webgl \
+                  --message-format short
+              '';
+            }
+          );
+
+          # mitchty/webgpu enables flan/render (wgpu + image + pollster + wesl)
+          # which is a completely different cfg surface from the webgl path:
+          # the not(feature = "webgpu") guards on the webgl-specific AsBindGroup
+          # impls are flipped, and all the render harness deps enter the dep
+          # graph. Uses cargoArtifactsWasmWebgpu (separate dep cache) since
+          # those extra deps aren't in cargoArtifactsWasm.
+          mitchty-check-wasm-webgpu = craneLibWasm.mkCargoDerivation (
+            commonArgsWasm
+            // wasmReleaseArgs
+            // nixEnvArgs
+            // {
+              cargoArtifacts = cargoArtifactsWasmWebgpu;
+              pname = "mitchty-check-wasm-webgpu";
+              pnameSuffix = "";
+              doInstallCargoArtifacts = false;
+              buildPhaseCargoCommand = ''
+                cargo check \
+                  --target wasm32-unknown-unknown \
+                  -p mitchty \
+                  --features mitchty/webgpu \
+                  --message-format short
+              '';
+            }
+          );
+        }
+        # Windows compile-check - Linux-only since it cross-compiles from Linux.
+        # Catches regressions in cfg(windows) code paths and Windows-specific type
+        # errors without requiring Wine. Reuses cargoArtifactsWindows dep cache.
+        // lib.optionalAttrs pkgs.stdenv.isLinux {
+          mitchty-check-windows = craneLibWindows.mkCargoDerivation (
+            commonArgsWindows
+            // windowsReleaseArgs
+            // nixEnvArgs
+            // {
+              cargoArtifacts = cargoArtifactsWindows;
+              pname = "mitchty-check-windows";
+              pnameSuffix = "";
+              doInstallCargoArtifacts = false;
+              buildPhaseCargoCommand = ''
+                cargo check \
+                  --target x86_64-pc-windows-gnu \
+                  -p mitchty \
+                  --message-format short
+              '';
             }
           );
         };
@@ -1187,12 +1403,14 @@
           inherit
             mitchty
             mitchty-lto
+            mitchty-tracy
             ma
             mitchty-wasm
             mitchty-wasm-lto
             pugio
             dotdeps
             ;
+          mitchty-deny = deny;
           wasm-bindgen-cli = wasmBindgenCli;
           default = mitchty;
           # Expose checks as packages for individual running with shorter names
@@ -1206,9 +1424,12 @@
           inherit ma-cuda;
           wine = pkgsUnfree.wineWow64Packages.full;
           steam-run = pkgsUnfree.steam-run;
+          #          tracy = pkgs.tracy-wayland;
+          check-windows = self.checks.${system}.mitchty-check-windows;
         }
         // lib.optionalAttrs pkgs.stdenv.isDarwin {
           mitchty-release = mitchty-release-darwin;
+          tracy = pkgs.tracy;
         };
 
         apps = {
@@ -1226,6 +1447,14 @@
             })
             // {
               meta = metaCommon "LTO optimized build";
+            };
+          mitchty-tracy =
+            (inputs.flake-utils.lib.mkApp {
+              drv = mitchty-tracy;
+              exePath = "/bin/mitchty";
+            })
+            // {
+              meta = metaCommon "Tracy-instrumented build (start Tracy GUI first)";
             };
           ma = {
             type = "app";
@@ -1392,8 +1621,8 @@
             };
         };
 
-        devShells.default =
-          craneLib.devShell {
+        devShells.default = craneLib.devShell (
+          {
             checks = lib.filterAttrs (
               n: _:
               !lib.elem n [
@@ -1403,6 +1632,7 @@
                 # build .#whatever, its setup right and works. The devshells for
                 # local only development/testing with cargo build.
                 "mitchty-release-windows"
+                "mitchty-check-windows"
                 "mitchty-wasm-lto"
               ]
             ) self.checks.${system};
@@ -1427,7 +1657,7 @@
                 wasm-pack
               ]
               ++ [
-                cargo-deny-0_19_0
+                cargo-deny-0_19
                 pugio
               ]
               ++ (lib.attrValues hookTools)
@@ -1443,8 +1673,18 @@
                   cudaPackages.cuda_cccl
                   cudaPackages.libcublas
                   autoAddDriverRunpath
+                  # Mold must be on PATH for -fuse-ld=mold to work.
+                  pkgs.mold
                 ]
               )
+              # Tracy profiler, note its wayland only profiling, 26.05 nuked the
+              # old egl variant.
+              ++ lib.optionals pkgs.stdenv.isLinux [
+                pkgs.tracy_0_13
+              ]
+              ++ lib.optionals pkgs.stdenv.isDarwin [
+                pkgs.tracy
+              ]
             );
 
             shellHook = ''
@@ -1457,6 +1697,9 @@
 
             # Make sure eglot+etc.. pick the right rust-src for eglot+lsp mode stuff using direnv
             RUST_SRC_PATH = "${stableRust}/lib/rustlib/src/rust/library";
+
+            # Use mold for faster linking in devshell interactive builds.
+            RUSTFLAGS = lib.optionalString pkgs.stdenv.isLinux linuxMoldFlags;
 
             # Set library path for Bevy and on linux cuda crap
             LD_LIBRARY_PATH =
@@ -1476,7 +1719,8 @@
             # CUDA toolkit path used to find headers at runtime for jit compilation
             CUDA_PATH = lib.optionalString pkgs.stdenv.isLinux "${cudaMerged}";
           }
-          // lib.optionalAttrs pkgs.stdenv.isDarwin commonEnvDarwin;
+          // lib.optionalAttrs pkgs.stdenv.isDarwin commonEnvDarwin
+        );
       }
     );
 

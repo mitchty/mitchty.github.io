@@ -158,15 +158,21 @@ pub fn sync_gizmo_target(
 pub fn manage_post_process_for_gizmo(
     added: Query<(), Added<crate::ui::ShowSceneConfig>>,
     mut removed: RemovedComponents<crate::ui::ShowSceneConfig>,
-    mut effects_enabled: ResMut<EffectsEnabled>,
+    // Option because PostProcessPlugin can now be disabled via
+    // --without-plugins; system is a no-op when absent. I need to make more
+    // plugins disablable at runtime in debug builds in a more sane way.
+    mut effects_enabled: Option<ResMut<EffectsEnabled>>,
     mut was_enabled: Local<bool>,
 ) {
+    let Some(ref mut enabled) = effects_enabled else {
+        return;
+    };
     if !added.is_empty() {
-        *was_enabled = effects_enabled.0;
-        effects_enabled.0 = false;
+        *was_enabled = enabled.0;
+        enabled.0 = false;
     }
     if removed.read().next().is_some() {
-        effects_enabled.0 = *was_enabled;
+        enabled.0 = *was_enabled;
     }
 }
 

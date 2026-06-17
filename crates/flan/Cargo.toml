@@ -11,18 +11,7 @@ version.workspace = true
 webgl = []
 # WebGPU feature (mirrors mitchty's webgpu feature)
 webgpu = ["bevy/webgpu"]
-# `render` feature enables the headless wgpu test harness used for unit testing
-# render output so I at least know if I broke what I expect stuff to look like.
-#
-# Note defaulted on so that the shader tests always run.
-default = ["render"]
-render = [
-  "dep:wgpu",
-  "dep:image",
-  "dep:image-compare",
-  "dep:pollster",
-  "dep:wesl",
-]
+default = []
 
 [dependencies]
 bevy = { workspace = true, features = [
@@ -30,19 +19,25 @@ bevy = { workspace = true, features = [
   "3d",
   "bevy_render",
   "bevy_asset",
-  "shader_format_wesl",
 ] }
 rand.workspace = true
 # Force naga/termcolor on here or we can't compile tests.
 naga.workspace = true
 modular-bitfield = "~0.11"
+# No releases in crates.io to pull from so we just yeet it direct from git.
+wgsl-rs = { git = "https://github.com/schell/wgsl-rs", features = [
+  "validation",
+] }
 # For slug font shape parsing.
 # variable-fonts is required for Inter.ttf (and most modern fonts) which store
 # outline variations in the gvar table. Without this feature, outline_glyph()
 # returns None for every glyph because it cannot reconstruct coordinates from
 # the compressed glyf data alone, silently producing an empty atlas.
 ttf-parser = { version = "0.25", features = ["variable-fonts"] }
-bytemuck = { version = "1", features = ["derive"] }
+bytemuck = { workspace = true }
+# Abusing earcutr to cap off the 3d SlugText walls. Not well cause I keep
+# finding seams zooming in ungghhhh so lame.
+earcutr = "~0.4"
 
 # Lazy feature pulls in tokio which pulls in mio which has a failure when
 # building in wasm32. So web version of this is slower. OH WELL.
@@ -52,33 +47,25 @@ bytemuck = { version = "1", features = ["derive"] }
 # the `render` default feature from pulling in non-compilable deps on WASM.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 polars = { version = "~0.53", default-features = false, features = ["lazy"] }
-wgpu = { version = "26", optional = true, features = [
-  "metal",
-  "vulkan",
-  "dx12",
-] }
-image = { version = "~0.25", optional = true, default-features = false, features = [
-  "png",
-] }
-image-compare = { version = "~0.5", optional = true }
-pollster = { version = "~0.4", optional = true }
-wesl = { version = "~0.3.2", optional = true }
+image = { version = "~0.25", default-features = false, features = ["png"] }
+image-compare = { version = "~0.5" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom.workspace = true
-polars = { version = "~0.53", default-features = false }
+
+[build-dependencies]
+uuid = { version = "~1", features = ["v5"] }
 
 [dev-dependencies]
 
+[[test]]
+name = "basic_plot_shader"
 
 [[test]]
-name = "shader_2d"
-required-features = ["render"]
+name = "basic_slug_shader"
 
 [[test]]
-name = "shader_fullscreen"
-required-features = ["render"]
+name = "basic_stats_overlay_shader"
 
 [[test]]
-name = "shader_slug"
-required-features = ["render"]
+name = "basic_slug_text_shader"

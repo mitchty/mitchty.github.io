@@ -175,23 +175,6 @@ pub fn manage_effect_settings(
     }
 }
 
-/// Advance the `PostProcessSettings.time` uniform every frame.
-///
-/// Time is clamped to a 60-second period so the shader never sees an
-/// unboundedly growing float and shaders break subtlely when we hit the max for
-/// an f32.
-pub fn update_effect_time(
-    time: Res<Time>,
-    mut settings_query: Query<&mut PostProcessSettings, With<MainCamera>>,
-) {
-    const TIME_PERIOD_SECS: f32 = 60.0;
-    let current_time = time.elapsed_secs() % TIME_PERIOD_SECS;
-
-    for mut settings in settings_query.iter_mut() {
-        settings.time = current_time;
-    }
-}
-
 pub struct FullscreenEffectPlugin;
 
 impl Plugin for FullscreenEffectPlugin {
@@ -200,15 +183,25 @@ impl Plugin for FullscreenEffectPlugin {
             panic!("FullscreenEffectPlugin requires CameraPlugin to be added first!");
         }
 
+        // CameraConfig is always needed as it owns the camera transform defaults.
+        app.init_resource::<CameraConfig>();
+
+        // The four systems below all take Res/ResMut of EffectsEnabled,
+        // ActiveShader, and AvailableShaders are resources owned by
+        // PostProcessPlugin. Skip them entirely when that plugin is disabled so
+        // Bevy never tries to resolve the missing resources.
+        if bavy::disabled::is_disabled(app.world(), "postprocess") {
+            return;
+        }
+
         app.world_mut().spawn(FullscreenEffectEnabled);
-        app.init_resource::<CameraConfig>().add_systems(
+        app.add_systems(
             Update,
             (
                 toggle_fullscreen_effect,
                 next_effect,
                 previous_effect,
                 manage_effect_settings,
-                update_effect_time,
             ),
         );
     }

@@ -19,9 +19,19 @@ path = "src/main.rs"
 [features]
 default = ["egui"]
 webgl = ["bevy/webgl2", "flan/webgl"]
-webgpu = ["bevy/webgpu", "flan/render"]
+webgpu = ["bevy/webgpu"]
 egui = ["dep:bevy_egui"]
-feathers = ["flan/render"]
+feathers = []
+tracy = ["bevy/trace_tracy"]
+debug = []
+dhat-heap = ["dep:dhat"]
+# Watch for "[stats_alloc] net=...MiB delta=+...MiB/5s" in the log.
+stats-alloc = ["dep:stats_alloc"]
+# Switches the global allocator to jemalloc and logs allocated vs. resident
+# bytes every 5 seconds so I can debug if RSS growth is fragmentation or genuine
+# new allocation. jemalloc is also tuned to return pages faster than the system
+# allocator so may reduce RSS growth on its own.
+jemalloc-pprof = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 
 [dependencies]
 bevy = { version = "0.18.1", default-features = false, features = [
@@ -33,6 +43,8 @@ bevy = { version = "0.18.1", default-features = false, features = [
   "jpeg",
 ] }
 
+bavy = { path = "../bavy" }
+bytemuck.workspace = true
 lib = { path = "../lib" }
 rand.workspace = true
 burn.workspace = true
@@ -42,6 +54,8 @@ unicode_names2.workspace = true
 zip.workspace = true
 clap.workspace = true
 bevy_egui = { version = "~0.39.1", optional = true }
+dhat = { version = "~0.3", optional = true }
+stats_alloc = { version = "~0.1", optional = true }
 transform-gizmo-bevy = { version = "0.9", default-features = false, features = [
   "mouse_interaction",
   "gizmo_picking_backend",
@@ -57,7 +71,15 @@ flan = { path = "../flan" }
 dark-light.workspace = true
 # console_error_panic_hook is here so that the web console for js? or whatever
 # dumps out backtraces.
+[target.'cfg(not(any(target_arch = "wasm32", target_env = "msvc")))'.dependencies]
+tikv-jemallocator = { version = "~0.6", features = [
+  "profiling",
+  "unprefixed_malloc_on_supported_platforms",
+], optional = true }
+tikv-jemalloc-ctl = { version = "~0.6", features = ["stats"], optional = true }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+sys = { path = "../sys" }
 polars = { version = "~0.53", default-features = false, features = ["lazy"] }
 # Needs an egui update too, so.. whatever
 egui-file-dialog = { version = "~0.12" }
@@ -78,7 +100,7 @@ tokio = { version = "~1", default-features = false, features = [
 # eventsource-client and its crap are native-only. wasm uses native Fetch
 # shenanigans I couldn't add bearer auth headers to the EventSource wasm bindgen
 # crap.
-eventsource-client = { version = "~0.17.4", features = [
+eventsource-client = { version = "~0.17.5", features = [
   "hyper-rustls-webpki-roots",
 ] }
 # futures::StreamExt is used for the api streaming, here so cargo+nix don't get

@@ -33,7 +33,7 @@ fn main() {
         code,
         "pub static REVERIE_DATA: &[(&[&str], &str, &str)] = &["
     )
-    .unwrap();
+    .expect("writing to a String is infallible");
 
     for (key, display, path) in &entries {
         writeln!(
@@ -43,10 +43,10 @@ fn main() {
             display_lit = quote(display),
             path_lit = quote(path),
         )
-        .unwrap();
+        .expect("writing to a String is infallible");
     }
 
-    writeln!(code, "];").unwrap();
+    writeln!(code, "];").expect("writing to a String is infallible");
 
     std::fs::write(&out_path, &code)
         .unwrap_or_else(|e| panic!("build.rs: failed to write {}: {}", out_path.display(), e));

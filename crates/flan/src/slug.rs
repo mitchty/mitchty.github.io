@@ -35,7 +35,21 @@ const LINE_EPSILON: f32 = 0.125;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct FontId(pub u32);
 
-/// One quadratic Bézier in raw font units.
+/// Outline format of a registered font.
+///
+/// | Format    | Outer contour | Hole/counter |
+/// |-----------|---------------|--------------|
+/// | TrueType  | CW  (negative shoelace area) | CCW (positive) |
+/// | Cff       | CCW (positive shoelace area) | CW  (negative) |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutlineType {
+    /// TrueType `glyf` outlines outer contours are CW in y up.
+    TrueType,
+    /// PostScript style CFF/CFF2 outlines outer contours are CCW in y up.
+    Cff,
+}
+
+/// One quadratic bezier in raw font units.
 #[derive(Clone, Copy, Debug)]
 pub struct QuadCurve {
     pub p0: [f32; 2],
@@ -339,6 +353,8 @@ struct FontEntry {
     _data: Vec<u8>,
     /// Parsed face (borrows `_data` but we use unsafe to extend lifetime).
     face: Face<'static>,
+    /// Whether the font uses TrueType or CFF/CFF2 outlines.
+    pub outline_type: OutlineType,
     /// Permanent CPU cache: glyph_id.0 -> CachedGlyph.
     glyph_cache: HashMap<u16, CachedGlyph>,
 }
@@ -368,10 +384,18 @@ impl SlugAtlas {
             unsafe { std::slice::from_raw_parts(font_data.as_ptr(), font_data.len()) };
         let face = Face::parse(face_data, 0)
             .map_err(|e| format!("ttf-parser: failed to parse font: {e:?}"))?;
+        // Detect outline format by checking which table is present.
+        // `tables().glyf` Some for TrueType outlines, None for CFF.
+        let outline_type = if face.tables().glyf.is_some() {
+            OutlineType::TrueType
+        } else {
+            OutlineType::Cff
+        };
         let id = FontId(self.fonts.len() as u32);
         self.fonts.push(FontEntry {
             _data: font_data,
             face,
+            outline_type,
             glyph_cache: HashMap::new(),
         });
         Ok(id)
@@ -684,6 +708,14 @@ impl SlugAtlas {
     /// These are the values from [`ttf_parser::Face::ascender`] and
     /// [`ttf_parser::Face::descender`] descender is typically negative
     /// generally for most fonts. I need more unit tests.
+    /// Returns the outline type TrueType or CFF for a font.
+    ///
+    /// Needed by `build_text_3d_mesh` to pick the correct contour winding
+    /// interpretation when classifying outer contours versus holes.
+    pub fn font_outline_type(&self, font_id: FontId) -> Option<OutlineType> {
+        self.fonts.get(font_id.0 as usize).map(|e| e.outline_type)
+    }
+
     pub fn font_metrics(&self, font_id: FontId) -> Option<(f32, f32)> {
         let entry = self.fonts.get(font_id.0 as usize)?;
         Some((entry.face.ascender() as f32, entry.face.descender() as f32))
@@ -1062,8 +1094,12 @@ mod tests {
     #[test]
     fn register_font_returns_sequential_ids() {
         let mut atlas = SlugAtlas::default();
-        let a = atlas.register_font(FIRA_TTF.to_vec()).unwrap();
-        let b = atlas.register_font(FIRA_TTF.to_vec()).unwrap();
+        let a = atlas
+            .register_font(FIRA_TTF.to_vec())
+            .expect("register_font failed");
+        let b = atlas
+            .register_font(FIRA_TTF.to_vec())
+            .expect("register_font failed");
         assert_eq!(a.0, 0);
         assert_eq!(b.0, 1);
     }
