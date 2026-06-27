@@ -50,7 +50,7 @@
 //       .with_horizontal(Horizontal::Left);  = second 2 bits
 //   let as_u32 = l.to_u32();
 
-use modular_bitfield::prelude::*;
+use modular_bitfield::{Specifier, prelude::*};
 
 /// Vertical alignment of the text block within the UV region.
 ///
@@ -74,7 +74,7 @@ use modular_bitfield::prelude::*;
 // TODO: I have zero idea if this makes sense but for now it works good enough
 // for governmnent work so I'll ship it even if I think its kinda dum. "I'll fix
 // it in post" (I probably won't until I *really* have to)
-#[derive(BitfieldSpecifier, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Specifier, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[bits = 2]
 pub enum Vertical {
     /// Center the text vertically within the region default.
@@ -126,7 +126,7 @@ pub enum Vertical {
 /// height" on the vertical axis has no good meaning independent of what height
 /// selects. `Vertical::Unused` (3) is reserved and falls through to `Center`
 /// behavior in the shader.
-#[derive(BitfieldSpecifier, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Specifier, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[bits = 2]
 pub enum Horizontal {
     /// Letterbox scale, centered horizontally.

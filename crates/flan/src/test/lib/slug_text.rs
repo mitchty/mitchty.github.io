@@ -6,10 +6,10 @@ mod inner {
     use std::sync::{Arc, Mutex};
 
     use bevy::asset::RenderAssetUsages;
-    use bevy::camera::{ClearColorConfig, RenderTarget};
+    use bevy::camera::RenderTarget;
     use bevy::prelude::*;
     use bevy::render::render_resource::BufferUsages;
-    use bevy::render::storage::ShaderStorageBuffer;
+    use bevy::render::storage::ShaderBuffer;
 
     use crate::shaders::ShadersPlugin;
     use crate::slug_text_material::SlugTextMaterialPlugin;
@@ -25,7 +25,7 @@ mod inner {
         app.add_plugins(
             DefaultPlugins
                 .set(bevy::render::RenderPlugin {
-                    render_creation: bevy::render::settings::RenderCreation::Automatic(
+                    render_creation: bevy::render::settings::RenderCreation::Automatic(Box::new(
                         bevy::render::settings::WgpuSettings {
                             backends: Some(
                                 bevy::render::settings::Backends::VULKAN
@@ -35,7 +35,7 @@ mod inner {
                             ),
                             ..default()
                         },
-                    ),
+                    )),
                     synchronous_pipeline_compilation: true,
                     ..default()
                 })
@@ -89,15 +89,15 @@ mod inner {
     #[allow(clippy::type_complexity)]
     #[cfg(not(feature = "webgl"))]
     fn make_slug_text_buffers(
-        bufs: &mut Assets<ShaderStorageBuffer>,
+        bufs: &mut Assets<ShaderBuffer>,
         font_bytes: &[u8],
         text: &str,
     ) -> (
-        Handle<ShaderStorageBuffer>,
-        Handle<ShaderStorageBuffer>,
-        Handle<ShaderStorageBuffer>,
-        Handle<ShaderStorageBuffer>,
-        Handle<ShaderStorageBuffer>,
+        Handle<ShaderBuffer>,
+        Handle<ShaderBuffer>,
+        Handle<ShaderBuffer>,
+        Handle<ShaderBuffer>,
+        Handle<ShaderBuffer>,
         SlugAtlasLayout,
     ) {
         let (atlas, _fid, run) = build_atlas_and_run(font_bytes, text);
@@ -114,7 +114,7 @@ mod inner {
         };
 
         let mut mk = |data: &[u8]| {
-            let mut b = ShaderStorageBuffer::new(data, RenderAssetUsages::RENDER_WORLD);
+            let mut b = ShaderBuffer::new(data, RenderAssetUsages::RENDER_WORLD);
             b.buffer_description.usage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
             bufs.add(b)
         };
@@ -135,10 +135,7 @@ mod inner {
         let cam = commands
             .spawn((
                 Camera2d,
-                Camera {
-                    clear_color: ClearColorConfig::Custom(Color::NONE),
-                    ..default()
-                },
+                crate::test::lib::bevy::headless_camera(),
                 RenderTarget::from(ih),
             ))
             .id();
@@ -172,9 +169,7 @@ mod inner {
         let image_handle = make_render_target(&mut app.world_mut().resource_mut::<Assets<Image>>());
 
         let (curves_h, ci_h, glyphs_h, runs_h, layout_h, _layout) = make_slug_text_buffers(
-            &mut app
-                .world_mut()
-                .resource_mut::<Assets<ShaderStorageBuffer>>(),
+            &mut app.world_mut().resource_mut::<Assets<ShaderBuffer>>(),
             font_bytes,
             text,
         );
@@ -182,6 +177,7 @@ mod inner {
         app.add_plugins(HeadlessCapturePlugin {
             handle: image_handle.clone(),
             state: state.clone(),
+            min_frames: 0,
         });
 
         let ih = image_handle.clone();
@@ -225,6 +221,7 @@ mod inner {
         app.add_plugins(HeadlessCapturePlugin {
             handle: image_handle.clone(),
             state: state.clone(),
+            min_frames: 0,
         });
 
         let ih = image_handle.clone();
@@ -294,15 +291,13 @@ mod inner {
 
         // Three separate SSBs - one per atlas section (no sub-ranges).
         let (curves_h, ci_h, glyphs_h, params_buf_h) = {
-            let mut bufs = app
-                .world_mut()
-                .resource_mut::<Assets<ShaderStorageBuffer>>();
+            let mut bufs = app.world_mut().resource_mut::<Assets<ShaderBuffer>>();
             let mut mk = |data: &[u8]| {
-                let mut b = ShaderStorageBuffer::new(data, RenderAssetUsages::RENDER_WORLD);
+                let mut b = ShaderBuffer::new(data, RenderAssetUsages::RENDER_WORLD);
                 b.buffer_description.usage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
                 bufs.add(b)
             };
-            let mut pb = ShaderStorageBuffer::new(&params_bytes, RenderAssetUsages::RENDER_WORLD);
+            let mut pb = ShaderBuffer::new(&params_bytes, RenderAssetUsages::RENDER_WORLD);
             pb.buffer_description.usage = bevy::render::render_resource::BufferUsages::UNIFORM
                 | bevy::render::render_resource::BufferUsages::COPY_DST;
             (
@@ -321,6 +316,7 @@ mod inner {
         app.add_plugins(HeadlessCapturePlugin {
             handle: image_handle.clone(),
             state: state.clone(),
+            min_frames: 0,
         });
 
         let ih = image_handle.clone();
@@ -346,10 +342,7 @@ mod inner {
                 ));
                 commands.spawn((
                     Camera3d::default(),
-                    Camera {
-                        clear_color: ClearColorConfig::Custom(Color::NONE),
-                        ..default()
-                    },
+                    crate::test::lib::bevy::headless_camera(),
                     RenderTarget::from(ih.clone()),
                 ));
             },
@@ -398,6 +391,7 @@ mod inner {
         app.add_plugins(HeadlessCapturePlugin {
             handle: image_handle.clone(),
             state: state.clone(),
+            min_frames: 0,
         });
 
         let ih = image_handle.clone();
@@ -428,10 +422,7 @@ mod inner {
                 ));
                 commands.spawn((
                     Camera3d::default(),
-                    Camera {
-                        clear_color: ClearColorConfig::Custom(Color::NONE),
-                        ..default()
-                    },
+                    crate::test::lib::bevy::headless_camera(),
                     RenderTarget::from(ih.clone()),
                 ));
             },

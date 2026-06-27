@@ -32,4 +32,8 @@ curl -fL "$(echo "$ASSETS" | awk '/mitchty-wasm\.tar\.gz/')" | tar -xzf - -C "${
 curl -fL "$(echo "$ASSETS" | awk '/mitchty-windows-x86_64\.exe/')" -o "${win}"
 curl -fL "$(echo "$ASSETS" | awk '/mitchty-darwin-aarch64/')" -o "${mac}"
 
-"${_dir}/record-sizes.sh" "${wasm}/mitchty_bg.wasm" "${win}" "${mac}"
+# The wasm tarball has both webgpu and webgl builds within now. In preparation
+# for eventual yeeting of webgl from a cannon/bombard in the future. But for the
+# purposes of size just use the webgl build for consistency with past history.
+# Don't want to double count both wasm apps in the size calcs.
+"${_dir}/record-sizes.sh" "${wasm}/wasm-webgl/mitchty_bg.wasm" "${win}" "${mac}"

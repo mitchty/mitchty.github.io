@@ -19,9 +19,9 @@
 //!
 //! Register [`SlugTextMaterialPlugin`] **after** `ShadersPlugin`.
 
+use bevy::material::AlphaMode;
 use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
-use bevy::render::alpha::AlphaMode;
 #[cfg(not(feature = "webgl"))]
 use bevy::render::render_resource::BindGroupEntry;
 use bevy::render::render_resource::{
@@ -64,18 +64,18 @@ pub struct SlugTextMaterial {
     pub params: SlugParams,
     pub text_color: Vec4,
     pub local_to_clip: [[f32; 4]; 4],
-    pub curves: Handle<bevy::render::storage::ShaderStorageBuffer>,
-    pub curve_indices: Handle<bevy::render::storage::ShaderStorageBuffer>,
-    pub glyphs: Handle<bevy::render::storage::ShaderStorageBuffer>,
-    pub runs: Handle<bevy::render::storage::ShaderStorageBuffer>,
-    pub glyph_layout: Handle<bevy::render::storage::ShaderStorageBuffer>,
+    pub curves: Handle<bevy::render::storage::ShaderBuffer>,
+    pub curve_indices: Handle<bevy::render::storage::ShaderBuffer>,
+    pub glyphs: Handle<bevy::render::storage::ShaderBuffer>,
+    pub runs: Handle<bevy::render::storage::ShaderBuffer>,
+    pub glyph_layout: Handle<bevy::render::storage::ShaderBuffer>,
 }
 
 #[cfg(not(feature = "webgl"))]
 impl AsBindGroup for SlugTextMaterial {
     type Data = ();
     type Param = bevy::ecs::system::lifetimeless::SRes<
-        bevy::render::render_asset::RenderAssets<bevy::render::storage::GpuShaderStorageBuffer>,
+        bevy::render::render_asset::RenderAssets<bevy::render::storage::GpuShaderBuffer>,
     >;
 
     fn label() -> &'static str {
@@ -90,7 +90,7 @@ impl AsBindGroup for SlugTextMaterial {
         pipeline_cache: &bevy::render::render_resource::PipelineCache,
         gpu_buffers: &mut bevy::ecs::system::SystemParamItem<'_, '_, Self::Param>,
     ) -> Result<PreparedBindGroup, AsBindGroupError> {
-        let get = |h: &Handle<bevy::render::storage::ShaderStorageBuffer>| {
+        let get = |h: &Handle<bevy::render::storage::ShaderBuffer>| {
             gpu_buffers.get(h).ok_or(AsBindGroupError::RetryNextUpdate)
         };
         let curves_gpu = get(&self.curves)?;
@@ -394,12 +394,12 @@ pub struct SlugText3dMaterial {
     /// Allocated once by `init_slug_entity` and written to each frame by the
     /// params upload system. `None` until first allocation and `as_bind_group`
     /// returns `RetryNextUpdate` while this is `None`.
-    pub params_buf: Option<Handle<bevy::render::storage::ShaderStorageBuffer>>,
+    pub params_buf: Option<Handle<bevy::render::storage::ShaderBuffer>>,
     /// Shared atlas SSBs all three come from [`SlugAtlasBuffers`].
     /// Default handles are replaced by `upload_atlas_system` on first wgpu upload.
-    pub curves: Handle<bevy::render::storage::ShaderStorageBuffer>,
-    pub curve_indices: Handle<bevy::render::storage::ShaderStorageBuffer>,
-    pub glyphs: Handle<bevy::render::storage::ShaderStorageBuffer>,
+    pub curves: Handle<bevy::render::storage::ShaderBuffer>,
+    pub curve_indices: Handle<bevy::render::storage::ShaderBuffer>,
+    pub glyphs: Handle<bevy::render::storage::ShaderBuffer>,
 }
 
 #[cfg(not(feature = "webgl"))]
@@ -422,7 +422,7 @@ impl Default for SlugText3dMaterial {
 impl AsBindGroup for SlugText3dMaterial {
     type Data = bool;
     type Param = bevy::ecs::system::lifetimeless::SRes<
-        bevy::render::render_asset::RenderAssets<bevy::render::storage::GpuShaderStorageBuffer>,
+        bevy::render::render_asset::RenderAssets<bevy::render::storage::GpuShaderBuffer>,
     >;
 
     fn label() -> &'static str {
@@ -445,7 +445,7 @@ impl AsBindGroup for SlugText3dMaterial {
                 .ok_or(AsBindGroupError::RetryNextUpdate)?,
             None => return Err(AsBindGroupError::RetryNextUpdate),
         };
-        let get = |h: &Handle<bevy::render::storage::ShaderStorageBuffer>| {
+        let get = |h: &Handle<bevy::render::storage::ShaderBuffer>| {
             if h.id() == bevy::asset::AssetId::default() {
                 return Err(AsBindGroupError::RetryNextUpdate);
             }
@@ -544,7 +544,7 @@ impl Material for SlugText3dMaterial {
         key: bevy::pbr::MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         if let Some(ref mut ds) = descriptor.depth_stencil {
-            ds.depth_write_enabled = true;
+            ds.depth_write_enabled = Some(true);
         }
         descriptor.primitive.cull_mode = if key.bind_group_data {
             Some(Face::Back)
@@ -717,7 +717,7 @@ impl Material for SlugText3dTextureMaterial {
         key: bevy::pbr::MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         if let Some(ref mut ds) = descriptor.depth_stencil {
-            ds.depth_write_enabled = true;
+            ds.depth_write_enabled = Some(true);
         }
         descriptor.primitive.cull_mode = if key.bind_group_data {
             Some(Face::Back)
@@ -741,9 +741,9 @@ impl Material for SlugText3dTextureMaterial {
 #[cfg(not(feature = "webgl"))]
 #[derive(bevy::prelude::Resource, Default, Clone)]
 pub struct SlugAtlasBuffers {
-    pub curves: Handle<bevy::render::storage::ShaderStorageBuffer>,
-    pub curve_indices: Handle<bevy::render::storage::ShaderStorageBuffer>,
-    pub glyphs: Handle<bevy::render::storage::ShaderStorageBuffer>,
+    pub curves: Handle<bevy::render::storage::ShaderBuffer>,
+    pub curve_indices: Handle<bevy::render::storage::ShaderBuffer>,
+    pub glyphs: Handle<bevy::render::storage::ShaderBuffer>,
     pub curves_cap: u64,
     pub ci_cap: u64,
     pub glyphs_cap: u64,

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-bevy = { version = "~0.18.1", default-features = false, features = [
+bevy = { version = "~0.19", default-features = false, features = [
   "bevy_log",
   "bevy_dev_tools",
 ] }
@@ -15,7 +15,7 @@ mach2 = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Only the two namespaces needed for GetProcessMemoryInfo + GetCurrentProcess.
-windows = { version = "~0.61", features = [
+windows = { version = "~0.62", features = [
   "Win32_Foundation",
   "Win32_System_ProcessStatus",
   "Win32_System_Threading",

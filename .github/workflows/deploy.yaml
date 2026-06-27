@@ -5,6 +5,8 @@ on:
     branches:
       - main
       - master
+    tags:
+      - live
   workflow_dispatch:
 
 permissions:
@@ -15,14 +17,19 @@ permissions:
 env:
   CACHIX_CACHE_NAME: mitchty
 
-# Allow only one concurrent deployment
+# Allow only one concurrent deployment per target so next and live don't stomp
+# on each other accidentally, but do allow them to run in parallel across targets.
+#
+# It would be excruciatingly rare for this to happen to be honest but who knows
+# what evil lies in future the future Mitch's heart if that guy decides to push
+# a commit and update the live tag at once.
 concurrency:
-  group: "deploy"
+  group: "deploy-${{ startsWith(github.ref, 'refs/tags/') && 'live' || 'next' }}"
   cancel-in-progress: false
 
 jobs:
   check-linux:
-    name: Run flake checks (Linux)
+    name: Run flake checks Linux
     runs-on: ubuntu-latest
     steps:
       - name: Free disk space
@@ -47,7 +54,7 @@ jobs:
         run: nix flake check -L
 
   check-macos:
-    name: Run flake checks (macOS)
+    name: Run flake checks macOS
     runs-on: macos-latest
     steps:
       - name: Checkout code
@@ -68,8 +75,8 @@ jobs:
       - name: Run flake check
         run: nix flake check -L
 
-  build-wasm-lto:
-    name: Build WASM (LTO)
+  build-wasm-webgpu-lto:
+    name: Build WASM WebGPU
     runs-on: ubuntu-latest
     steps:
       - name: Free disk space
@@ -90,34 +97,50 @@ jobs:
           name: ${{ env.CACHIX_CACHE_NAME }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Build WASM LTO
-        run: nix build .#mitchty-wasm-lto -L
+      - name: Build WASM WebGPU LTO
+        run: nix build .#mitchty-webgpu-lto -L
 
-      - name: Prepare site for GitHub Pages
-        run: |
-          mkdir -p _site/wasm
-          cp -r result/wasm/* _site/wasm/
-          cp index.html _site/
-          ls -lh _site/wasm/
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-
-      - name: Prepare release artifact
-        run: |
-          mkdir -p dist
-          cp -r result/wasm dist/
-          ls -lh dist/wasm/
-
-      - name: Upload build artifact
+      - name: Upload WebGPU wasm artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mitchty-wasm
-          path: dist/wasm
+          name: wasm-webgpu
+          path: result/wasm
+          if-no-files-found: error
+
+  build-wasm-webgl-lto:
+    name: Build WASM WebGL
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free disk space
+        uses: insightsengineering/disk-space-reclaimer@v1
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Configure Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Configure Cachix binary cache
+        uses: cachix/cachix-action@v15
+        with:
+          name: ${{ env.CACHIX_CACHE_NAME }}
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build WASM WebGL LTO
+        run: nix build .#mitchty-webgl-lto -L
+
+      - name: Upload WebGL wasm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-webgl
+          path: result/wasm
           if-no-files-found: error
 
   build-windows:
-    name: Build Windows (MinGW cross-compile)
+    name: Build Windows MinGW cross-compile
     runs-on: ubuntu-latest
     steps:
       - name: Free disk space
@@ -189,21 +212,88 @@ jobs:
           path: dist/mitchty-darwin-aarch64
           if-no-files-found: error
 
-  deploy-pages:
-    name: Deploy to GitHub Pages
-    needs: [check-linux, check-macos, build-wasm-lto, build-windows, build-macos]
+  deploy-next:
+    name: Deploy /next/ to GitHub Pages
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    needs: [check-linux, check-macos, build-wasm-webgpu-lto, build-wasm-webgl-lto]
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download WebGPU wasm
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-webgpu
+          path: _webgpu
+
+      - name: Download WebGL wasm
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-webgl
+          path: _webgl
+
+      - name: Assemble /next/ site tree
+        run: |
+          mkdir -p _site/next/wasm _site/next/wasm-webgl
+          cp -r _webgpu/* _site/next/wasm/
+          cp -r _webgl/*  _site/next/wasm-webgl/
+          cp index.html   _site/next/index.html
+          echo "--- /next/ site layout ---"
+          find _site/next -type f | sort
+
+      - name: Deploy /next/ to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: _site/next
+          destination_dir: next
+          keep_files: true
+          commit_message: "deploy: /next/ from ${{ github.sha }}"
+
+  deploy-live:
+    name: Deploy / (root) to GitHub Pages
+    if: ${{ startsWith(github.ref, 'refs/tags/') && github.ref == 'refs/tags/live' }}
+    needs: [check-linux, check-macos, build-wasm-webgpu-lto, build-wasm-webgl-lto]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download WebGPU wasm
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-webgpu
+          path: _webgpu
+
+      - name: Download WebGL wasm
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-webgl
+          path: _webgl
+
+      - name: Assemble root site tree
+        run: |
+          mkdir -p _site/wasm _site/wasm-webgl
+          cp -r _webgpu/* _site/wasm/
+          cp -r _webgl/*  _site/wasm-webgl/
+          cp index.html   _site/index.html
+          echo "--- root site layout ---"
+          find _site -type f | sort
+
+      - name: Deploy root to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: _site
+          destination_dir: .
+          keep_files: true
+          commit_message: "deploy: live from ${{ github.sha }} (tag: live)"
 
   cleanup-deployments:
     name: Clean Up Old Deployments
-    needs: [deploy-pages]
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    needs: [deploy-next]
     runs-on: ubuntu-latest
     permissions:
       deployments: write
@@ -212,10 +302,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Grab the latest deployment id so we only keep it.
           latest_id=$(gh api "repos/${{ github.repository }}/deployments?environment=github-pages&per_page=1" --jq '.[0].id')
-
-          # Page through all deployments for this environment and remove the old junk.
           gh api "repos/${{ github.repository }}/deployments?environment=github-pages&per_page=100" \
             --jq '.[].id' | \
           while read -r id; do
@@ -229,54 +316,99 @@ jobs:
             fi
           done
 
-  record-sizes:
-    name: Record Binary Sizes
-    needs: [create-prerelease]
+  create-live-release:
+    name: Create Live Release
+    if: ${{ startsWith(github.ref, 'refs/tags/') && github.ref == 'refs/tags/live' }}
+    needs: [deploy-live, build-windows, build-macos]
     runs-on: ubuntu-latest
+    env:
+       # Just a history of the pages in case I ever need em for god knows why. I
+       # can increase this if its not enough but I don't see how it wouldn't be.
+       #
+       # This is intended to be more like a blog page and the new "releases"
+       # include the old content so really only useful for comparison to newer
+       # things.
+      KEEP_LIVE_RELEASES: "5"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
-          token: ${{ github.token }}
+          path: artifacts
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Configure Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
-      - name: Configure Cachix binary cache
-        uses: cachix/cachix-action@v15
-        with:
-          name: ${{ env.CACHIX_CACHE_NAME }}
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      - name: Run ci script to record pre-release binary sizes after downloading
-        # We'll abuse nix develop to run just to be sure we're running in the
-        # exact same env as I develop in not whatever ubuntu env in github.
+      - name: Prepare release assets
         run: |
-          nix develop --command ./bin/ci-record-sizes.sh
+          mkdir -p release
+          mkdir -p wasm-dist/wasm wasm-dist/wasm-webgl
+          cp -r artifacts/wasm-webgpu/* wasm-dist/wasm/
+          cp -r artifacts/wasm-webgl/*  wasm-dist/wasm-webgl/
+          cp index.html wasm-dist/
+          tar czf release/mitchty-wasm.tar.gz -C wasm-dist .
+          cp artifacts/mitchty-windows-x86_64/mitchty-windows-x86_64.exe release/
+          cp artifacts/mitchty-darwin-aarch64/mitchty-darwin-aarch64 release/
+          ls -lh release/
 
-      - name: Commit build metadata
-        # NOTE: Added -n to skip commit hooks because the metadata build dir
-        # isn't really a part of what nix flake check cares about.
-        #
-        # We just waste time running the git commit hooks and checks here.
+      - name: Create live release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .build-meta/
-          if git diff --cached --quiet; then
-            echo "no changes to commit"
-          else
-            git commit -n -m "chore: record sizes and dep graph for ${GITHUB_SHA:0:7} [skip ci]"
-            git pull --rebase origin "$GITHUB_REF_NAME"
-            git push origin "$GITHUB_REF_NAME"
-          fi
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          DATESTAMP="$(date -u +%Y%m%d)"
+          RELEASE_TAG="live-${DATESTAMP}-${SHORT_SHA}"
+          CARGO_VERSION="$(grep -A5 '\[workspace.package\]' Cargo.toml | grep '^version' | sed 's/version = "\(.*\)"/\1/')"
+
+          gh release create "${RELEASE_TAG}" \
+            --title "Live ${DATESTAMP} (v${CARGO_VERSION} @ ${SHORT_SHA})" \
+            --notes "Live site release tag commit.
+
+          **Commit:** \`${{ github.sha }}\`
+          **Version:** \`${CARGO_VERSION}\`
+          **Tag:** \`${RELEASE_TAG}\`
+
+          ### 🌐 WASM (Web)
+
+          **Active/Live site:** [mitchty.github.io](https://mitchty.github.io) from the current \`live\` git tag
+
+          Or download \`mitchty-wasm.tar.gz\` to self-host. The tarball contains both
+          \`wasm/\` (WebGPU) and \`wasm-webgl/\` (WebGL fallback) alongside \`index.html\`
+          which picks the best available renderer at runtime.
+
+          ### 📦 Native Downloads
+
+          **macOS (Apple Silicon):**
+          \`\`\`bash
+          curl -Lo mitchty https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/mitchty-darwin-aarch64
+          chmod +x mitchty
+          ./mitchty
+          \`\`\`
+
+          **Windows (x86_64):**
+          Download \`mitchty-windows-x86_64.exe\` and run it." \
+            release/mitchty-wasm.tar.gz \
+            release/mitchty-windows-x86_64.exe \
+            release/mitchty-darwin-aarch64
+
+      - name: Prune old live releases (keep newest ${{ env.KEEP_LIVE_RELEASES }})
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Only consider versioned snapshot releases (live-YYYYMMDD-SHORTSHA).
+          # The mutable 'live' git tag itself has no GitHub release and will
+          # never appear here, but we filter to live-* explicitly to be safe.
+          gh release list --limit 100 --json tagName,createdAt,isPrerelease \
+            | jq -r --argjson keep "$KEEP_LIVE_RELEASES" \
+              '[.[] | select(.isPrerelease == false and (.tagName | startswith("live-")))]
+               | sort_by(.createdAt) | reverse | .[$keep:][].tagName' \
+            | while read -r tag; do
+                echo "pruning old live release: ${tag}"
+                gh release delete "${tag}" --yes --cleanup-tag || true
+              done
 
   create-prerelease:
     name: Create Pre-Release
-    needs: [check-linux, check-macos, build-wasm-lto, build-windows, build-macos]
+    needs: [check-linux, check-macos, build-wasm-webgpu-lto, build-wasm-webgl-lto, build-windows, build-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -290,10 +422,13 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
-          # Create a tarball of WASM files
-          cd artifacts/mitchty-wasm
-          tar czf ../../release/mitchty-wasm.tar.gz *
-          cd ../..
+          # Bundle both wasm builds into one tarball for self-hosting by others
+          # just like github or the .#web/.#web-lto derivation apps do.
+          mkdir -p wasm-dist/wasm wasm-dist/wasm-webgl
+          cp -r artifacts/wasm-webgpu/* wasm-dist/wasm/
+          cp -r artifacts/wasm-webgl/*  wasm-dist/wasm-webgl/
+          cp index.html wasm-dist/
+          tar czf release/mitchty-wasm.tar.gz -C wasm-dist .
           cp artifacts/mitchty-windows-x86_64/mitchty-windows-x86_64.exe release/
           cp artifacts/mitchty-darwin-aarch64/mitchty-darwin-aarch64 release/
           ls -lh release/
@@ -320,9 +455,13 @@ jobs:
 
           ### 🌐 WASM (Web)
 
-          Visit [mitchty.github.io](https://mitchty.github.io) to run the WASM version in your browser.
+          **Work in progress builds:** [mitchty.github.io/next/](https://mitchty.github.io/next/) latest main commit, may be unstable/broken/angy/sus/sad/buggy etc...
 
-          Or download \`mitchty-wasm.tar.gz\` to host it yourself.
+          **Active/Live build:** [mitchty.github.io](https://mitchty.github.io) tagged as \`live\` in git, whatever commit I designate as "good enough to ship as the live site". Not guaranteed to not have bugs just less or not all that important of bugs.
+
+          Or download \`mitchty-wasm.tar.gz\` to self-host. The tarball contains both
+          \`wasm/\` (WebGPU) and \`wasm-webgl/\` (WebGL fallback) alongside \`index.html\`
+          which picks the best available renderer at runtime.
 
           ### 📦 Native Downloads
 
@@ -344,3 +483,46 @@ jobs:
             release/mitchty-wasm.tar.gz \
             release/mitchty-windows-x86_64.exe \
             release/mitchty-darwin-aarch64
+
+  record-sizes:
+    name: Record Binary Sizes
+    if: ${{ startsWith(github.ref, 'refs/tags/') && github.ref == 'refs/tags/live' }}
+    needs: [create-live-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ github.token }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Configure Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Configure Cachix binary cache
+        uses: cachix/cachix-action@v15
+        with:
+          name: ${{ env.CACHIX_CACHE_NAME }}
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Run ci script to record pre-release binary sizes after downloading
+        run: |
+          nix develop --command ./bin/ci-record-sizes.sh
+
+      - name: Commit build metadata
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .build-meta/
+          if git diff --cached --quiet; then
+            echo "no changes to commit"
+          else
+            git commit -n -m "chore: record sizes for ${GITHUB_SHA:0:7} [skip ci]"
+            # Always push back to main this job runs off the 'live' tag so
+            # GITHUB_REF_NAME would be 'live' which would corrupt the tag when
+            # we're only trying to push to the main branch the size data.
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi

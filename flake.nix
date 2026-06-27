@@ -8,6 +8,13 @@
       let
         githubRepo = "mitchty/mitchty.github.io";
 
+        # Extra headers to pass into the python -mserve instance to make
+        # sure webgpu works off of local hosting.
+        localWebHeaders = {
+          "Cross-Origin-Opener-Policy" = "same-origin";
+          "Cross-Origin-Embedder-Policy" = "require-corp";
+        };
+
         # DRY some of the meta definitions for apps/packages for this chungus amungus
         metaCommon = desc: {
           description = if desc == "" then "mitchty" else "mitchty " + desc;
@@ -124,6 +131,7 @@
           p.fenix.combine [
             p.fenix.stable.rustc
             p.fenix.stable.cargo
+            p.fenix.stable.rust-src
             p.fenix.targets.wasm32-unknown-unknown.stable.rust-std
           ]
         );
@@ -511,6 +519,16 @@
           }
         );
 
+        # Cargo artifacts for WASM release-fast webgpu builds
+        cargoArtifactsWasmWebgpuFast = craneLibWasm.buildDepsOnly (
+          commonArgsWasm
+          // releaseFastArgs
+          // {
+            src = srcDeps;
+            cargoExtraArgs = "-p mitchty --features mitchty/webgpu";
+          }
+        );
+
         # Cargo artifacts for WASM builds (debug)
         # Apparently yes, there is a limit and I've now hit it
         # Error loading app: CompileError: WebAssembly.instantiateStreaming(): size > maximum module size (1073741824): 1084424530 @+0
@@ -682,7 +700,7 @@
         #   nix run .#web-lto -- show=recognizer show=data-viewer
         #   nix run .#web-lto -- show=recognizer,data-viewer
         mkWebServerApp =
-          name: wasmPackage: includeAssets:
+          name: wasmPackage: includeAssets: extraHeaders:
           let
             buildType = if includeAssets then " debug build" else " release build";
             assetCopyScript =
@@ -697,6 +715,9 @@
                 ''
                   # nop
                 '';
+            # If extraHeaders is empty this produces {} which is fine.
+            pythonHeadersDict =
+              "{" + lib.concatStringsSep ", " (lib.mapAttrsToList (k: v: ''"${k}": "${v}"'') extraHeaders) + "}";
           in
           pkgs.writeShellApplication {
             inherit name;
@@ -731,8 +752,25 @@
 
               cd "$WORK"
 
-              # Start server in background
-              python3 -m http.server 8000 &
+              # Inline Python HTTP server that injects any required extra
+              # response headers (e.g. COOP/COEP for WebGPU). Uses a here-doc
+              # so the header dict is baked in at build time by Nix.
+              python3 - <<'PYEOF' &
+              import http.server, functools
+
+              EXTRA_HEADERS = ${pythonHeadersDict}
+
+              class Handler(http.server.SimpleHTTPRequestHandler):
+                  def end_headers(self):
+                      for k, v in EXTRA_HEADERS.items():
+                          self.send_header(k, v)
+                      super().end_headers()
+
+                  def log_message(self, fmt, *args):
+                      pass  # silence per-request noise
+
+              http.server.test(HandlerClass=Handler, port=8000, bind="127.0.0.1")
+              PYEOF
               SERVER_PID=$!
               trap 'kill "''${SERVER_PID}" 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
@@ -743,6 +781,79 @@
               ${openBrowserScript}
 
               # Block on the python webserver so we can be ctrl-c'd on a whim.
+              wait "''${SERVER_PID}"
+            '';
+          };
+
+        # Since I now have a webgpu and webgl build concurrently, this app
+        # derivation combines both the lto or non lto releases of both into a
+        # single derivation that serves both simultaneously so I can test out
+        # behavior of browsers with webgpu.
+        mkWebDualApp =
+          name: webglPackage: webgpuPackage:
+          let
+            pythonHeadersDict =
+              "{"
+              + lib.concatStringsSep ", " (lib.mapAttrsToList (k: v: ''"${k}": "${v}"'') localWebHeaders)
+              + "}";
+          in
+          pkgs.writeShellApplication {
+            inherit name;
+            runtimeInputs = webServerRuntimeInputs;
+            text = ''
+              WORK=$(mktemp -d)
+              trap 'rm -rf "$WORK"' EXIT TERM INT QUIT
+
+              echo "copying webgpu wasm data"
+              mkdir -p "$WORK/wasm"
+              cp -rv ${webgpuPackage}/wasm/* "$WORK/wasm/"
+
+              echo "copying webgl wasm data"
+              mkdir -p "$WORK/wasm-webgl"
+              cp -rv ${webglPackage}/wasm/* "$WORK/wasm-webgl/"
+
+              cp ${./index.html} "$WORK/index.html"
+
+              QUERY=""
+              for arg in "$@"; do
+                if [ -z "$QUERY" ]; then
+                  QUERY="?''${arg}"
+                else
+                  QUERY="''${QUERY}&''${arg}"
+                fi
+              done
+
+              URL="http://localhost:8000''${QUERY}"
+              echo "starting dual-mode wasm web server at ''${URL}"
+              echo "  WebGPU path : /wasm/mitchty.js"
+              echo "  WebGL  path : /wasm-webgl/mitchty.js"
+              echo "press Ctrl+C to stop"
+
+              cd "$WORK"
+
+              python3 - <<'PYEOF' &
+              import http.server
+
+              EXTRA_HEADERS = ${pythonHeadersDict}
+
+              class Handler(http.server.SimpleHTTPRequestHandler):
+                  def end_headers(self):
+                      for k, v in EXTRA_HEADERS.items():
+                          self.send_header(k, v)
+                      super().end_headers()
+
+                  def log_message(self, fmt, *args):
+                      pass
+
+              http.server.test(HandlerClass=Handler, port=8000, bind="127.0.0.1")
+              PYEOF
+              SERVER_PID=$!
+              trap 'kill "''${SERVER_PID}" 2>/dev/null || true; rm -rf "$WORK"' EXIT
+
+              sleep 1
+
+              ${openBrowserScript}
+
               wait "''${SERVER_PID}"
             '';
           };
@@ -953,24 +1064,22 @@
         #   }
         # );
 
-        mitchty-wasm-lto =
+        # WebGL LTO build: release profile + wasm-opt, webgl2 feature
+        mitchty-webgl-lto =
           let
             wasmBuild = craneLibWasm.buildPackage (
               commonArgsWasm
               // nixEnvArgs
               // wasmReleaseArgs
               // {
-                pname = "mitchty-wasm-lto";
+                pname = "mitchty-webgl-lto";
                 version = version;
                 cargoArtifacts = cargoArtifactsWasm;
                 cargoExtraArgs = "-p mitchty --features mitchty/webgl";
                 src = fileSetForCrate ./crates/mitchty;
                 BEVY_ASSET_PATH = ./crates/mitchty/src/assets;
 
-                # Don't run checks for WASM builds
                 doCheck = false;
-
-                # Don't install binaries - we'll handle WASM files specially
                 doInstallCargoArtifacts = false;
                 installPhase = ''
                   runHook preInstall
@@ -981,7 +1090,7 @@
               }
             );
           in
-          pkgsWasm.runCommand "mitchty-wasm-lto-bindgen"
+          pkgsWasm.runCommand "mitchty-webgl-lto-bindgen"
             {
               nativeBuildInputs = [
                 wasmBindgenCli
@@ -991,7 +1100,6 @@
             ''
               mkdir -p $out/wasm
 
-              # Run wasm-bindgen on the built WASM file
               ${wasmBindgenCli}/bin/wasm-bindgen \
                 --out-dir $out/wasm \
                 --target web \
@@ -1011,17 +1119,70 @@
               mv $out/wasm/mitchty_bg_optimized.wasm $out/wasm/mitchty_bg.wasm
             '';
 
-        # release-fast wasm build: same pipeline as mitchty-wasm-lto but uses
-        # the release-fast profile, wasm-opt is skipped here as well under the
-        # same rationale.
-        mitchty-wasm =
+        # WebGPU LTO build: release profile + wasm-opt, webgpu feature
+        mitchty-webgpu-lto =
+          let
+            wasmBuild = craneLibWasm.buildPackage (
+              commonArgsWasm
+              // nixEnvArgs
+              // wasmReleaseArgs
+              // {
+                pname = "mitchty-webgpu-lto";
+                version = version;
+                cargoArtifacts = cargoArtifactsWasmWebgpu;
+                cargoExtraArgs = "-p mitchty --features mitchty/webgpu";
+                src = fileSetForCrate ./crates/mitchty;
+                BEVY_ASSET_PATH = ./crates/mitchty/src/assets;
+
+                doCheck = false;
+                doInstallCargoArtifacts = false;
+                installPhase = ''
+                  runHook preInstall
+                  mkdir -p $out
+                  cp -r target/wasm32-unknown-unknown/release $out/
+                  runHook postInstall
+                '';
+              }
+            );
+          in
+          pkgsWasm.runCommand "mitchty-webgpu-lto-bindgen"
+            {
+              nativeBuildInputs = [
+                wasmBindgenCli
+                pkgsWasm.binaryen
+              ];
+            }
+            ''
+              mkdir -p $out/wasm
+
+              ${wasmBindgenCli}/bin/wasm-bindgen \
+                --out-dir $out/wasm \
+                --target web \
+                --no-typescript \
+                ${wasmBuild}/release/mitchty.wasm
+
+              # Optimize with wasm-opt (enable all features needed by Bevy)
+              ${pkgsWasm.binaryen}/bin/wasm-opt -Oz \
+                --enable-bulk-memory \
+                --enable-mutable-globals \
+                --enable-nontrapping-float-to-int \
+                --enable-sign-ext \
+                --enable-simd \
+                -o $out/wasm/mitchty_bg_optimized.wasm \
+                $out/wasm/mitchty_bg.wasm
+
+              mv $out/wasm/mitchty_bg_optimized.wasm $out/wasm/mitchty_bg.wasm
+            '';
+
+        # WebGL fast build: release-fast profile, no wasm-opt, webgl2 feature
+        mitchty-webgl =
           let
             wasmBuild = craneLibWasm.buildPackage (
               commonArgsWasm
               // nixEnvArgs
               // releaseFastArgs
               // {
-                pname = "mitchty-wasm";
+                pname = "mitchty-webgl";
                 version = version;
                 cargoArtifacts = cargoArtifactsWasmFast;
                 cargoExtraArgs = "-p mitchty --features mitchty/webgl";
@@ -1039,7 +1200,49 @@
               }
             );
           in
-          pkgsWasm.runCommand "mitchty-wasm-bindgen"
+          pkgsWasm.runCommand "mitchty-webgl-bindgen"
+            {
+              nativeBuildInputs = [
+                wasmBindgenCli
+              ];
+            }
+            ''
+              mkdir -p $out/wasm
+
+              ${wasmBindgenCli}/bin/wasm-bindgen \
+                --out-dir $out/wasm \
+                --target web \
+                --no-typescript \
+                ${wasmBuild}/release-fast/mitchty.wasm
+            '';
+
+        # WebGPU fast build: release-fast profile, no wasm-opt, webgpu feature
+        mitchty-webgpu =
+          let
+            wasmBuild = craneLibWasm.buildPackage (
+              commonArgsWasm
+              // nixEnvArgs
+              // releaseFastArgs
+              // {
+                pname = "mitchty-webgpu";
+                version = version;
+                cargoArtifacts = cargoArtifactsWasmWebgpuFast;
+                cargoExtraArgs = "-p mitchty --features mitchty/webgpu";
+                src = fileSetForCrate ./crates/mitchty;
+                BEVY_ASSET_PATH = ./crates/mitchty/src/assets;
+
+                doCheck = false;
+                doInstallCargoArtifacts = false;
+                installPhase = ''
+                  runHook preInstall
+                  mkdir -p $out
+                  cp -r target/wasm32-unknown-unknown/release-fast $out/
+                  runHook postInstall
+                '';
+              }
+            );
+          in
+          pkgsWasm.runCommand "mitchty-webgpu-bindgen"
             {
               nativeBuildInputs = [
                 wasmBindgenCli
@@ -1280,124 +1483,7 @@
         # them after they fail it works. Given ci runs on linux as long as I do
         # a nix flake check on linux which I already do before pushing to github
         # this is FINE just gives linux 4 more dep chains to rebuild but eh whatever.
-        // lib.optionalAttrs pkgs.stdenv.isLinux {
-          # Compile-check the flan crate WASM/webgl code path without running
-          # any tests.
-          #
-          # wasm32-unknown-unknown cannot run tests in a Nix sandbox (no browser
-          # event loop for wgpu/JS). This check catches cfg-gated WASM regressions:
-          # missing getrandom feature flags, webgl AsBindGroup type errors, anything
-          # that compiles on native but breaks when target_arch = "wasm32". It reuses
-          # cargoArtifactsWasm so the dep build is already cached.
-          flan-check-wasm-webgl = craneLibWasm.mkCargoDerivation (
-            commonArgsWasm
-            // wasmReleaseArgs
-            // nixEnvArgs
-            // {
-              cargoArtifacts = cargoArtifactsWasm;
-              pname = "flan-check-wasm-webgl";
-              pnameSuffix = "";
-              doInstallCargoArtifacts = false;
-              buildPhaseCargoCommand = ''
-                cargo check \
-                  --target wasm32-unknown-unknown \
-                  -p flan \
-                  --features flan/webgl \
-                  --message-format short
-              '';
-            }
-          );
-
-          # Same as flan-check-wasm-webgl but with flan/webgpu - uses
-          # cargoArtifactsWasmWebgpu since bevy/webgpu pulls in extra deps not
-          # present in cargoArtifactsWasm.
-          flan-check-wasm-webgpu = craneLibWasm.mkCargoDerivation (
-            commonArgsWasm
-            // wasmReleaseArgs
-            // nixEnvArgs
-            // {
-              cargoArtifacts = cargoArtifactsWasmWebgpu;
-              pname = "flan-check-wasm-webgpu";
-              pnameSuffix = "";
-              doInstallCargoArtifacts = false;
-              buildPhaseCargoCommand = ''
-                cargo check \
-                  --target wasm32-unknown-unknown \
-                  -p flan \
-                  --features flan/webgpu \
-                  --message-format short
-              '';
-            }
-          );
-
-          # Same as flan-check-wasm-webgl but checks the mitchty crate with the
-          # webgl feature - explicit counterpart to mitchty-check-wasm-webgpu.
-          mitchty-check-wasm-webgl = craneLibWasm.mkCargoDerivation (
-            commonArgsWasm
-            // wasmReleaseArgs
-            // nixEnvArgs
-            // {
-              cargoArtifacts = cargoArtifactsWasm;
-              pname = "mitchty-check-wasm-webgl";
-              pnameSuffix = "";
-              doInstallCargoArtifacts = false;
-              buildPhaseCargoCommand = ''
-                cargo check \
-                  --target wasm32-unknown-unknown \
-                  -p mitchty \
-                  --features mitchty/webgl \
-                  --message-format short
-              '';
-            }
-          );
-
-          # mitchty/webgpu enables flan/render (wgpu + image + pollster + wesl)
-          # which is a completely different cfg surface from the webgl path:
-          # the not(feature = "webgpu") guards on the webgl-specific AsBindGroup
-          # impls are flipped, and all the render harness deps enter the dep
-          # graph. Uses cargoArtifactsWasmWebgpu (separate dep cache) since
-          # those extra deps aren't in cargoArtifactsWasm.
-          mitchty-check-wasm-webgpu = craneLibWasm.mkCargoDerivation (
-            commonArgsWasm
-            // wasmReleaseArgs
-            // nixEnvArgs
-            // {
-              cargoArtifacts = cargoArtifactsWasmWebgpu;
-              pname = "mitchty-check-wasm-webgpu";
-              pnameSuffix = "";
-              doInstallCargoArtifacts = false;
-              buildPhaseCargoCommand = ''
-                cargo check \
-                  --target wasm32-unknown-unknown \
-                  -p mitchty \
-                  --features mitchty/webgpu \
-                  --message-format short
-              '';
-            }
-          );
-        }
-        # Windows compile-check - Linux-only since it cross-compiles from Linux.
-        # Catches regressions in cfg(windows) code paths and Windows-specific type
-        # errors without requiring Wine. Reuses cargoArtifactsWindows dep cache.
-        // lib.optionalAttrs pkgs.stdenv.isLinux {
-          mitchty-check-windows = craneLibWindows.mkCargoDerivation (
-            commonArgsWindows
-            // windowsReleaseArgs
-            // nixEnvArgs
-            // {
-              cargoArtifacts = cargoArtifactsWindows;
-              pname = "mitchty-check-windows";
-              pnameSuffix = "";
-              doInstallCargoArtifacts = false;
-              buildPhaseCargoCommand = ''
-                cargo check \
-                  --target x86_64-pc-windows-gnu \
-                  -p mitchty \
-                  --message-format short
-              '';
-            }
-          );
-        };
+        // { };
 
         packages = {
           inherit
@@ -1405,8 +1491,10 @@
             mitchty-lto
             mitchty-tracy
             ma
-            mitchty-wasm
-            mitchty-wasm-lto
+            mitchty-webgl
+            mitchty-webgl-lto
+            mitchty-webgpu
+            mitchty-webgpu-lto
             pugio
             dotdeps
             ;
@@ -1425,7 +1513,6 @@
           wine = pkgsUnfree.wineWow64Packages.full;
           steam-run = pkgsUnfree.steam-run;
           #          tracy = pkgs.tracy-wayland;
-          check-windows = self.checks.${system}.mitchty-check-windows;
         }
         // lib.optionalAttrs pkgs.stdenv.isDarwin {
           mitchty-release = mitchty-release-darwin;
@@ -1474,8 +1561,10 @@
                     buildInputs = [
                       mitchty
                       mitchty-lto
-                      mitchty-wasm
-                      mitchty-wasm-lto
+                      mitchty-webgl
+                      mitchty-webgl-lto
+                      mitchty-webgpu
+                      mitchty-webgpu-lto
                     ]
                     ++ lib.optionals pkgs.stdenv.isLinux [
                       mitchty-release-windows
@@ -1550,24 +1639,75 @@
               mainProgram = "update";
             };
           };
-          # Serve WASM release-fast build locally for quick iteration testing
+
+          # Serve BOTH webgpu as primary and webgl as fallback.
+          # index.html js probes WebGPU first at runtime and falls back to WebGL if that fails.
           # nix run .#web
           web = {
             type = "app";
-            program = "${mkWebServerApp "web" mitchty-wasm false}/bin/web";
+            program = "${mkWebDualApp "web" mitchty-webgl mitchty-webgpu}/bin/web";
             meta = {
-              description = "Serve WASM release-fast build (no LTO) locally for testing";
+              description = "Serve dual WebGPU+WebGL WASM build (release-fast) with runtime fallback";
               mainProgram = "web";
             };
           };
-          # Serve WASM LTO build locally for testing
+
+          # Same as ^^^ just LTO builds of both so slightly better and they don't fail on -Dwarnings
           # nix run .#web-lto
           web-lto = {
             type = "app";
-            program = "${mkWebServerApp "web-lto" mitchty-wasm-lto false}/bin/web-lto";
+            program = "${mkWebDualApp "web-lto" mitchty-webgl-lto mitchty-webgpu-lto}/bin/web-lto";
             meta = {
-              description = "Serve WASM LTO optimized build";
+              description = "Serve dual WebGPU+WebGL WASM build (LTO) with runtime fallback";
               mainProgram = "web-lto";
+            };
+          };
+
+          # Serve WebGL release-fast build locally for quick iteration testing
+          # nix run .#web-webgl
+          web-webgl = {
+            type = "app";
+            program = "${mkWebServerApp "web-webgl" mitchty-webgl false { }}/bin/web-webgl";
+            meta = {
+              description = "Serve WebGL WASM release-fast build (no LTO) locally for testing";
+              mainProgram = "web-webgl";
+            };
+          };
+
+          # Serve WebGL LTO build locally for testing
+          # nix run .#web-webgl-lto
+          web-webgl-lto = {
+            type = "app";
+            program = "${mkWebServerApp "web-webgl-lto" mitchty-webgl-lto false { }}/bin/web-webgl-lto";
+            meta = {
+              description = "Serve WebGL WASM LTO optimized build";
+              mainProgram = "web-webgl-lto";
+            };
+          };
+
+          # Serve WebGPU release-fast build locally for quick iteration testing.
+          # WebGPU requires COOP/COEP headers for SharedArrayBuffer support.
+          # nix run .#web-webgpu
+          web-webgpu = {
+            type = "app";
+            program = "${mkWebServerApp "web-webgpu" mitchty-webgpu false localWebHeaders}/bin/web-webgpu";
+            meta = {
+              description = "Serve WebGPU WASM release-fast build (no LTO) locally for testing";
+              mainProgram = "web-webgpu";
+            };
+          };
+
+          # Serve WebGPU LTO build locally for testing.
+          # WebGPU requires COOP/COEP headers for SharedArrayBuffer support.
+          # nix run .#web-webgpu-lto
+          web-webgpu-lto = {
+            type = "app";
+            program = "${
+              mkWebServerApp "web-webgpu-lto" mitchty-webgpu-lto false localWebHeaders
+            }/bin/web-webgpu-lto";
+            meta = {
+              description = "Serve WebGPU WASM LTO optimized build";
+              mainProgram = "web-webgpu-lto";
             };
           };
         }
@@ -1632,8 +1772,10 @@
                 # build .#whatever, its setup right and works. The devshells for
                 # local only development/testing with cargo build.
                 "mitchty-release-windows"
-                "mitchty-check-windows"
-                "mitchty-wasm-lto"
+                "mitchty-webgl"
+                "mitchty-webgpu"
+                "mitchty-webgl-lto"
+                "mitchty-webgpu-lto"
               ]
             ) self.checks.${system};
 
@@ -1675,6 +1817,8 @@
                   autoAddDriverRunpath
                   # Mold must be on PATH for -fuse-ld=mold to work.
                   pkgs.mold
+                  # Doesn't work on macos apparently
+                  ktx-tools
                 ]
               )
               # Tracy profiler, note its wayland only profiling, 26.05 nuked the

@@ -10,6 +10,11 @@
 // path due to reasons but no need to fail a build with -D warnings on.
 //
 // This feels icky but its test code so whatever.
+
+// TODO: This needs to get migrated to how the new fullscreen shaders work. Have
+// to be sure the unit tests still run right in github actions first so only
+// keeping the fullscreen stuff ported to the new less jank approach that bevy
+// itself uses.
 #![allow(dead_code, unused_imports)]
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -29,7 +34,7 @@ mod inner {
         },
         renderer::{RenderDevice, RenderQueue},
         settings::{Backends, RenderCreation, WgpuSettings},
-        storage::ShaderStorageBuffer,
+        storage::ShaderBuffer,
         texture::GpuImage,
     };
     use bevy::ui::UiTargetCamera;
@@ -110,11 +115,29 @@ mod inner {
         state: CaptureShared,
         fired: bool,
         frame_count: u32,
+        /// Minimum number of rendered frames before the capture is allowed to
+        /// fire. Defaults to 0 aka fire as soon as any alpha > 0. Set to a higher
+        /// value when post-process or other multi-frame pipeline stages need an
+        /// extra cycle to initialize their bind groups before the capture is
+        /// taken. All this bs is why I need to ditch this approach.
+        min_frames: u32,
     }
 
     pub struct HeadlessCapturePlugin {
         pub handle: Handle<Image>,
         pub state: CaptureShared,
+        /// See `CaptureResource::min_frames`. Defaults to 0.
+        pub min_frames: u32,
+    }
+
+    impl HeadlessCapturePlugin {
+        pub fn new(handle: Handle<Image>, state: CaptureShared) -> Self {
+            Self {
+                handle,
+                state,
+                min_frames: 0,
+            }
+        }
     }
 
     impl Plugin for HeadlessCapturePlugin {
@@ -128,6 +151,7 @@ mod inner {
                     state: self.state.clone(),
                     fired: false,
                     frame_count: 0,
+                    min_frames: self.min_frames,
                 })
                 .add_systems(Render, capture_render_target.in_set(RenderSystems::Cleanup));
         }
@@ -228,7 +252,7 @@ mod inner {
         // fixed frame-count wait: it naturally adapts to however many frames
         // the gpu and driver need, on any machine.
         let max_alpha = pixels.chunks_exact(4).map(|p| p[3]).max().unwrap_or(0);
-        if max_alpha == 0 {
+        if max_alpha == 0 || res.frame_count < res.min_frames {
             // Diagnostics every 30 render frames so we can see if something
             // eventually changes or not. I do not yet know whats wrong on certain
             // platforms to cause this or not.
@@ -238,8 +262,8 @@ mod inner {
                     .filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
                     .count();
                 eprintln!(
-                    "bevy-capture frame {}: all alpha=0, non-zero-rgb pixels={}",
-                    res.frame_count, non_zero_rgb
+                    "bevy-capture frame {}: max_alpha={} min_frames={} non-zero-rgb pixels={}",
+                    res.frame_count, max_alpha, res.min_frames, non_zero_rgb
                 );
             }
             res.frame_count += 1;
@@ -254,7 +278,10 @@ mod inner {
         res.fired = true;
     }
 
-    fn build_headless_app() -> App {
+    /// Build a bare headless Bevy `App` with the render stack enabled but no
+    /// window, no Winit, and no log output.
+    /// one of those extra layers.
+    pub fn build_headless_app_base() -> App {
         let mut app = App::new();
         app.add_plugins(
             // DefaultPlugins brings the full rendering stack (CorePipeline,
@@ -263,27 +290,32 @@ mod inner {
             // require a display and configure RenderPlugin for headless.
             DefaultPlugins
                 .set(bevy::render::RenderPlugin {
-                    render_creation: RenderCreation::Automatic(WgpuSettings {
+                    render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
                         backends: Some(
                             Backends::VULKAN | Backends::METAL | Backends::DX12 | Backends::GL,
                         ),
                         ..default()
-                    }),
+                    })),
                     synchronous_pipeline_compilation: true,
                     ..default()
                 })
-                // Headless no primary window, don't exit when none exists.
+                // Headless: no primary window, don't exit when none exists.
                 .set(bevy::window::WindowPlugin {
                     primary_window: None,
                     primary_cursor_options: None,
                     exit_condition: bevy::window::ExitCondition::DontExit,
                     close_when_requested: false,
                 })
-                // HEADLESS there is no window
+                // No window -> no Winit.
                 .disable::<WinitPlugin>()
-                // Don't log bevy bs to the test output.
+                // Don't spam test output with Bevy log lines.
                 .disable::<bevy::log::LogPlugin>(),
         );
+        app
+    }
+
+    fn build_headless_app() -> App {
+        let mut app = build_headless_app_base();
         app.add_plugins((ShadersPlugin, PlotPlugin));
         app
     }
@@ -299,28 +331,7 @@ mod inner {
     /// initialized the render world - avoiding the "binding size is zero"
     /// wgpu error that occurs when SSBs are created before the render world.
     fn build_headless_slug_app() -> App {
-        let mut app = App::new();
-        app.add_plugins(
-            DefaultPlugins
-                .set(bevy::render::RenderPlugin {
-                    render_creation: RenderCreation::Automatic(WgpuSettings {
-                        backends: Some(
-                            Backends::VULKAN | Backends::METAL | Backends::DX12 | Backends::GL,
-                        ),
-                        ..default()
-                    }),
-                    synchronous_pipeline_compilation: true,
-                    ..default()
-                })
-                .set(bevy::window::WindowPlugin {
-                    primary_window: None,
-                    primary_cursor_options: None,
-                    exit_condition: bevy::window::ExitCondition::DontExit,
-                    close_when_requested: false,
-                })
-                .disable::<WinitPlugin>()
-                .disable::<bevy::log::LogPlugin>(),
-        );
+        let mut app = build_headless_app_base();
         app.add_plugins((ShadersPlugin, SlugPlugin));
         app
     }
@@ -345,19 +356,44 @@ mod inner {
         images.add(image)
     }
 
+    /// Build a `Camera` for headless rendering to an image render target.
+    ///
+    /// Sets BOTH clear colors to transparent so neither the main-pass clear
+    /// nor the output-write clear fills the render target with the world
+    /// `ClearColor` (Bevy's default dark grey-blue `[43, 44, 47, 255]`).
+    ///
+    /// `Camera::default()` only sets `clear_color` the main-pass clear color.
+    /// `CameraOutputMode::Write.clear_color` is a second pass color
+    /// that also defaults to `ClearColorConfig::Default` as a world color.
+    ///
+    /// Without setting BOTH, the output-write step fills the image with the
+    /// world clear color on every frame and produces `max_alpha = 255` from the
+    /// `ClearColor` resource before any shader has even run, and then
+    /// overwriting any actual render output with the grey-blue background and
+    /// the test fails in 0.19 now.
+    pub fn headless_camera() -> Camera {
+        use bevy::camera::CameraOutputMode;
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::NONE),
+            output_mode: CameraOutputMode::Write {
+                blend_state: None,
+                clear_color: ClearColorConfig::Custom(Color::NONE),
+            },
+            ..default()
+        }
+    }
+
     /// Build the points storage buffer from the canonical test signal.
     ///
-    /// Uses `Vec<Vec2>` + `ShaderStorageBuffer::from` the same pattern I poc'd
+    /// Uses `Vec<Vec2>` + `ShaderBuffer::from` the same pattern I poc'd
     /// in mitchty so that the test exercises the real public SSB API.
     ///
-    fn make_points_buffer(
-        storage_buffers: &mut Assets<ShaderStorageBuffer>,
-    ) -> Handle<ShaderStorageBuffer> {
+    fn make_points_buffer(storage_buffers: &mut Assets<ShaderBuffer>) -> Handle<ShaderBuffer> {
         let points: Vec<Vec2> = test_sin_wave_points()
             .into_iter()
             .map(|[x, y]| Vec2::new(x, y))
             .collect();
-        storage_buffers.add(ShaderStorageBuffer::from(points))
+        storage_buffers.add(ShaderBuffer::from(points))
     }
 
     /// Build a `PlotUniform` with the canonical test defaults.
@@ -427,15 +463,13 @@ mod inner {
 
         let image_handle = make_render_target(&mut app.world_mut().resource_mut::<Assets<Image>>());
 
-        let points_handle = make_points_buffer(
-            &mut app
-                .world_mut()
-                .resource_mut::<Assets<ShaderStorageBuffer>>(),
-        );
+        let points_handle =
+            make_points_buffer(&mut app.world_mut().resource_mut::<Assets<ShaderBuffer>>());
 
         app.add_plugins(HeadlessCapturePlugin {
             handle: image_handle.clone(),
             state: state.clone(),
+            min_frames: 0,
         });
 
         let ih = image_handle.clone();
@@ -452,14 +486,7 @@ mod inner {
                 // TargetCamera directs the UI hierarchy to render into the camera's
                 // RenderTarget rather than the absent primary window.
                 let cam = commands
-                    .spawn((
-                        Camera2d,
-                        Camera {
-                            clear_color: ClearColorConfig::Custom(Color::NONE),
-                            ..default()
-                        },
-                        RenderTarget::from(ih.clone()),
-                    ))
+                    .spawn((Camera2d, headless_camera(), RenderTarget::from(ih.clone())))
                     .id();
 
                 // Use fixed pixel sizes rather than Percent with no primary window
@@ -500,6 +527,7 @@ mod inner {
         app.add_plugins(HeadlessCapturePlugin {
             handle: image_handle.clone(),
             state: state.clone(),
+            min_frames: 0,
         });
 
         let ih = image_handle.clone();
@@ -517,14 +545,7 @@ mod inner {
                 });
 
                 let cam = commands
-                    .spawn((
-                        Camera2d,
-                        Camera {
-                            clear_color: ClearColorConfig::Custom(Color::NONE),
-                            ..default()
-                        },
-                        RenderTarget::from(ih.clone()),
-                    ))
+                    .spawn((Camera2d, headless_camera(), RenderTarget::from(ih.clone())))
                     .id();
 
                 commands
@@ -566,6 +587,7 @@ mod inner {
         app.add_plugins(HeadlessCapturePlugin {
             handle: image_handle.clone(),
             state: state.clone(),
+            min_frames: 0,
         });
 
         let font_bytes_owned = font_bytes.to_vec();
@@ -592,14 +614,7 @@ mod inner {
                     ..default()
                 });
                 let cam = commands
-                    .spawn((
-                        Camera2d,
-                        Camera {
-                            clear_color: ClearColorConfig::Custom(Color::NONE),
-                            ..default()
-                        },
-                        RenderTarget::from(ih.clone()),
-                    ))
+                    .spawn((Camera2d, headless_camera(), RenderTarget::from(ih.clone())))
                     .id();
                 commands.spawn((
                     crate::SlugTextNode {
@@ -630,28 +645,7 @@ mod inner {
     ///
     /// No `SlugPlugin` - just the two material plugins needed.
     fn build_headless_slug_texture_app() -> App {
-        let mut app = App::new();
-        app.add_plugins(
-            DefaultPlugins
-                .set(bevy::render::RenderPlugin {
-                    render_creation: RenderCreation::Automatic(WgpuSettings {
-                        backends: Some(
-                            Backends::VULKAN | Backends::METAL | Backends::DX12 | Backends::GL,
-                        ),
-                        ..default()
-                    }),
-                    synchronous_pipeline_compilation: true,
-                    ..default()
-                })
-                .set(bevy::window::WindowPlugin {
-                    primary_window: None,
-                    primary_cursor_options: None,
-                    exit_condition: bevy::window::ExitCondition::DontExit,
-                    close_when_requested: false,
-                })
-                .disable::<WinitPlugin>()
-                .disable::<bevy::log::LogPlugin>(),
-        );
+        let mut app = build_headless_app_base();
         // Register the shader assets so the material pipelines can find them.
         app.add_plugins(ShadersPlugin);
         // Register the UI texture-binding material.
@@ -729,6 +723,7 @@ mod inner {
         app.add_plugins(HeadlessCapturePlugin {
             handle: image_handle.clone(),
             state: state.clone(),
+            min_frames: 0,
         });
 
         let ih = image_handle.clone();
@@ -753,10 +748,7 @@ mod inner {
                 let cam = commands
                     .spawn((
                         Camera2d,
-                        Camera {
-                            clear_color: ClearColorConfig::Custom(Color::NONE),
-                            ..default()
-                        },
+                        headless_camera(),
                         RenderTarget::from(ih.clone()),
                     ))
                     .id();
@@ -857,6 +849,7 @@ mod inner {
         app.add_plugins(HeadlessCapturePlugin {
             handle: image_handle.clone(),
             state: state.clone(),
+            min_frames: 0,
         });
 
         let ih = image_handle.clone();
@@ -902,10 +895,7 @@ mod inner {
                 // forward.
                 commands.spawn((
                     Camera3d::default(),
-                    Camera {
-                        clear_color: ClearColorConfig::Custom(Color::NONE),
-                        ..default()
-                    },
+                    headless_camera(),
                     RenderTarget::from(ih.clone()),
                 ));
             },
@@ -925,6 +915,7 @@ mod inner {
         app.add_plugins(HeadlessCapturePlugin {
             handle: image_handle.clone(),
             state: state.clone(),
+            min_frames: 0,
         });
 
         let font_bytes_owned = font_bytes.to_vec();
@@ -960,14 +951,7 @@ mod inner {
                 // dimensions mitchty uses so sync_node_size sees (130, 24) to
                 // better test what the app uses.
                 let cam = commands
-                    .spawn((
-                        Camera2d,
-                        Camera {
-                            clear_color: ClearColorConfig::Custom(Color::NONE),
-                            ..default()
-                        },
-                        RenderTarget::from(ih.clone()),
-                    ))
+                    .spawn((Camera2d, headless_camera(), RenderTarget::from(ih.clone())))
                     .id();
 
                 commands.spawn((
@@ -1017,10 +1001,7 @@ mod inner {
                     let cam = commands
                         .spawn((
                             Camera2d,
-                            Camera {
-                                clear_color: ClearColorConfig::Custom(Color::NONE),
-                                ..default()
-                            },
+                            headless_camera(),
                             RenderTarget::from(ih2.clone()),
                         ))
                         .id();
@@ -1068,6 +1049,7 @@ mod inner {
         app.add_plugins(HeadlessCapturePlugin {
             handle: image_handle.clone(),
             state: state.clone(),
+            min_frames: 0,
         });
 
         let font_bytes_owned = font_bytes.to_vec();
@@ -1096,14 +1078,7 @@ mod inner {
                 });
 
                 let cam = commands
-                    .spawn((
-                        Camera2d,
-                        Camera {
-                            clear_color: ClearColorConfig::Custom(Color::NONE),
-                            ..default()
-                        },
-                        RenderTarget::from(ih.clone()),
-                    ))
+                    .spawn((Camera2d, headless_camera(), RenderTarget::from(ih.clone())))
                     .id();
 
                 commands.spawn((
@@ -1133,8 +1108,8 @@ mod inner {
 #[cfg(not(target_arch = "wasm32"))]
 pub use inner::{
     CaptureShared, CaptureState, HeadlessCapturePlugin, RENDER_SIZE, RenderedFrame,
-    build_atlas_and_run, make_render_target, render_plot_ui_material_default,
-    render_plot_ui_material_texture, run_and_capture,
+    build_atlas_and_run, build_headless_app_base, headless_camera, make_render_target,
+    render_plot_ui_material_default, render_plot_ui_material_texture, run_and_capture,
 };
 
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "webgl")))]

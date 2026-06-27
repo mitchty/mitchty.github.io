@@ -5,7 +5,6 @@
 // TODO: Do I even keep this? The dep adds a lot of useless code....
 
 use bevy::prelude::*;
-use bevy_pretty_text::prelude::*;
 
 /// Marker for the initial help overlay entity.
 #[derive(Component)]
@@ -14,13 +13,13 @@ pub struct DisplayInitialHelp;
 /// Startup: spawn the touch/click/keyboard help overlay.
 pub fn setup_help_text(mut commands: Commands) {
     commands.spawn((
-        pretty!("[[Touch and pan to rotate](red, scramble(30, always), shake)]\n"),
+        Text::new("Touch and pan to rotate"),
         TextFont {
-            font_size: 22.0,
+            font_size: bevy::text::FontSize::Px(22.0),
             ..default()
         },
         TextColor(Color::WHITE),
-        TextLayout::new_with_justify(Justify::Center),
+        TextLayout::justify(Justify::Center),
         Node {
             position_type: PositionType::Absolute,
             width: Val::Percent(80.0),

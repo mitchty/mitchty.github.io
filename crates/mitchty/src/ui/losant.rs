@@ -261,7 +261,6 @@ async fn post_github_auth_async(github_token: String) -> Result<String, String> 
         #[cfg(not(target_arch = "wasm32"))]
         {
             reqwest::Client::builder()
-                .use_rustls_tls()
                 .build()
                 .map_err(|e| format!("failed to build http client: {e}"))?
         }
@@ -316,7 +315,6 @@ async fn fetch_applications_async(bearer: String) -> Result<DiscoveryResult, Str
         #[cfg(not(target_arch = "wasm32"))]
         {
             reqwest::Client::builder()
-                .use_rustls_tls()
                 .build()
                 .map_err(|e| format!("Failed to build HTTP client: {e}"))?
         }
@@ -376,7 +374,6 @@ async fn fetch_devices_async(bearer: String, app_id: String) -> Result<Discovery
         #[cfg(not(target_arch = "wasm32"))]
         {
             reqwest::Client::builder()
-                .use_rustls_tls()
                 .build()
                 .map_err(|e| format!("Failed to build HTTP client: {e}"))?
         }

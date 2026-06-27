@@ -3,19 +3,35 @@ use bevy::app::{App, Plugin};
 use bevy::shader::Shader;
 
 use super::{
-    cartoon_filter_shader_handle, chromatic_aberration_shader_handle, edge_cartoon_shader_handle,
-    em_interference_shader_handle, oil_painting_shader_handle, plot_default_shader_handle,
-    plot_texture_shader_handle, slug_text_default_shader_handle, slug_text_texture_shader_handle,
-    slug_text3d_default_shader_handle, slug_text3d_texture_shader_handle,
-    stats_overlay_default_shader_handle, stats_overlay_texture_shader_handle,
-    vhs_effect_shader_handle,
+    canary_fill_shader_handle, cartoon_filter_shader_handle, chromatic_aberration_shader_handle,
+    edge_cartoon_shader_handle, em_interference_shader_handle, oil_painting_shader_handle,
+    plot_default_shader_handle, plot_texture_shader_handle, slug_text_default_shader_handle,
+    slug_text_texture_shader_handle, slug_text3d_default_shader_handle,
+    slug_text3d_texture_shader_handle, stats_overlay_default_shader_handle,
+    stats_overlay_texture_shader_handle, vhs_effect_shader_handle,
 };
 
 pub struct ShadersPlugin;
 
 impl Plugin for ShadersPlugin {
     fn build(&self, app: &mut App) {
-        // Fullscreen post-process shaders first, no reason, also need to
+        // Canary fill shader Must be registered first so the canary integration
+        // test can run before any other shader test does, if this fails again
+        // the other shaders will too and they shouldn't as they'll be broken.
+        {
+            let mut shaders = app
+                .world_mut()
+                .resource_mut::<bevy::asset::Assets<Shader>>();
+            let _ = shaders.insert(
+                canary_fill_shader_handle().id(),
+                Shader::from_wgsl(
+                    super::canary::canary_fill::WGSL_MODULE.wgsl_source(),
+                    "flan/shaders/canary_fill_wgsl_rs.wgsl",
+                ),
+            );
+        }
+
+        // Fullscreen post-process shaders first for no real real, also need to
         // probably move this stuff into build.rs too after adding ui/2d/3d
         // feature flags to flan to control what materials are built.
         {
@@ -66,7 +82,7 @@ impl Plugin for ShadersPlugin {
             );
         }
 
-        // Plot shaders.
+        // Plot shader tests.
         {
             let mut shaders = app
                 .world_mut()
@@ -87,13 +103,12 @@ impl Plugin for ShadersPlugin {
             );
         }
 
-        // Slug text wgsl-rs shaders.
+        // Slug text wgsl-rs shader tests.
         {
             let mut shaders = app
                 .world_mut()
                 .resource_mut::<bevy::asset::Assets<Shader>>();
 
-            // flan::slug::text - explicit default/texture modules (no macro_rules)
             let _ = shaders.insert(
                 slug_text_default_shader_handle().id(),
                 Shader::from_wgsl(
@@ -109,7 +124,6 @@ impl Plugin for ShadersPlugin {
                 ),
             );
 
-            // flan::slug::text3dexplicit default/texture module bs
             let _ = shaders.insert(
                 slug_text3d_default_shader_handle().id(),
                 Shader::from_wgsl(
@@ -126,7 +140,8 @@ impl Plugin for ShadersPlugin {
             );
         }
 
-        // Stats overlay shader, just a combined plot and slug shader to act as first "api" consumer of all this junk
+        // Stats overlay shader, just a combined plot and slug shader to act as
+        // first "api" consumer of all this junk. More shaders will look like this later.
         {
             let mut shaders = app
                 .world_mut()

@@ -44,6 +44,7 @@ fn write_shader_handles(out_dir: &Path) {
     // running in a cargo test/nextest invocation I can gate the wgpu and test
     // related crap there.
     let shaders: &[(&str, &str)] = &[
+        ("canary_fill", ""),
         ("plot_default", ""),
         ("plot_texture", ""),
         ("slug_text_default", ""),

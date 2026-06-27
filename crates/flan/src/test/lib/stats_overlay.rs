@@ -3,10 +3,10 @@ mod inner {
     use std::sync::{Arc, Mutex};
 
     use bevy::asset::RenderAssetUsages;
-    use bevy::camera::{ClearColorConfig, RenderTarget};
+    use bevy::camera::RenderTarget;
     use bevy::prelude::*;
     use bevy::render::render_resource::BufferUsages;
-    use bevy::render::storage::ShaderStorageBuffer;
+    use bevy::render::storage::ShaderBuffer;
 
     use crate::shaders::ShadersPlugin;
     use crate::stats::overlay::{
@@ -25,7 +25,7 @@ mod inner {
         app.add_plugins(
             DefaultPlugins
                 .set(bevy::render::RenderPlugin {
-                    render_creation: bevy::render::settings::RenderCreation::Automatic(
+                    render_creation: bevy::render::settings::RenderCreation::Automatic(Box::new(
                         bevy::render::settings::WgpuSettings {
                             backends: Some(
                                 bevy::render::settings::Backends::VULKAN
@@ -35,7 +35,7 @@ mod inner {
                             ),
                             ..default()
                         },
-                    ),
+                    )),
                     synchronous_pipeline_compilation: true,
                     ..default()
                 })
@@ -122,10 +122,7 @@ mod inner {
         let cam = commands
             .spawn((
                 Camera2d,
-                Camera {
-                    clear_color: ClearColorConfig::Custom(Color::NONE),
-                    ..default()
-                },
+                crate::test::lib::bevy::headless_camera(),
                 RenderTarget::from(ih),
             ))
             .id();
@@ -165,16 +162,14 @@ mod inner {
         let (layout, run, run_desc) = build_test_data(font_bytes, fps_text);
         let params = test_params(fps_values);
 
-        let mk = |data: &[u8], bufs: &mut Assets<ShaderStorageBuffer>| {
-            let mut b = ShaderStorageBuffer::new(data, RenderAssetUsages::RENDER_WORLD);
+        let mk = |data: &[u8], bufs: &mut Assets<ShaderBuffer>| {
+            let mut b = ShaderBuffer::new(data, RenderAssetUsages::RENDER_WORLD);
             b.buffer_description.usage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
             bufs.add(b)
         };
 
         let (curves_h, ci_h, glyphs_h, runs_h, layout_h, fps_h) = {
-            let mut bufs = app
-                .world_mut()
-                .resource_mut::<Assets<ShaderStorageBuffer>>();
+            let mut bufs = app.world_mut().resource_mut::<Assets<ShaderBuffer>>();
             let layout_bytes: Vec<u8> = bytemuck::cast_slice(&run.glyph_layout).to_vec();
             let fps_bytes: Vec<u8> = fps_values.iter().flat_map(|f| f.to_le_bytes()).collect();
             (
@@ -190,6 +185,7 @@ mod inner {
         app.add_plugins(HeadlessCapturePlugin {
             handle: image_handle.clone(),
             state: state.clone(),
+            min_frames: 0,
         });
 
         let ih = image_handle.clone();
@@ -241,6 +237,7 @@ mod inner {
         app.add_plugins(HeadlessCapturePlugin {
             handle: image_handle.clone(),
             state: state.clone(),
+            min_frames: 0,
         });
 
         let ih = image_handle.clone();

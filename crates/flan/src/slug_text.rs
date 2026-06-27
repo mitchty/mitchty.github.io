@@ -53,7 +53,7 @@ const SIDE_WALL_CURVE_TOLERANCE: f32 = 0.001;
 const SIDE_WALL_XY_OUTSET: f32 = 0.0;
 
 #[cfg(not(feature = "webgl"))]
-use bevy::render::storage::ShaderStorageBuffer;
+use bevy::render::storage::ShaderBuffer;
 
 use crate::{
     SlugAtlasLayout,
@@ -194,7 +194,7 @@ pub fn init_slug_entity(
         Assets<SlugText3dTextureMaterial>,
     >,
     mut std_materials: ResMut<Assets<StandardMaterial>>,
-    #[cfg(not(feature = "webgl"))] mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
+    #[cfg(not(feature = "webgl"))] mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut commands: Commands,
 ) {
     for (entity, node) in &query {
@@ -209,9 +209,9 @@ pub fn init_slug_entity(
             let mat = std_materials.add(StandardMaterial {
                 base_color: color,
                 alpha_mode: if a < 255 {
-                    bevy::render::alpha::AlphaMode::Blend
+                    bevy::material::AlphaMode::Blend
                 } else {
-                    bevy::render::alpha::AlphaMode::Opaque
+                    bevy::material::AlphaMode::Opaque
                 },
                 double_sided: true,
                 cull_mode: None,
@@ -226,7 +226,7 @@ pub fn init_slug_entity(
                 use bevy::asset::RenderAssetUsages;
                 use bevy::render::render_resource::BufferUsages;
                 let zeros = [0u8; 96];
-                let mut b = ShaderStorageBuffer::new(&zeros, RenderAssetUsages::RENDER_WORLD);
+                let mut b = ShaderBuffer::new(&zeros, RenderAssetUsages::RENDER_WORLD);
                 b.buffer_description.usage = BufferUsages::UNIFORM | BufferUsages::COPY_DST;
                 let params_handle = buffers.add(b);
                 let mat = slug3d_materials.add(SlugText3dMaterial {
@@ -384,10 +384,10 @@ fn build_frame_atlas_system(
 #[cfg(not(feature = "webgl"))]
 fn upload_atlas_section(
     data: &[u8],
-    current_handle: &mut Handle<ShaderStorageBuffer>,
+    current_handle: &mut Handle<ShaderBuffer>,
     current_cap: &mut u64,
     atlas_upload: &mut crate::SlugAtlasUploadMap,
-    buffers: &mut Assets<ShaderStorageBuffer>,
+    buffers: &mut Assets<ShaderBuffer>,
 ) {
     use bevy::asset::{AssetId, RenderAssetUsages};
     use bevy::render::render_resource::BufferUsages;
@@ -402,13 +402,13 @@ fn upload_atlas_section(
     let cap = (data.len() * 3 / 2).max(data.len());
     let mut alloc = vec![0u8; cap];
     alloc[..data.len()].copy_from_slice(data);
-    let mut ssb = ShaderStorageBuffer::new(
+    let mut ssb = ShaderBuffer::new(
         &alloc,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     );
     ssb.buffer_description.usage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
     if current_handle.id() != AssetId::default()
-        && let Some(buf) = buffers.get_mut(current_handle.id())
+        && let Some(mut buf) = buffers.get_mut(current_handle.id())
     {
         *buf = ssb;
         *current_cap = cap as u64;
@@ -429,7 +429,7 @@ fn upload_atlas_system(
     all_mat_node_q: Query<&MaterialNode<SlugTextMaterial>>,
     mut mat3d_assets: ResMut<Assets<SlugText3dMaterial>>,
     mut mat_ui_assets: ResMut<Assets<SlugTextMaterial>>,
-    mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut atlas_buffers: ResMut<SlugAtlasBuffers>,
     mut atlas_upload: ResMut<crate::SlugAtlasUploadMap>,
 ) {
@@ -489,7 +489,7 @@ fn upload_atlas_system(
 
     // Point every SlugText3dMaterial instance at the shared atlas handles.
     for mm in all_mat3d_q.iter() {
-        if let Some(mat) = mat3d_assets.get_mut(&mm.0) {
+        if let Some(mut mat) = mat3d_assets.get_mut(&mm.0) {
             mat.curves = atlas_buffers.curves.clone();
             mat.curve_indices = atlas_buffers.curve_indices.clone();
             mat.glyphs = atlas_buffers.glyphs.clone();
@@ -498,7 +498,7 @@ fn upload_atlas_system(
 
     // Point every SlugTextMaterial UIMaterial instance at the shared atlas handles.
     for mn in all_mat_node_q.iter() {
-        if let Some(mat) = mat_ui_assets.get_mut(&mn.0) {
+        if let Some(mut mat) = mat_ui_assets.get_mut(&mn.0) {
             mat.curves = atlas_buffers.curves.clone();
             mat.curve_indices = atlas_buffers.curve_indices.clone();
             mat.glyphs = atlas_buffers.glyphs.clone();
@@ -557,7 +557,7 @@ fn upload_atlas_system(
 
     // Propagate to all SlugText3dTextureMaterial instances.
     for mm in all_mat3d_q.iter() {
-        if let Some(mat) = mat3d_assets.get_mut(&mm.0) {
+        if let Some(mut mat) = mat3d_assets.get_mut(&mm.0) {
             mat.curves_image = atlas_images.curves.clone();
             mat.curve_indices_image = atlas_images.curve_indices.clone();
             mat.glyphs_image = atlas_images.glyphs.clone();
@@ -566,7 +566,7 @@ fn upload_atlas_system(
 
     // Propagate to all SlugTextTextureMaterial UIMaterial instances.
     for mn in all_mat_node_q.iter() {
-        if let Some(mat) = mat_ui_assets.get_mut(&mn.0) {
+        if let Some(mut mat) = mat_ui_assets.get_mut(&mn.0) {
             mat.curves_image = atlas_images.curves.clone();
             mat.curve_indices_image = atlas_images.curve_indices.clone();
             mat.glyphs_image = atlas_images.glyphs.clone();
@@ -587,7 +587,7 @@ fn pack_draw_buffer_text(
     mat: &mut SlugTextMaterial,
     run_desc: &crate::SlugRunDesc,
     layout: &[crate::slug::SlugGlyphLayout],
-    buffers: &mut Assets<ShaderStorageBuffer>,
+    buffers: &mut Assets<ShaderBuffer>,
     draw_upload: &mut crate::SlugDrawUploadMap,
 ) {
     use bevy::asset::RenderAssetUsages;
@@ -609,7 +609,7 @@ fn pack_draw_buffer_text(
         let mut alloc = vec![0u8; cap];
         alloc[..runs_bytes.len()].copy_from_slice(runs_bytes);
         let usage = RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD;
-        let mut ssb = ShaderStorageBuffer::new(&alloc, usage);
+        let mut ssb = ShaderBuffer::new(&alloc, usage);
         ssb.buffer_description.usage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
         mat.runs = buffers.add(ssb);
     }
@@ -623,7 +623,7 @@ fn pack_draw_buffer_text(
         let mut alloc = vec![0u8; cap];
         alloc[..layout_bytes.len()].copy_from_slice(layout_bytes);
         let usage = RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD;
-        let mut ssb = ShaderStorageBuffer::new(&alloc, usage);
+        let mut ssb = ShaderBuffer::new(&alloc, usage);
         ssb.buffer_description.usage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
         mat.glyph_layout = buffers.add(ssb);
     }
@@ -679,7 +679,7 @@ fn sync_text_meshes_inner<'w>(
     mat3d_assets: &mut ResMut<Assets<SlugText3dMaterial>>,
     mat_ui_assets: &mut ResMut<Assets<SlugTextMaterial>>,
     std_materials: &mut ResMut<Assets<StandardMaterial>>,
-    buffers: &mut ResMut<Assets<ShaderStorageBuffer>>,
+    buffers: &mut ResMut<Assets<ShaderBuffer>>,
     upload_map: &mut crate::SlugParamsUploadMap,
     draw_upload: &mut crate::SlugDrawUploadMap,
     commands: &mut Commands,
@@ -720,7 +720,7 @@ fn sync_text_meshes_inner<'w>(
                 );
 
                 if let Ok(existing) = mesh3d_q.get(entity)
-                    && let Some(m) = meshes.get_mut(&existing.0)
+                    && let Some(mut m) = meshes.get_mut(&existing.0)
                 {
                     *m = mesh_3d;
                 } else {
@@ -735,13 +735,13 @@ fn sync_text_meshes_inner<'w>(
                     a as f32 / 255.0,
                 );
                 if let Some(std_handle) = mat3d_std
-                    && let Some(mat) = std_materials.get_mut(std_handle)
+                    && let Some(mut mat) = std_materials.get_mut(std_handle)
                 {
                     mat.base_color = color;
                     mat.alpha_mode = if a < 255 {
-                        bevy::render::alpha::AlphaMode::Blend
+                        bevy::material::AlphaMode::Blend
                     } else {
-                        bevy::render::alpha::AlphaMode::Opaque
+                        bevy::material::AlphaMode::Opaque
                     };
                 }
             }
@@ -767,7 +767,7 @@ fn sync_text_meshes_inner<'w>(
                 1.0
             };
 
-            if let Some(mat) = mat3d_assets.get_mut(mm3d) {
+            if let Some(mut mat) = mat3d_assets.get_mut(mm3d) {
                 let [r, g_c, b, a] = node.color;
                 mat.text_color = bevy::math::Vec4::new(
                     r as f32 / 255.0,
@@ -794,7 +794,7 @@ fn sync_text_meshes_inner<'w>(
             let mesh = build_mesh_from_run(&norm_run, None);
 
             if let Ok(existing) = mesh3d_q.get(entity)
-                && let Some(m) = meshes.get_mut(&existing.0)
+                && let Some(mut m) = meshes.get_mut(&existing.0)
             {
                 *m = mesh;
             } else {
@@ -815,7 +815,7 @@ fn sync_text_meshes_inner<'w>(
         }
 
         if let Some(mn) = mat_node
-            && let Some(mat) = mat_ui_assets.get_mut(mn)
+            && let Some(mut mat) = mat_ui_assets.get_mut(mn)
         {
             let [r, g_c, b, a] = node.color;
             mat.text_color = bevy::math::Vec4::new(
@@ -832,7 +832,7 @@ fn sync_text_meshes_inner<'w>(
                 glyph_offset: 0,
                 glyph_count: run.glyph_layout.len() as u32,
             };
-            pack_draw_buffer_text(mat, &run_desc, &run.glyph_layout, buffers, draw_upload);
+            pack_draw_buffer_text(&mut mat, &run_desc, &run.glyph_layout, buffers, draw_upload);
             // SlugTextMaterial packs the 96-byte uniform fresh in as_bind_group each frame,
             // so no params_buf write_buffer is needed here. sync_node_size keeps node_size
             // in sync; text_color and layout_flags were already set above.
@@ -844,7 +844,7 @@ fn sync_text_meshes_inner<'w>(
         // Fallback: no material yet - build a 2D mesh placeholder.
         let mesh = build_mesh_from_run(&run, None);
         if let Ok(existing) = mesh2d_q.get(entity)
-            && let Some(m) = meshes.get_mut(&existing.0)
+            && let Some(mut m) = meshes.get_mut(&existing.0)
         {
             *m = mesh;
         } else {
@@ -918,7 +918,7 @@ fn sync_text_meshes_inner<'w>(
                 );
 
                 if let Ok(existing) = mesh3d_q.get(entity)
-                    && let Some(m) = meshes.get_mut(&existing.0)
+                    && let Some(mut m) = meshes.get_mut(&existing.0)
                 {
                     *m = mesh_3d;
                 } else {
@@ -933,13 +933,13 @@ fn sync_text_meshes_inner<'w>(
                     a as f32 / 255.0,
                 );
                 if let Some(std_handle) = mat3d_std
-                    && let Some(mat) = std_materials.get_mut(std_handle)
+                    && let Some(mut mat) = std_materials.get_mut(std_handle)
                 {
                     mat.base_color = color;
                     mat.alpha_mode = if a < 255 {
-                        bevy::render::alpha::AlphaMode::Blend
+                        bevy::material::AlphaMode::Blend
                     } else {
-                        bevy::render::alpha::AlphaMode::Opaque
+                        bevy::material::AlphaMode::Opaque
                     };
                 }
             }
@@ -965,7 +965,7 @@ fn sync_text_meshes_inner<'w>(
                 1.0
             };
 
-            if let Some(mat) = mat3d_assets.get_mut(mm3d) {
+            if let Some(mut mat) = mat3d_assets.get_mut(mm3d) {
                 let [r, g_c, b, a] = node.color;
                 mat.text_color = bevy::math::Vec4::new(
                     r as f32 / 255.0,
@@ -983,7 +983,7 @@ fn sync_text_meshes_inner<'w>(
             let mesh = build_mesh_from_run(&norm_run, None);
 
             if let Ok(existing) = mesh3d_q.get(entity)
-                && let Some(m) = meshes.get_mut(&existing.0)
+                && let Some(mut m) = meshes.get_mut(&existing.0)
             {
                 *m = mesh;
             } else {
@@ -1004,7 +1004,7 @@ fn sync_text_meshes_inner<'w>(
         }
 
         if let Some(mn) = mat_node
-            && let Some(mat) = mat_ui_assets.get_mut(mn)
+            && let Some(mut mat) = mat_ui_assets.get_mut(mn)
         {
             let [r, g_c, b, a] = node.color;
             mat.text_color = bevy::math::Vec4::new(
@@ -1021,7 +1021,7 @@ fn sync_text_meshes_inner<'w>(
                 glyph_offset: 0,
                 glyph_count: run.glyph_layout.len() as u32,
             };
-            pack_draw_images_texture(mat, &run_desc, &run.glyph_layout, images);
+            pack_draw_images_texture(&mut *mat, &run_desc, &run.glyph_layout, images);
 
             commands.entity(entity).remove::<Text3dDirty>();
             continue;
@@ -1029,7 +1029,7 @@ fn sync_text_meshes_inner<'w>(
 
         let mesh = build_mesh_from_run(&run, None);
         if let Ok(existing) = mesh2d_q.get(entity)
-            && let Some(m) = meshes.get_mut(&existing.0)
+            && let Some(mut m) = meshes.get_mut(&existing.0)
         {
             *m = mesh;
         } else {
@@ -1086,7 +1086,7 @@ fn sync_text_meshes(
     mut mat3d_assets: ResMut<Assets<SlugText3dMaterial>>,
     mut mat_ui_assets: ResMut<Assets<SlugTextMaterial>>,
     mut std_materials: ResMut<Assets<StandardMaterial>>,
-    mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut upload_map: ResMut<crate::SlugParamsUploadMap>,
     mut draw_upload: ResMut<crate::SlugDrawUploadMap>,
     mut commands: Commands,
@@ -1248,7 +1248,7 @@ fn sync_slug_3d_transforms(
             upload_map.entries.insert(params_handle.id(), bytes);
         }
 
-        if let Some(mat_mut) = materials.get_mut(mat_handle) {
+        if let Some(mut mat_mut) = materials.get_mut(mat_handle) {
             mat_mut.local_to_clip = new_local_to_clip;
         }
     }
@@ -1269,7 +1269,7 @@ fn sync_slug_3d_transforms(
     let clip_from_world = clip_from_view * view_from_world;
 
     for (entity_gt, mat_handle) in text_q.iter() {
-        let Some(mat) = materials.get_mut(mat_handle) else {
+        let Some(mut mat) = materials.get_mut(mat_handle) else {
             continue;
         };
         let world_from_local = entity_gt.to_matrix();
@@ -1302,7 +1302,7 @@ fn sync_node_size(
         if !needs_update {
             continue;
         }
-        if let Some(mat) = materials.get_mut(mat_node) {
+        if let Some(mut mat) = materials.get_mut(mat_node) {
             mat.params.node_size = size;
         }
     }
@@ -1324,7 +1324,7 @@ fn sync_node_size(
             && let Some(mat) = materials.get(mat_node)
             && (mat.params.node_size - size).length_squared() > 1e-4
         {
-            if let Some(mat_mut) = materials.get_mut(mat_node) {
+            if let Some(mut mat_mut) = materials.get_mut(mat_node) {
                 mat_mut.params.node_size = size;
             }
         }
@@ -1458,7 +1458,7 @@ pub fn build_mesh_from_run(run: &SlugTextRun, depth: Option<f32>) -> Mesh {
 fn update_or_add_image(handle: &mut Handle<Image>, new_img: Image, images: &mut Assets<Image>) {
     use bevy::asset::AssetId;
     if handle.id() != AssetId::default()
-        && let Some(img) = images.get_mut(handle.id())
+        && let Some(mut img) = images.get_mut(handle.id())
     {
         *img = new_img;
         return;
@@ -1530,7 +1530,7 @@ pub(crate) fn sync_text_meshes_texture(
         }
 
         if let Some(mn) = mat_node {
-            if let Some(mat) = mats.get_mut(mn.id()) {
+            if let Some(mut mat) = mats.get_mut(mn.id()) {
                 let [r, g, b, a] = node.color;
                 mat.text_color = bevy::math::Vec4::new(
                     r as f32 / 255.0,

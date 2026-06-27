@@ -6,9 +6,9 @@
 //! identical output to StandardMaterial so there should be no visible change.
 //! The wiring is here so real effects can be dropped into a mesh shader later.
 
+use bevy::pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::*;
-use bevy_pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin};
 
 use crate::plugins::scene::LoadedScene;
 use crate::plugins::text3d::Text3d;

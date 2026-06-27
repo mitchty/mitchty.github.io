@@ -202,7 +202,7 @@ fn setup_wasm_theme_listener(world: &mut World) {
     }
 
     // Store as NonSend so the closure and mql stay alive.
-    world.insert_non_send_resource(WasmThemeListener {
+    world.insert_non_send(WasmThemeListener {
         _closure: closure,
         _mql: mql,
     });

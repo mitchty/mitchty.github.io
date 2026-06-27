@@ -20,7 +20,7 @@ impl Plugin for AboutMenuPlugin {
 }
 
 /// Render the About drop-down menu entry into `ui`.
-pub fn render_about_menu(ui: &mut egui::Ui) {
+pub fn render_about_menu(ui: &mut egui::Ui, backend: Option<&str>) {
     ui.menu_button("About", |ui| {
         ui.hyperlink_to("GitHub Repo", lib::build_info::GIT_REPO);
         ui.separator();
@@ -42,6 +42,7 @@ pub fn render_about_menu(ui: &mut egui::Ui) {
         }
         ui.label(format!("Profile:  {}", lib::build_info::BUILD_PROFILE));
         ui.label(format!("Rustc:    {}", lib::build_info::RUSTC_VERSION));
+        ui.label(format!("Backend:  {}", backend.unwrap_or("unknown")));
         ui.separator();
         ui.label("Third Party Acknowlegements");
         ui.separator();

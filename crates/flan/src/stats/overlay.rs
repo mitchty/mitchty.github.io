@@ -21,7 +21,7 @@ use bevy::render::render_resource::{
     BindingType, BufferBindingType, Extent3d, PreparedBindGroup, ShaderStages, ShaderType,
     TextureDimension, TextureFormat, TextureSampleType, TextureViewDimension,
 };
-use bevy::render::storage::ShaderStorageBuffer;
+use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 use bytemuck::cast_slice;
 
@@ -88,17 +88,17 @@ pub struct StatsOverlayMaterial {
     #[uniform(0)]
     pub params: StatsOverlayParams,
     #[storage(1, read_only)]
-    pub fps_points: Handle<ShaderStorageBuffer>,
+    pub fps_points: Handle<ShaderBuffer>,
     #[storage(2, read_only)]
-    pub curves: Handle<ShaderStorageBuffer>,
+    pub curves: Handle<ShaderBuffer>,
     #[storage(3, read_only)]
-    pub curve_indices: Handle<ShaderStorageBuffer>,
+    pub curve_indices: Handle<ShaderBuffer>,
     #[storage(4, read_only)]
-    pub glyphs: Handle<ShaderStorageBuffer>,
+    pub glyphs: Handle<ShaderBuffer>,
     #[storage(5, read_only)]
-    pub runs: Handle<ShaderStorageBuffer>,
+    pub runs: Handle<ShaderBuffer>,
     #[storage(6, read_only)]
-    pub glyph_layout: Handle<ShaderStorageBuffer>,
+    pub glyph_layout: Handle<ShaderBuffer>,
 }
 
 impl UiMaterial for StatsOverlayMaterial {
@@ -310,12 +310,12 @@ impl StatsOverlayHandle {
     ) {
         match self {
             Self::Default(h) => {
-                if let Some(mat) = materials.get_mut(h) {
+                if let Some(mut mat) = materials.get_mut(h) {
                     mat.params = params;
                 }
             }
             Self::Texture(h) => {
-                if let Some(mat) = texture_materials.get_mut(h) {
+                if let Some(mut mat) = texture_materials.get_mut(h) {
                     mat.params = params;
                 }
             }

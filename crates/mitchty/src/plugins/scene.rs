@@ -8,13 +8,13 @@
 // the sse streaming stuffs a bit of a smell here if I'm honest.
 
 use bevy::prelude::*;
-use bevy::scene::{SceneInstanceReady, SceneSpawner};
+use bevy::world_serialization::{WorldAssetRoot, WorldInstanceReady, WorldInstanceSpawner};
 use transform_gizmo_bevy::{GizmoDragStarted, GizmoDragging, prelude::*};
 
 use crate::assets::asset_path;
 
 use crate::plugins::camera::DragState;
-use crate::post_process::EffectsEnabled;
+use flan::post_process::EffectsEnabled;
 
 /// Resource holding the optional background color override.
 ///
@@ -83,7 +83,7 @@ pub fn setup(
 
     commands
         .spawn((
-            SceneRoot(scene_handle),
+            WorldAssetRoot(scene_handle),
             scene_transform.transform,
             LoadedScene,
         ))
@@ -126,7 +126,7 @@ pub fn replace_scene(
     let scene_handle = asset_server.load(GltfAssetLabel::Scene(0).from_asset(path));
     commands
         .spawn((
-            SceneRoot(scene_handle),
+            WorldAssetRoot(scene_handle),
             scene_transform.transform,
             LoadedScene,
         ))
@@ -286,22 +286,22 @@ pub fn apply_scene_model_visibility(
     }
 }
 
-/// Observer attached to each `SceneRoot` entity via `.observe()`.
+/// Observer attached to each `WorldAssetRoot` entity via `.observe()`.
 ///
 /// Fires on `SceneInstanceReady` and strips any embedded `Camera3d`, `Camera`,
 /// `PointLight`, `DirectionalLight`, and `SpotLight` entities that Blender or
 /// anyone else might have baked into the GLTF file. Future me should make this
 /// less derp.
 pub fn on_scene_ready(
-    trigger: On<SceneInstanceReady>,
-    scene_spawner: Res<SceneSpawner>,
+    trigger: On<WorldInstanceReady>,
+    world_spawner: Res<WorldInstanceSpawner>,
     mut commands: Commands,
     cameras: Query<(), With<Camera3d>>,
     point_lights: Query<(), With<PointLight>>,
     dir_lights: Query<(), With<DirectionalLight>>,
     spot_lights: Query<(), With<SpotLight>>,
 ) {
-    for entity in scene_spawner.iter_instance_entities(trigger.event().instance_id) {
+    for entity in world_spawner.iter_instance_entities(trigger.event().instance_id) {
         if cameras.contains(entity) {
             bevy::log::debug!(
                 "on_scene_ready: removing embedded Camera3d from {:?}",

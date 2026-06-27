@@ -11,7 +11,7 @@ use crate::plugins::fullscreen::{CameraConfig, CameraOrbit};
 use mitchty::RenderLayers;
 use transform_gizmo_bevy::prelude::GizmoCamera;
 
-use crate::post_process::{EffectsEnabled, PostProcessSettings};
+use flan::post_process::{EffectsEnabled, PostProcessSettings};
 
 /// Marker component for the main camera.
 #[derive(Component)]

@@ -95,8 +95,6 @@ pub mod plot_default {
         pub position: Vec4f,
         #[location(0)]
         pub uv: Vec2f,
-        #[location(1)]
-        pub color: Vec4f,
     }
 
     pub fn get_point(index: u32) -> Vec2f {
@@ -165,8 +163,6 @@ pub mod plot_texture {
         pub position: Vec4f,
         #[location(0)]
         pub uv: Vec2f,
-        #[location(1)]
-        pub color: Vec4f,
     }
 
     pub fn get_point(index: u32) -> Vec2f {

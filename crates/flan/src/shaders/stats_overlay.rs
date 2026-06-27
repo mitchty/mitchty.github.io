@@ -144,8 +144,6 @@ pub mod stats_overlay_default {
         pub position: Vec4f,
         #[location(0)]
         pub uv: Vec2f,
-        #[location(1)]
-        pub color: Vec4f,
     }
 
     pub fn get_fps_point(i: u32) -> f32 {
@@ -419,8 +417,6 @@ pub mod stats_overlay_texture {
         pub position: Vec4f,
         #[location(0)]
         pub uv: Vec2f,
-        #[location(1)]
-        pub color: Vec4f,
     }
 
     // All textures are 2048 px wide; 2D address = (idx % 2048, idx / 2048).

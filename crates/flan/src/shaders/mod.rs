@@ -1,3 +1,4 @@
+pub mod canary;
 pub mod fullscreen;
 pub mod plot;
 mod plugin;

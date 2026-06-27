@@ -180,12 +180,12 @@ fn spawn_terminal_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn((
         Text::new(""),
         TextFont {
-            font,
-            font_size: 14.0,
+            font: font.into(),
+            font_size: bevy::text::FontSize::Px(14.0),
             ..default()
         },
         TextColor(Color::srgb(0.0, 1.0, 0.0)),
-        TextLayout::new_with_linebreak(bevy::text::LineBreak::NoWrap),
+        TextLayout::linebreak(bevy::text::LineBreak::NoWrap),
         BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.85)),
         Node {
             position_type: PositionType::Absolute,

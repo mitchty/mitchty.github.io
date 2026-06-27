@@ -27,7 +27,6 @@ mod ai;
 mod assets;
 mod mesh_effect;
 mod plugins;
-mod post_process;
 mod profiling;
 mod ui;
 
@@ -51,10 +50,10 @@ use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 #[cfg(feature = "feathers")]
 use bevy::feathers::{FeathersPlugins, dark_theme::create_dark_theme, theme::UiTheme};
 use bevy::prelude::*;
+use flan::PostProcessPlugin;
 use flan::shaders::ShadersPlugin;
 use mesh_effect::MeshEffectPlugin;
-use post_process::PostProcessPlugin;
-use transform_gizmo_bevy::prelude::*;
+use transform_gizmo_bevy::TransformGizmoPlugin;
 use ui::SettingsUiPlugin;
 
 fn main() {
@@ -119,7 +118,7 @@ fn main() {
 
     app.add_plugins(TransformGizmoPlugin)
         .add_plugins(MeshEffectPlugin)
-        .add_plugins(bevy_pretty_text::prelude::PrettyTextPlugin)
+        // TODO: re-enable bevy_pretty_text once it supports bevy 0.19
         .insert_resource(ui_config);
 
     #[cfg(feature = "egui")]

@@ -81,7 +81,7 @@ pub fn register_pending_fonts(
         let Some(font) = font_assets.get(&pending.handle) else {
             continue;
         };
-        match atlas.register_font(font.data.to_vec()) {
+        match atlas.register_font(font.data.data().to_vec()) {
             Ok(font_id) => {
                 bevy::log::info!("fonts: registered '{}' as {:?}", pending.name, font_id);
                 font_registered.write(FontRegistered {

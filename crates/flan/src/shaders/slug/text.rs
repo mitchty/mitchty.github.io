@@ -99,8 +99,6 @@ pub mod slug_text_default {
         pub position: Vec4f,
         #[location(0)]
         pub uv: Vec2f,
-        #[location(1)]
-        pub color: Vec4f,
     }
 
     pub fn get_curve(idx: u32) -> [Vec2f; 3] {
@@ -325,8 +323,6 @@ pub mod slug_text_texture {
         pub position: Vec4f,
         #[location(0)]
         pub uv: Vec2f,
-        #[location(1)]
-        pub color: Vec4f,
     }
 
     // All textures are 2048 px wide, the 2D address = (idx % 2048, idx / 2048).

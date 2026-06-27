@@ -4,9 +4,19 @@
 // to the per-shader test file for the actual render calls.
 //
 // Structure mirrors the shader hierarchy:
+//   shader::canary        - solid-black fill render canary (infrastructure health check)
 //   shader::plot          - wgsl-rs plot shader
 //   shader::slug          - wgsl-rs slug text shader
 //   shader::stats_overlay - stats overlay sparkline + fps text combined, how I want future to really be for future wgsl shaders.
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod canary {
+    use crate::test::lib::bevy::RenderedFrame;
+
+    pub fn render() -> Option<RenderedFrame> {
+        crate::test::lib::canary::render_canary()
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod plot {

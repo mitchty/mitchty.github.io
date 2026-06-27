@@ -15,7 +15,7 @@ license = "BlueOak-1.0.0"
 version = "0.0.20"
 
 [workspace.dependencies]
-bevy = { version = "~0.18.1", default-features = false }
+bevy = { version = "~0.19", default-features = false }
 rand = { version = "~0.10", default-features = false, features = [
   "thread_rng",
 ] }
@@ -41,7 +41,7 @@ log = "~0.4"
 git-version = "~0.3"
 jiff = { version = "~0.2", default-features = false, features = ["std"] }
 rustc_version = "~0.4"
-zip = { version = "~8.5", default-features = false, features = ["deflate"] }
+zip = { version = "~8.6", default-features = false, features = ["deflate"] }
 tracing = "~0.1"
 tracing-subscriber = { version = "~0.3", features = ["env-filter"] }
 unicode_names2 = "~2.0"

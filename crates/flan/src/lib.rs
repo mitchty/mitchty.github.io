@@ -26,11 +26,16 @@ use bevy::{
         Render, RenderApp, RenderSystems,
         render_asset::RenderAssets,
         renderer::RenderQueue,
-        storage::{GpuShaderStorageBuffer, ShaderStorageBuffer},
+        storage::{GpuShaderBuffer, ShaderBuffer},
     },
 };
 
 pub mod layout;
+pub mod post_process;
+pub use post_process::{
+    ActiveShader, AvailableShaders, EffectsEnabled, PostProcessPlugin, PostProcessSettings,
+    ShaderInfo,
+};
 pub mod shaders;
 pub mod slug_text;
 pub mod slug_text_material;
@@ -153,7 +158,7 @@ pub struct SparklineUpload {
 // ECS directly where it isn't all that useful.
 #[cfg(not(feature = "webgl"))]
 #[derive(Resource, Clone, Default, ExtractResource)]
-pub struct SparklineBufferHandle(pub Option<Handle<ShaderStorageBuffer>>);
+pub struct SparklineBufferHandle(pub Option<Handle<ShaderBuffer>>);
 
 /// Raw bytes to upload to the line-graph plot GPU storage buffer each tick.
 ///
@@ -166,7 +171,7 @@ pub struct PlotUpload {
 /// Handle to the line-graph plot `ShaderStorageBuffer`.
 #[cfg(not(feature = "webgl"))]
 #[derive(Resource, Clone, Default, ExtractResource)]
-pub struct PlotBufferHandle(pub Option<Handle<ShaderStorageBuffer>>);
+pub struct PlotBufferHandle(pub Option<Handle<ShaderBuffer>>);
 
 pub struct PlotPlugin;
 
@@ -208,7 +213,7 @@ impl Plugin for PlotPlugin {
 fn upload_sparkline(
     upload: Res<SparklineUpload>,
     handle: Res<SparklineBufferHandle>,
-    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    gpu_bufs: Res<RenderAssets<GpuShaderBuffer>>,
     render_queue: Res<RenderQueue>,
 ) {
     if let (Some(h), false) = (&handle.0, upload.bytes.is_empty())
@@ -223,7 +228,7 @@ fn upload_sparkline(
 fn upload_plot(
     upload: Res<PlotUpload>,
     handle: Res<PlotBufferHandle>,
-    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    gpu_bufs: Res<RenderAssets<GpuShaderBuffer>>,
     render_queue: Res<RenderQueue>,
 ) {
     if let (Some(h), false) = (&handle.0, upload.bytes.is_empty())
@@ -238,10 +243,10 @@ fn upload_plot(
 fn setup_plot_ui(
     mut commands: Commands,
     mut ui_materials: ResMut<Assets<PlotUiMaterial>>,
-    mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
 ) {
     let zeros = vec![0u8; MAX_PLOT_POINTS * 8];
-    let mut buf = ShaderStorageBuffer::new(&zeros, RenderAssetUsages::RENDER_WORLD);
+    let mut buf = ShaderBuffer::new(&zeros, RenderAssetUsages::RENDER_WORLD);
     buf.buffer_description.usage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
     let points_handle = buffers.add(buf);
     commands.insert_resource(PlotBufferHandle(Some(points_handle.clone())));
@@ -354,14 +359,14 @@ pub struct PlotPointsUniform {
 
 /// Plot `UiMaterial` - native / WebGPU path.
 ///
-/// Points live in a `ShaderStorageBuffer` at `@group(1) @binding(1)`.
+/// Points live in a `ShaderBuffer` at `@group(1) @binding(1)`.
 #[cfg(not(feature = "webgl"))]
 #[derive(Asset, AsBindGroup, TypePath, Clone)]
 pub struct PlotUiMaterial {
     #[uniform(0)]
     pub params: PlotUniform,
     #[storage(1, read_only)]
-    pub points: Handle<ShaderStorageBuffer>,
+    pub points: Handle<ShaderBuffer>,
 }
 
 #[cfg(not(feature = "webgl"))]
@@ -548,7 +553,7 @@ impl SlugAtlasLayout {
             TextureDimension::D2,
             pixels,
             TextureFormat::Rgba32Float,
-            RenderAssetUsages::RENDER_WORLD,
+            RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
         )
     }
 
@@ -577,7 +582,7 @@ impl SlugAtlasLayout {
             TextureDimension::D2,
             pixels,
             TextureFormat::Rgba32Uint,
-            RenderAssetUsages::RENDER_WORLD,
+            RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
         )
     }
 
@@ -606,7 +611,7 @@ impl SlugAtlasLayout {
             TextureDimension::D2,
             pixels,
             TextureFormat::Rgba32Uint,
-            RenderAssetUsages::RENDER_WORLD,
+            RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
         )
     }
 }
@@ -692,7 +697,7 @@ pub struct SlugText;
 /// Per `atlas_buffer` packed bytes for the native SlugMaterial upload pipeline.
 ///
 /// Keyed by `AssetId` of the pre-allocated `atlas_buffer`
-/// `ShaderStorageBuffer`. Set by `upload_layout_native` when the new atlas data
+/// `ShaderBuffer`. Set by `upload_layout_native` when the new atlas data
 /// fits within the existing buffer capacity; the render-world system
 /// `upload_slug_atlas` calls `write_buffer` to push the bytes to the GPU. When
 /// capacity is exceeded a new buffer is allocated which causes a new Bind Group
@@ -700,14 +705,14 @@ pub struct SlugText;
 #[cfg(not(feature = "webgl"))]
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct SlugAtlasUploadMap {
-    pub entries: std::collections::HashMap<bevy::asset::AssetId<ShaderStorageBuffer>, Vec<u8>>,
+    pub entries: std::collections::HashMap<bevy::asset::AssetId<ShaderBuffer>, Vec<u8>>,
 }
 
 /// Render-world system to write atlas bytes into `atlas_buffer` SSBs.
 #[cfg(not(feature = "webgl"))]
 pub fn upload_slug_atlas(
     upload_map: Res<SlugAtlasUploadMap>,
-    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    gpu_bufs: Res<RenderAssets<GpuShaderBuffer>>,
     render_queue: Res<RenderQueue>,
 ) {
     for (id, bytes) in &upload_map.entries {
@@ -721,14 +726,14 @@ pub fn upload_slug_atlas(
 #[cfg(not(feature = "webgl"))]
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct SlugDrawUploadMap {
-    pub entries: std::collections::HashMap<bevy::asset::AssetId<ShaderStorageBuffer>, Vec<u8>>,
+    pub entries: std::collections::HashMap<bevy::asset::AssetId<ShaderBuffer>, Vec<u8>>,
 }
 
 /// Render-world system: write draw bytes to pre-allocated `draw_buffer` SSBs.
 #[cfg(not(feature = "webgl"))]
 pub fn upload_slug_draw(
     upload_map: Res<SlugDrawUploadMap>,
-    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    gpu_bufs: Res<RenderAssets<GpuShaderBuffer>>,
     render_queue: Res<RenderQueue>,
 ) {
     for (id, bytes) in &upload_map.entries {
@@ -741,12 +746,12 @@ pub fn upload_slug_draw(
 /// Per `params_buf` payload for the native SlugMaterial upload pipeline.
 ///
 /// Each entry maps the `AssetId` of a pre-allocated `params_buf`
-/// `ShaderStorageBuffer` to the 96 bytes that should be written into it this frame
+/// `ShaderBuffer` to the 96 bytes that should be written into it this frame
 ///
 #[cfg(not(feature = "webgl"))]
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct SlugParamsUploadMap {
-    pub entries: std::collections::HashMap<bevy::asset::AssetId<ShaderStorageBuffer>, [u8; 96]>,
+    pub entries: std::collections::HashMap<bevy::asset::AssetId<ShaderBuffer>, [u8; 96]>,
 }
 
 /// Render-world system for every entry in `SlugParamsUploadMap`, write the
@@ -754,7 +759,7 @@ pub struct SlugParamsUploadMap {
 #[cfg(not(feature = "webgl"))]
 pub fn upload_slug_params(
     upload_map: Res<SlugParamsUploadMap>,
-    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    gpu_bufs: Res<RenderAssets<GpuShaderBuffer>>,
     render_queue: Res<RenderQueue>,
 ) {
     for (id, bytes) in &upload_map.entries {

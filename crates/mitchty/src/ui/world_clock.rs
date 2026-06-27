@@ -1197,7 +1197,7 @@ pub fn world_clock_window(
     //
     // This is a hack and its getting late but this logic is jank so I need to
     // probably figure out a better theming approach in general.
-    let is_light_mode = !ctx.style().visuals.dark_mode;
+    let is_light_mode = !ctx.global_style().visuals.dark_mode;
 
     let header_btn = |ui: &mut egui::Ui,
                       label: &str,

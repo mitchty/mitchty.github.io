@@ -23,7 +23,7 @@ bevy = { workspace = true, features = [
 rand.workspace = true
 # Force naga/termcolor on here or we can't compile tests.
 naga.workspace = true
-modular-bitfield = "~0.11"
+modular-bitfield = "~0.13"
 # No releases in crates.io to pull from so we just yeet it direct from git.
 wgsl-rs = { git = "https://github.com/schell/wgsl-rs", features = [
   "validation",
@@ -57,6 +57,15 @@ getrandom.workspace = true
 uuid = { version = "~1", features = ["v5"] }
 
 [dev-dependencies]
+
+[[test]]
+name = "basic_camera_assumptions"
+
+[[test]]
+name = "basic_fullscreen_shader"
+
+[[test]]
+name = "basic_render_canary"
 
 [[test]]
 name = "basic_plot_shader"

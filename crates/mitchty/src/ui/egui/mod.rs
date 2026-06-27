@@ -23,7 +23,6 @@ use crate::plugins::scene::{
 use crate::plugins::text3d::{
     FlanFontId, SlugText3dFontValidation, SlugText3dState, Text3dRenderer,
 };
-use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled};
 use crate::ui::config::UiConfig;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::ui::data_viewer::{
@@ -39,9 +38,11 @@ use crate::ui::recognizer::{BASE_BRUSH_R, InferenceResult, RecognizerState};
 use crate::ui::state::{UiBackend, UiPanel, UiState, egui_backend_active};
 use crate::ui::world_clock::{ShowWorldClock, WorldClockState, world_clock_window};
 use bevy::prelude::*;
+use bevy::render::renderer::RenderAdapterInfo;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 #[cfg(not(target_arch = "wasm32"))]
 use egui_file_dialog::FileDialog;
+use flan::post_process::{ActiveShader, AvailableShaders, EffectsEnabled};
 use transform_gizmo_bevy::prelude::{GizmoMode, GizmoOptions, GizmoOrientation};
 
 use crate::plugins::theme::{EguiThemeSet, ThemePlugin, resolve_initial_theme};
@@ -60,6 +61,14 @@ use crate::plugins::{PluginEnabled, PluginRegistry, run_if_enabled};
 /// calls from the orchestrator.
 #[derive(Component)]
 pub struct EguiMenuBarItem;
+
+/// Cached wgpu backend and adapter name. Populated once by `cache_adapter_info`
+/// as soon as `RenderAdapterInfo` becomes available after render-world init.
+/// Stored as a `Resource` so `settings_ui` can read it directly without adding
+/// another `SystemParam` cause I'm already abusing params and bouncing off the
+/// limit as it is. I need to learn a better approach for all this rigamarole.
+#[derive(Resource, Default)]
+pub struct CachedAdapterInfo(pub Option<String>);
 
 /// Resource to track if egui is currently using input, helps with accidental
 /// clicks not bleeding downwards to bevy.
@@ -102,6 +111,17 @@ pub struct FontPanelParams<'w> {
     pub dynamic_fonts: ResMut<'w, DynamicFontHandles>,
     pub asset_server: Res<'w, AssetServer>,
     pub embedded_fonts: Option<Res<'w, EmbeddedFontHandles>>,
+}
+
+/// Bundle struct for reverie list and active state into one SystemParam so
+/// settings_ui stays within Bevy's 16-parameter limit as it's already at
+/// capacity on native builds. Need to do some refactoring on this stuff but
+/// probably just will keep tackling this stuff with hacks until I can ditch
+/// egui entirely.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct ReverieParams<'w, 's> {
+    pub active: ResMut<'w, ActiveReverie>,
+    pub entries: Query<'w, 's, (Entity, &'static ReverieKey, &'static ReverieDisplayName)>,
 }
 
 /// Bundle 3d text font-picker state.
@@ -201,6 +221,7 @@ impl Plugin for SettingsUiPlugin {
             .add_plugins(reveries::ReveriesMenuPlugin)
             .add_plugins(scene::SceneMenuPlugin)
             .add_plugins(theme_toggle::ThemeToggleMenuPlugin)
+            .init_resource::<CachedAdapterInfo>()
             .init_resource::<EguiWantsInput>()
             .init_resource::<LosantState>()
             .init_resource::<LosantAuthTask>()
@@ -213,7 +234,7 @@ impl Plugin for SettingsUiPlugin {
             .add_message::<ResetCamera>()
             .add_message::<crate::ui::losant::DeviceStateEvent>()
             .init_resource::<CameraProjectionToggleRequested>()
-            .insert_non_send_resource(engine)
+            .insert_non_send(engine)
             .add_systems(Startup, (setup_egui, load_egui_noto_font))
             .add_systems(
                 Update,
@@ -241,18 +262,27 @@ impl Plugin for SettingsUiPlugin {
             .init_resource::<DataViewerState>()
             .init_resource::<ImageProcessingCache>()
             .init_resource::<DynamicFontHandles>()
-            .insert_non_send_resource(SceneFileDialog(
+            .insert_non_send(SceneFileDialog(
                 FileDialog::new()
                     .title("Load Scene GLTF")
                     .add_file_filter_extensions("GLTF / GLB", vec!["gltf", "glb"]),
             ))
-            .insert_non_send_resource(FontFileDialog(
+            .insert_non_send(FontFileDialog(
                 FileDialog::new()
                     .title("Add Font")
                     .add_file_filter_extensions("Font files", vec!["ttf", "otf"])
                     .default_file_filter("Font files"),
             ));
 
+        // Bevy 0.19 implements chain() for tuples only up to 7 elements.
+        //
+        // This avoids Tuple issues with chain() on tuples over 7 by just
+        // splitting things apart so that it isn't a compiler issue just a
+        // slight hit at startup/runtime.
+        app.add_systems(
+            Update,
+            cache_adapter_info.run_if(|c: Res<CachedAdapterInfo>| c.0.is_none()),
+        );
         app.add_systems(
             EguiPrimaryContextPass,
             (
@@ -362,7 +392,7 @@ fn configure_egui_style(
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         "NotoSansJP".to_owned(),
-        egui::FontData::from_owned(font.data.to_vec()).into(),
+        egui::FontData::from_owned(font.data.data().to_vec()).into(),
     );
 
     // Only use noto sans jp for anything that fails to render in a latin subset
@@ -371,7 +401,7 @@ fn configure_egui_style(
     }
     ctx.set_fonts(fonts);
 
-    ctx.style_mut(|style| {
+    ctx.global_style_mut(|style| {
         for font_id in style.text_styles.values_mut() {
             font_id.size += 4.0;
         }
@@ -600,9 +630,10 @@ fn scene_config_window(
         scene_config.custom_scene = Some(url);
     }
 
-    egui::SidePanel::left("scene_config_panel")
+    #[allow(deprecated)]
+    egui::Panel::left("scene_config_panel")
         .resizable(true)
-        .default_width(240.0)
+        .default_size(240.0)
         .show(contexts.ctx_mut()?, |ui| {
             ui.label(egui::RichText::new("GLTF Config").strong());
             ui.horizontal(|ui| {
@@ -983,6 +1014,7 @@ fn settings_ui(
     mut color_state: ResMut<ColorState>,
     mut effects_enabled: Option<ResMut<EffectsEnabled>>,
     ui_state: Res<UiState>,
+    cached_adapter_info: Res<CachedAdapterInfo>,
     mut marker_queries: ParamSet<(
         Query<Entity, With<FpsDisplay>>,                            // p0
         Query<Entity, With<HueAnimation>>,                          // p1
@@ -993,8 +1025,7 @@ fn settings_ui(
     )>,
     #[cfg(not(target_arch = "wasm32"))] data_viewer_query: Query<Entity, With<ShowDataViewer>>,
     losant_query: Query<Entity, With<ShowLosant>>,
-    mut active_reverie: ResMut<ActiveReverie>,
-    reverie_query: Query<(Entity, &ReverieKey, &ReverieDisplayName)>,
+    mut reverie_params: ReverieParams,
     mut active_shader: Option<ResMut<ActiveShader>>,
     available_shaders: Option<Res<AvailableShaders>>,
     mut commands: Commands,
@@ -1029,7 +1060,7 @@ fn settings_ui(
     let data_viewer_entity = data_viewer_query.single().ok();
     let losant_entity = losant_query.single().ok();
 
-    let reverie_entries: Vec<_> = reverie_query.iter().collect();
+    let reverie_entries: Vec<_> = reverie_params.entries.iter().collect();
 
     // Gooey mutable data's render fn writes back via this struct, caller
     // applies to the real resources.
@@ -1052,7 +1083,8 @@ fn settings_ui(
         theme: ui_config.theme,
     };
 
-    egui::TopBottomPanel::top("menu_bar").show(contexts.ctx_mut()?, |ui| {
+    #[allow(deprecated)]
+    egui::Panel::top("menu_bar").show(contexts.ctx_mut()?, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
             // lhs of the menubar
             #[cfg(not(target_arch = "wasm32"))]
@@ -1067,7 +1099,7 @@ fn settings_ui(
             gooey::render_gooey_menu(ui, &mut gooey_data, &mut commands, &mut reset_camera_events);
 
             {
-                reveries::render_reveries_menu(ui, &reverie_entries, &mut active_reverie);
+                reveries::render_reveries_menu(ui, &reverie_entries, &mut reverie_params.active);
             }
 
             apps::render_apps_menu(ui, apps::AppsRenderData { clock }, &mut commands);
@@ -1075,7 +1107,7 @@ fn settings_ui(
             // rhs of the menubar
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 theme_toggle::render_theme_toggle_menu(ui, &mut ui_config);
-                about::render_about_menu(ui);
+                about::render_about_menu(ui, cached_adapter_info.0.as_deref());
                 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
                 debug::render_debug_menu(ui, &mut plugin_registry);
                 experiments::render_experiments_menu(
@@ -1759,6 +1791,18 @@ fn draw_inference_sidebar(
     }
 }
 
+/// System to populate `CachedAdapterInfo` from `RenderAdapterInfo` the first time the
+/// render world makes it available to callers. Only runs while `CachedAdapterInfo` is
+/// unpopulated, only runs once as the wgpu backend cannot change at runtime afaik.
+fn cache_adapter_info(
+    adapter_info: Option<Res<RenderAdapterInfo>>,
+    mut cached: ResMut<CachedAdapterInfo>,
+) {
+    if let Some(info) = adapter_info {
+        cached.0 = Some(format!("{:?} ({})", info.backend, info.name));
+    }
+}
+
 /// System to update the EguiWantsInput resource based on egui's input state,
 /// mostly here just to make sure egui input doesn't pass down to bevy.
 fn update_egui_input_state(
@@ -1777,8 +1821,8 @@ fn update_egui_input_state(
     // Update the resource with current egui input state
     // This includes clicks, drags, and mouse wheel when over the egui panel...
     // I think, might be missing crap here. I don't know how to program gooeys.
-    egui_wants_input.wants_pointer = ctx.wants_pointer_input() || ctx.is_pointer_over_area();
-    egui_wants_input.wants_keyboard = ctx.wants_keyboard_input();
+    egui_wants_input.wants_pointer = ctx.egui_wants_pointer_input() || ctx.is_pointer_over_egui();
+    egui_wants_input.wants_keyboard = ctx.egui_wants_keyboard_input();
 
     Ok(())
 }

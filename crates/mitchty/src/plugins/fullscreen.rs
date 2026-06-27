@@ -16,7 +16,7 @@
 use bevy::prelude::*;
 
 use crate::plugins::camera::{FreeLookCamera, MainCamera};
-use crate::post_process::{ActiveShader, AvailableShaders, EffectsEnabled, PostProcessSettings};
+use flan::post_process::{ActiveShader, AvailableShaders, EffectsEnabled, PostProcessSettings};
 
 /// Marker component used by the feathers UI to track whether the fullscreen
 /// post-process effect is enabled. Only meaningful under the `feathers`

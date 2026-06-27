@@ -52,7 +52,7 @@ pub fn setup_flan_font(
 
     commands.remove_resource::<Text3dFontHandle>();
 
-    match atlas.register_font(font.data.to_vec()) {
+    match atlas.register_font(font.data.data().to_vec()) {
         Ok(id) => {
             // Resource for the font picker active-font display.
             commands.insert_resource(Text3dFontId(id));
@@ -133,7 +133,7 @@ fn debug_asset_counts(
     std_mats: Res<Assets<bevy::pbr::StandardMaterial>>,
     slug_mats: Res<Assets<flan::SlugText3dTextureMaterial>>,
     images: Res<Assets<Image>>,
-    buffers: Res<Assets<bevy::render::storage::ShaderStorageBuffer>>,
+    buffers: Res<Assets<bevy::render::storage::ShaderBuffer>>,
     entities: Query<Entity>,
 ) {
     bevy::log::info!(

@@ -34,13 +34,14 @@ stats-alloc = ["dep:stats_alloc"]
 jemalloc-pprof = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 
 [dependencies]
-bevy = { version = "0.18.1", default-features = false, features = [
+bevy = { version = "0.19", default-features = false, features = [
   "ui",
   "3d",
-  "experimental_bevy_feathers",
+  "bevy_feathers",
   "http",
   "https",
   "jpeg",
+  "ktx2",
 ] }
 
 bavy = { path = "../bavy" }
@@ -53,42 +54,41 @@ serde_json = "~1"
 unicode_names2.workspace = true
 zip.workspace = true
 clap.workspace = true
-bevy_egui = { version = "~0.39.1", optional = true }
+bevy_egui = { version = "~0.40", optional = true }
 dhat = { version = "~0.3", optional = true }
 stats_alloc = { version = "~0.1", optional = true }
-transform-gizmo-bevy = { version = "0.9", default-features = false, features = [
+transform-gizmo-bevy = { git = "https://github.com/mitchty/transform-gizmo", default-features = false, features = [
   "mouse_interaction",
   "gizmo_picking_backend",
 ] }
-bevy_picking = { version = "0.18.1", default-features = false }
-bevy_pretty_text = "~0.4"
-bevy_pbr = "0.18.1"
+# bevy_pretty_text = "~0.4" # TODO: waiting for bevy 0.19 support
 markdown = "~1.0.0"
 jiff = { version = "~0.2", features = ["tzdb-bundle-platform"] }
 humantime = "~2"
 jiff-tzdb = "~0.1"
 flan = { path = "../flan" }
 dark-light.workspace = true
+# Using reqwest on native and wasm32 too to keep the apis for fetching stuff the
+# same vs using web-sys on wasm32 targets.
+#
+# This used to be separated per wasm32/non but with reqwest 0.13 rustls-tls is
+# the default so no need to separate them due to feature flags betwixt the two.
+reqwest = { version = "~0.13", default-features = false, features = ["json"] }
+
 # console_error_panic_hook is here so that the web console for js? or whatever
 # dumps out backtraces.
 [target.'cfg(not(any(target_arch = "wasm32", target_env = "msvc")))'.dependencies]
-tikv-jemallocator = { version = "~0.6", features = [
+tikv-jemallocator = { version = "~0.7", features = [
   "profiling",
   "unprefixed_malloc_on_supported_platforms",
 ], optional = true }
-tikv-jemalloc-ctl = { version = "~0.6", features = ["stats"], optional = true }
+tikv-jemalloc-ctl = { version = "~0.7", features = ["stats"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 sys = { path = "../sys" }
 polars = { version = "~0.53", default-features = false, features = ["lazy"] }
 # Needs an egui update too, so.. whatever
-egui-file-dialog = { version = "~0.12" }
-# reqwest on native we use rustls for TLS cause I love to static link binaries
-# and this is simpler.
-reqwest = { version = "~0.12", default-features = false, features = [
-  "json",
-  "rustls-tls",
-] }
+egui-file-dialog = { version = "~0.13" }
 # Tokio runtime needed so reqwest's reactor is available when running inside
 # Bevy's AsyncComputeTaskPool, which uses its own futures-lite executor.
 tokio = { version = "~1", default-features = false, features = [
@@ -129,11 +129,6 @@ getrandom.workspace = true
 # Note: polars on wasm is.... not fun, feature gates need to constrain it so it
 # runs wicked slower than native
 polars = { version = "~0.53", default-features = false }
-# Used for reading window.location.search() to parse ?show= URL query params
-# at startup (WASM equivalent of --show CLI flag).
-# reqwest on wasm uses the browser fetch API no TLS config needed the browsers
-# ca bundle handles that for us implicitly.
-reqwest = { version = "~0.12", default-features = false, features = ["json"] }
 web-sys = { version = "~0.3", features = [
   "Navigator",
   "Window",

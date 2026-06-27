@@ -36,6 +36,11 @@ use bevy::prelude::*;
 
 pub struct ProfilingPlugin;
 
+// This whole things is only gated to features stats-alloc or jemalloc-pprof so
+// it shows up as unused for default compiles, so ignore it.
+#[allow(dead_code)]
+const STATS_DURATION: u64 = 60;
+
 impl Plugin for ProfilingPlugin {
     fn build(&self, app: &mut App) {
         // suppress unused warning in non-profiling builds, its annoying af
@@ -45,7 +50,7 @@ impl Plugin for ProfilingPlugin {
         app.add_systems(
             Update,
             log_alloc_stats.run_if(bevy::time::common_conditions::on_timer(
-                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(STATS_DURATION),
             )),
         );
 
@@ -57,7 +62,7 @@ impl Plugin for ProfilingPlugin {
         app.add_systems(
             Update,
             log_jemalloc_stats.run_if(bevy::time::common_conditions::on_timer(
-                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(STATS_DURATION),
             )),
         );
     }
@@ -75,10 +80,11 @@ fn log_alloc_stats(mut prev_net: Local<Option<i64>>) {
         Some(prev) => {
             let delta = net - prev;
             info!(
-                "stats_alloc net={} live_allocs={} delta={}/5s{}",
+                "stats_alloc net={} live_allocs={} delta={}/{}s{}",
                 fmt_bytes(net),
                 live_allocs,
                 fmt_bytes_signed(delta),
+                STATS_DURATION,
                 if delta > 0 { " growing" } else { "" },
             );
         }

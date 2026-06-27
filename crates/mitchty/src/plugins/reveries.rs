@@ -418,7 +418,7 @@ fn spawn_scroll_view(commands: &mut Commands, reverie: Entity, content: &str) {
                 p.spawn((
                     Text::new(heading.clone()),
                     TextFont {
-                        font_size: 18.0,
+                        font_size: bevy::text::FontSize::Px(18.0),
                         ..default()
                     },
                     TextColor(Color::srgb(0.85, 0.75, 0.35)),
@@ -426,7 +426,7 @@ fn spawn_scroll_view(commands: &mut Commands, reverie: Entity, content: &str) {
                 p.spawn((
                     Text::new(body.clone()),
                     TextFont {
-                        font_size: 14.0,
+                        font_size: bevy::text::FontSize::Px(14.0),
                         ..default()
                     },
                     TextColor(Color::srgb(0.88, 0.88, 0.84)),

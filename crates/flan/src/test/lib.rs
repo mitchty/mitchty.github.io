@@ -2,6 +2,8 @@
 #![allow(dead_code)]
 
 pub mod bevy;
+pub mod camera_assumptions;
+pub mod canary;
 pub mod shader;
 pub mod slug_text;
 pub mod snapshot;

@@ -10,7 +10,7 @@ use bevy::render::{
     render_asset::RenderAssets,
     render_resource::BufferUsages,
     renderer::RenderQueue,
-    storage::{GpuShaderStorageBuffer, ShaderStorageBuffer},
+    storage::{GpuShaderBuffer, ShaderBuffer},
 };
 #[cfg(not(feature = "webgl"))]
 use bytemuck;
@@ -29,15 +29,15 @@ pub(crate) struct StatsOverlayNode;
 
 #[cfg(not(feature = "webgl"))]
 #[derive(Resource, Clone, Default, ExtractResource)]
-struct OverlayFpsHandle(Option<Handle<ShaderStorageBuffer>>);
+struct OverlayFpsHandle(Option<Handle<ShaderBuffer>>);
 
 #[cfg(not(feature = "webgl"))]
 #[derive(Resource, Clone, Default, ExtractResource)]
-struct OverlayRunsHandle(Option<Handle<ShaderStorageBuffer>>);
+struct OverlayRunsHandle(Option<Handle<ShaderBuffer>>);
 
 #[cfg(not(feature = "webgl"))]
 #[derive(Resource, Clone, Default, ExtractResource)]
-struct OverlayGlyphLayoutHandle(Option<Handle<ShaderStorageBuffer>>);
+struct OverlayGlyphLayoutHandle(Option<Handle<ShaderBuffer>>);
 
 #[cfg(not(feature = "webgl"))]
 #[derive(Resource, Clone, Default, ExtractResource)]
@@ -131,7 +131,7 @@ fn setup_overlay_ssb(
     font_bytes: Vec<u8>,
 ) -> impl Fn(
     Commands,
-    ResMut<Assets<ShaderStorageBuffer>>,
+    ResMut<Assets<ShaderBuffer>>,
     ResMut<Assets<StatsOverlayMaterial>>,
     ResMut<OverlayFpsHandle>,
     ResMut<OverlayRunsHandle>,
@@ -141,7 +141,7 @@ fn setup_overlay_ssb(
         let (atlas_res, initial_run, layout) = build_atlas(&font_bytes);
 
         let mk = |data: &[u8]| {
-            let mut b = ShaderStorageBuffer::new(data, RenderAssetUsages::RENDER_WORLD);
+            let mut b = ShaderBuffer::new(data, RenderAssetUsages::RENDER_WORLD);
             b.buffer_description.usage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
             b
         };
@@ -271,7 +271,7 @@ fn build_atlas(font_bytes: &[u8]) -> (OverlayAtlas, flan::slug::SlugTextRun, Slu
     (atlas_res, initial_run, layout)
 }
 
-/// Spawn the 230×40 UI node and attach the given `MaterialNode`.
+/// Spawn the 230x40 UI node and attach the given `MaterialNode`.
 fn spawn_overlay_node<M: Component>(commands: &mut Commands, mat_node: M) {
     commands.spawn((
         StatsOverlayNode,
@@ -385,7 +385,7 @@ fn sample_fps_for_overlay(
 
         let fps_pts = data.averaged_points();
         if let Some(h) = &tex_images.fps {
-            if let Some(img) = images.get_mut(h) {
+            if let Some(mut img) = images.get_mut(h) {
                 *img = build_fps_points_image(&fps_pts);
             }
         }
@@ -397,12 +397,12 @@ fn sample_fps_for_overlay(
                 glyph_count: run.glyph_layout.len() as u32,
             };
             if let Some(h) = &tex_images.runs {
-                if let Some(img) = images.get_mut(h) {
+                if let Some(mut img) = images.get_mut(h) {
                     *img = build_runs_image(&run_desc);
                 }
             }
             if let Some(h) = &tex_images.layout {
-                if let Some(img) = images.get_mut(h) {
+                if let Some(mut img) = images.get_mut(h) {
                     *img = build_glyph_layout_image(&run.glyph_layout);
                 }
             }
@@ -414,7 +414,7 @@ fn sample_fps_for_overlay(
 fn upload_fps_ssb(
     upload: Res<UploadFps>,
     handle: Res<OverlayFpsHandle>,
-    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    gpu_bufs: Res<RenderAssets<GpuShaderBuffer>>,
     render_queue: Res<RenderQueue>,
 ) {
     if let (Some(h), false) = (&handle.0, upload.bytes.is_empty())
@@ -428,7 +428,7 @@ fn upload_fps_ssb(
 fn upload_runs_ssb(
     upload: Res<UploadRuns>,
     handle: Res<OverlayRunsHandle>,
-    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    gpu_bufs: Res<RenderAssets<GpuShaderBuffer>>,
     render_queue: Res<RenderQueue>,
 ) {
     if let (Some(h), false) = (&handle.0, upload.bytes.is_empty())
@@ -442,7 +442,7 @@ fn upload_runs_ssb(
 fn upload_glyph_layout_ssb(
     upload: Res<UploadGlyphLayout>,
     handle: Res<OverlayGlyphLayoutHandle>,
-    gpu_bufs: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    gpu_bufs: Res<RenderAssets<GpuShaderBuffer>>,
     render_queue: Res<RenderQueue>,
 ) {
     if let (Some(h), false) = (&handle.0, upload.bytes.is_empty())
