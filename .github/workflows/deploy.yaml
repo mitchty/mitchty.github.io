@@ -359,9 +359,8 @@ jobs:
           RELEASE_TAG="live-${DATESTAMP}-${SHORT_SHA}"
           CARGO_VERSION="$(grep -A5 '\[workspace.package\]' Cargo.toml | grep '^version' | sed 's/version = "\(.*\)"/\1/')"
 
-          gh release create "${RELEASE_TAG}" \
-            --title "Live ${DATESTAMP} (v${CARGO_VERSION} @ ${SHORT_SHA})" \
-            --notes "Live site release tag commit.
+          cat > /tmp/live-release-notes.md << RELEASE_NOTES
+          Live site release tag commit.
 
           **Commit:** \`${{ github.sha }}\`
           **Version:** \`${CARGO_VERSION}\`
@@ -372,7 +371,7 @@ jobs:
           **Active/Live site:** [mitchty.github.io](https://mitchty.github.io) from the current \`live\` git tag
 
           Or download \`mitchty-wasm.tar.gz\` to self-host. The tarball contains both
-          \`wasm/\` (WebGPU) and \`wasm-webgl/\` (WebGL fallback) alongside \`index.html\`
+          \`wasm/\` WebGPU and \`wasm-webgl/\` WebGL fallback alongside \`index.html\`
           which picks the best available renderer at runtime.
 
           ### 📦 Native Downloads
@@ -385,7 +384,12 @@ jobs:
           \`\`\`
 
           **Windows (x86_64):**
-          Download \`mitchty-windows-x86_64.exe\` and run it." \
+          Download \`mitchty-windows-x86_64.exe\` and run it.
+          RELEASE_NOTES
+
+          gh release create "${RELEASE_TAG}" \
+            --title "Live ${DATESTAMP} v${CARGO_VERSION} @ ${SHORT_SHA}" \
+            --notes-file /tmp/live-release-notes.md \
             release/mitchty-wasm.tar.gz \
             release/mitchty-windows-x86_64.exe \
             release/mitchty-darwin-aarch64
@@ -447,38 +451,42 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create pre-release \
-            --title "Latest main" \
-            --notes "Automated pre-release build from main branch
+          cat > /tmp/release-notes.md << 'RELEASE_NOTES'
+          Automated pre-release build from main branch
 
-          **Commit:** \`${{ github.sha }}\`
+          **Commit:** `${{ github.sha }}`
 
           ### 🌐 WASM (Web)
 
           **Work in progress builds:** [mitchty.github.io/next/](https://mitchty.github.io/next/) latest main commit, may be unstable/broken/angy/sus/sad/buggy etc...
 
-          **Active/Live build:** [mitchty.github.io](https://mitchty.github.io) tagged as \`live\` in git, whatever commit I designate as "good enough to ship as the live site". Not guaranteed to not have bugs just less or not all that important of bugs.
+          **Active/Live build:** [mitchty.github.io](https://mitchty.github.io) tagged as `live` in git, whatever commit I designate as good enough to ship as the live site. Not guaranteed to not have bugs just less or not all that important of bugs.
 
-          Or download \`mitchty-wasm.tar.gz\` to self-host. The tarball contains both
-          \`wasm/\` (WebGPU) and \`wasm-webgl/\` (WebGL fallback) alongside \`index.html\`
+          Or download `mitchty-wasm.tar.gz` to self-host. The tarball contains both
+          `wasm/` WebGPU and `wasm-webgl/` WebGL fallback alongside `index.html`
           which picks the best available renderer at runtime.
 
           ### 📦 Native Downloads
 
           **macOS (Apple Silicon):**
-          \`\`\`bash
+          ```bash
           curl -Lo mitchty https://github.com/${{ github.repository }}/releases/download/pre-release/mitchty-darwin-aarch64
           chmod +x mitchty
           ./mitchty
-          \`\`\`
+          ```
 
           **Windows (x86_64):**
-          Download \`mitchty-windows-x86_64.exe\` and run it... somehow?
+          Download `mitchty-windows-x86_64.exe` and run it... somehow?
 
           ---
           ⚠️ **Note:** These are automated builds from the main development branch, they could be sus.
 
-          Windows builds are cross-compiled and largely untested but here for funsies. Let me know if they work." \
+          Windows builds are cross-compiled and largely untested but here for funsies. Let me know if they work.
+          RELEASE_NOTES
+
+          gh release create pre-release \
+            --title "Latest main" \
+            --notes-file /tmp/release-notes.md \
             --prerelease \
             release/mitchty-wasm.tar.gz \
             release/mitchty-windows-x86_64.exe \
