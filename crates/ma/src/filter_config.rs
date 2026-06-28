@@ -20,13 +20,25 @@
 //!   - middle dot
 //!   - space
 //!
+//! # Characters to include verbatim (whitelist; empty = include everything)
+//! include_chars:
+//!   - "ア"
+//!
+//! # Unicode-name substrings to include as a whitelist; empty = include everything
+//! # When non-empty a character must match at least one entry to survive.
+//! # Composes with the blacklist: blacklisted chars are still excluded even if
+//! # they would match an include_names entry.
+//! include_names:
+//!   - katakana
+//!
 //! # Merge halfwidth katakana into fullwidth standard forms
 //! merge_halfwidth: true
 //! ```
 //!
-//! Both keys are optional and default to empty lists. Any additional chars or
-//! names supplied via CLI `--filter` / `--filter-name` are **appended** to the
-//! values loaded from the file so the two sources compose rather than compete.
+//! All keys are optional and default to empty lists/true. Any additional chars
+//! or names supplied via CLI `--filter` / `--filter-name` / `--include` /
+//! `--include-name` are **appended** to the values loaded from the file so the
+//! two sources compose rather than compete.
 
 use std::path::Path;
 
@@ -34,17 +46,42 @@ use serde::Deserialize;
 
 /// Filter configuration loaded from a YAML file.
 ///
-/// Both fields are optional in the file; absent keys deserialise to an empty
-/// `Vec`.
+/// All fields are optional in the file, absent keys deserialize to empty `Vec`s
+/// or the documented default.
+///
+/// ## Blacklist vs whitelist
+///
+/// `chars` / `names` are a blacklist: matching characters are excluded.
+///
+/// `include_chars` / `include_names` are a whitelist: when either list is
+/// non-empty, a character must match at least one entry to survive. Characters
+/// that pass neither are dropped. The blacklist is applied first as a character
+/// can be excluded by the blacklist even when it would satisfy the whitelist.
 #[derive(Debug, Default, Deserialize)]
 pub struct FilterConfig {
-    /// Individual Unicode characters to exclude.
+    /// Individual Unicode characters to exclude as a blacklist.
     #[serde(default)]
     pub chars: Vec<String>,
 
-    /// Unicode-name substrings to exclude (matched case-insensitively).
+    /// Unicode-name substrings to exclude as a blacklist, case-insensitive.
     #[serde(default)]
     pub names: Vec<String>,
+
+    /// Individual Unicode characters to keep as a whitelist.
+    ///
+    /// When non-empty, only characters listed here (or matching
+    /// [`include_names`](Self::include_names)) survive. Empty means "keep
+    /// everything that the blacklist doesn't drop".
+    #[serde(default)]
+    pub include_chars: Vec<String>,
+
+    /// Unicode-name substrings to keep as a whitelist, case-insensitive.
+    ///
+    /// When non-empty (together with `include_chars`), a character must match
+    /// at least one entry here or in `include_chars` to survive.
+    /// Example: `["katakana"]` keeps all katakana characters.
+    #[serde(default)]
+    pub include_names: Vec<String>,
 
     /// Merge halfwidth katakana (U+FF65..U+FF9F) into their standard fullwidth
     /// katakana forms. Default: true.
@@ -72,8 +109,16 @@ impl FilterConfig {
     /// Resolve `chars` strings into actual `char` values, warning and
     /// skipping any token that is not exactly one Unicode scalar.
     pub fn parse_chars(&self) -> Vec<char> {
-        self.chars
-            .iter()
+        Self::parse_char_vec(&self.chars)
+    }
+
+    /// Resolve `include_chars` strings into actual `char` values.
+    pub fn parse_include_chars(&self) -> Vec<char> {
+        Self::parse_char_vec(&self.include_chars)
+    }
+
+    fn parse_char_vec(v: &[String]) -> Vec<char> {
+        v.iter()
             .filter_map(|t| {
                 let mut cs = t.chars();
                 let ch = cs.next()?;
@@ -89,8 +134,17 @@ impl FilterConfig {
             .collect()
     }
 
-    /// Return names lowercased, ready to hand directly to `filter_reason`.
+    /// Return `names` lowercased, ready to hand directly to `filter_reason`.
     pub fn names_lowercased(&self) -> Vec<String> {
         self.names.iter().map(|s| s.to_lowercase()).collect()
+    }
+
+    /// Return `include_names` lowercased, ready to hand directly to
+    /// `filter_reason`.
+    pub fn include_names_lowercased(&self) -> Vec<String> {
+        self.include_names
+            .iter()
+            .map(|s| s.to_lowercase())
+            .collect()
     }
 }

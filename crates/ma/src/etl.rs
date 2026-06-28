@@ -63,17 +63,34 @@ pub(crate) enum FilterReason {
     /// Fields are used via the `Debug` impl for log output only.
     #[allow(dead_code)]
     NameSubstring { pattern: String, name: String },
+    /// Neither an `--include` char nor an `--include-name` substring matched.
+    /// `name` is the full Unicode name of the character that was rejected.
+    #[allow(dead_code)]
+    NotInWhitelist { name: String },
 }
 
 /// Test whether `ch` should be excluded from the output.
 ///
 /// Returns `Some(reason)` to drop the character, `None` to keep it.
-/// `filter_name_lc` must already be lowercased by the caller.
+///
+/// # Filter order
+///
+/// 1. Blacklist chars `filter_chars`: if the char is listed -> drop.
+/// 2. Blacklist names `filter_name_lc`: if the Unicode name contains any
+///    substring -> drop.
+/// 3. Whitelist `include_chars`, `include_names_lc`: when either list is
+///    non-empty, the char must match at least one entry to survive; otherwise
+///    -> drop as `NotInWhitelist`.
+///
+/// All `_lc` slices must already be lowercased by the caller prior to calling.
 pub(crate) fn filter_reason(
     ch: char,
     filter_chars: &[char],
     filter_name_lc: &[String],
+    include_chars: &[char],
+    include_names_lc: &[String],
 ) -> Option<FilterReason> {
+    // Blacklist first
     if filter_chars.contains(&ch) {
         return Some(FilterReason::ExplicitChar);
     }
@@ -92,6 +109,38 @@ pub(crate) fn filter_reason(
             });
         }
     }
+
+    // Whitelist after to splice in anything that might have been hit by the
+    // blacklist.
+    let has_whitelist = !include_chars.is_empty() || !include_names_lc.is_empty();
+    if has_whitelist {
+        // Explicit char match is a fast path, no Unicode name lookup needed.
+        if include_chars.contains(&ch) {
+            return None;
+        }
+        // Name substring match.
+        if !include_names_lc.is_empty() {
+            let name = unicode_names2::name(ch)
+                .map(|n| n.to_string())
+                .unwrap_or_default();
+            let name_lc = name.to_lowercase();
+            if include_names_lc
+                .iter()
+                .any(|sub| name_lc.contains(sub.as_str()))
+            {
+                return None;
+            }
+            // Didn't match any whitelist entry drop it.
+            return Some(FilterReason::NotInWhitelist { name });
+        }
+        // include_names is empty but include_chars is non-empty and char
+        // wasn't found in it -> drop.
+        let name = unicode_names2::name(ch)
+            .map(|n| n.to_string())
+            .unwrap_or_default();
+        return Some(FilterReason::NotInWhitelist { name });
+    }
+
     None
 }
 
@@ -1100,12 +1149,17 @@ pub fn write_npz(path: &str, data: &[u8], shape: &[usize], dtype: &str) -> io::R
 /// The `classmap.json` and `stats.json` are shared across all batches - class
 /// indices are globally consistent so you can train on M+B+G together by
 /// passing all the npz files to `ma train`.
+#[allow(clippy::type_complexity)]
+// Don't care for this conversion cli program, it being a chungus is reflecting how often its used/useful to even matter to get too cute with things.
+#[allow(clippy::too_many_arguments)]
 pub fn convert_etlcdb(
     batches: &[EtlBatch],
     out_dir: &str,
     train_fraction: f64,
     filter_chars: &[char],
     filter_names: &[String],
+    include_chars: &[char],
+    include_names: &[String],
     equiv: &HashMap<char, char>,
 ) -> io::Result<()> {
     if batches.is_empty() {
@@ -1123,12 +1177,19 @@ pub fn convert_etlcdb(
         .flat_map(|b| b.records.iter())
         .filter(|r| {
             r.character
-                .map(|ch| filter_reason(ch, filter_chars, filter_names).is_none())
+                .map(|ch| {
+                    filter_reason(ch, filter_chars, filter_names, include_chars, include_names)
+                        .is_none()
+                })
                 .unwrap_or(false)
         })
         .collect();
 
-    if !filter_chars.is_empty() || !filter_names.is_empty() {
+    if !filter_chars.is_empty()
+        || !filter_names.is_empty()
+        || !include_chars.is_empty()
+        || !include_names.is_empty()
+    {
         let total: usize = batches.iter().map(|b| b.records.len()).sum();
         let kept = all_records.len();
         tracing::info!(
@@ -1185,7 +1246,9 @@ pub fn convert_etlcdb(
             .iter()
             .filter_map(|r| {
                 let ch = r.character?;
-                if filter_reason(ch, filter_chars, filter_names).is_some() {
+                if filter_reason(ch, filter_chars, filter_names, include_chars, include_names)
+                    .is_some()
+                {
                     return None;
                 }
                 Some((crate::kana_merging::equiv_char(ch, equiv), r))
@@ -1539,6 +1602,8 @@ pub fn write_merged_etlcdb(
     dst_h: u32,
     filter_chars: &[char],
     filter_names: &[String],
+    include_chars: &[char],
+    include_names: &[String],
     equiv: &HashMap<char, char>,
 ) -> io::Result<()> {
     if batches.is_empty() {
@@ -1551,12 +1616,19 @@ pub fn write_merged_etlcdb(
         .flat_map(|b| b.records.iter())
         .filter(|r| {
             r.character
-                .map(|ch| filter_reason(ch, filter_chars, filter_names).is_none())
+                .map(|ch| {
+                    filter_reason(ch, filter_chars, filter_names, include_chars, include_names)
+                        .is_none()
+                })
                 .unwrap_or(false)
         })
         .collect();
 
-    if !filter_chars.is_empty() || !filter_names.is_empty() {
+    if !filter_chars.is_empty()
+        || !filter_names.is_empty()
+        || !include_chars.is_empty()
+        || !include_names.is_empty()
+    {
         let total: usize = batches.iter().map(|b| b.records.len()).sum();
         let kept = all_records.len();
         tracing::info!(
@@ -1594,7 +1666,8 @@ pub fn write_merged_etlcdb(
         .filter(|r| {
             r.character
                 .map(|ch| {
-                    filter_reason(ch, filter_chars, filter_names).is_none()
+                    filter_reason(ch, filter_chars, filter_names, include_chars, include_names)
+                        .is_none()
                         && label_map.contains_key(&crate::kana_merging::equiv_char(ch, equiv))
                 })
                 .unwrap_or(false)
@@ -1640,7 +1713,8 @@ pub fn write_merged_etlcdb(
             // label_map construction. Without this, records whose original char
             // was filtered out can still leak through if their equiv-canonical
             // is already in the label_map from another non-filtered record.
-            if filter_reason(ch, filter_chars, filter_names).is_some() {
+            if filter_reason(ch, filter_chars, filter_names, include_chars, include_names).is_some()
+            {
                 pb.inc(1);
                 continue;
             }
@@ -2477,11 +2551,13 @@ mod tests {
         rec[60] = 0xff; // would give pixel=255 if wrong offset 60 were used
         rec[64] = 0b1111_0000_u8; // high nibble=0xf -> 255 at correct offset
         let result = parse_8g(&rec, 64, None);
-        assert_eq!(result.pixels[0], 255); // from offset 64
+        // from offset 64 first
         // Also verify: if we had wrongly used offset 60, pixel[0] would also be
         // 255 (since rec[60]=0xff). Let's test pixel[1] instead - at offset 60
         // rec[60]=0xff so lo nibble=0xf->255; at offset 64 rec[64]=0xf0 lo=0->0.
-        assert_eq!(result.pixels[1], 0); // low nibble of rec[64]=0xf0 -> 0
+        assert_eq!(result.pixels[0], 255);
+        // low nibble of rec[64]=0xf0 -> 0
+        assert_eq!(result.pixels[1], 0);
     }
 
     #[test]
@@ -2965,7 +3041,7 @@ mod tests {
             let name = unicode_names2::name(ch)
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| "NONE".to_string());
-            let reason = filter_reason(ch, &[], &filter_names);
+            let reason = filter_reason(ch, &[], &filter_names, &[], &[]);
             assert!(
                 reason.is_some(),
                 "U+{:04X} {:?} (name={:?}) should be filtered by 'letter small' but was not",
@@ -3045,12 +3121,11 @@ mod tests {
             .iter()
             .filter(|r| {
                 r.character
-                    .map(|ch| filter_reason(ch, &[], &filter_names).is_none())
+                    .map(|ch| filter_reason(ch, &[], &filter_names, &[], &[]).is_none())
                     .unwrap_or(false)
             })
             .cloned()
             .collect();
-
         let label_map = label_map_from_records(&filtered, &equiv);
 
         assert!(
@@ -3132,7 +3207,7 @@ mod tests {
             .iter()
             .filter(|r| {
                 r.character
-                    .map(|ch| filter_reason(ch, &[], &filter_names).is_none())
+                    .map(|ch| filter_reason(ch, &[], &filter_names, &[], &[]).is_none())
                     .unwrap_or(false)
             })
             .cloned()
@@ -3158,7 +3233,7 @@ mod tests {
         for rec in &all_records {
             let Some(ch) = rec.character else { continue };
             // This is the guard that was missing before the fix:
-            if filter_reason(ch, &[], &filter_names).is_some() {
+            if filter_reason(ch, &[], &filter_names, &[], &[]).is_some() {
                 continue;
             }
             let canonical = crate::kana_merging::equiv_char(ch, &equiv);

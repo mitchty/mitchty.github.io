@@ -50,7 +50,7 @@ pub struct ConvertArgs {
     ///   etl9g                9G-type hiragana+kanji    128x127, 4bpp, JIS X 0208 (image @ byte 65)
     ///
     /// ETL combined mode (all supported datasets at once):
-    ///   etlcdb               Root directory containing ETL1…ETL9G subdirectories.
+    ///   etlcdb               Root directory containing ETL1...ETL9G subdirectories.
     ///                        Reads ETL1, ETL6, ETL7 (M-type), ETL2 (K-type),
     ///                        ETL3/4/5 (C-type), ETL8B (B8), ETL9B (B9),
     ///                        ETL8G (G8), ETL9G (G9) and writes per-family npz files:
@@ -195,6 +195,37 @@ pub struct ConvertArgs {
     #[arg(long, value_delimiter = ',', num_args = 0..)]
     filter_name: Vec<String>,
 
+    /// Characters to include as a whitelist. Only these characters survive, all
+    /// others are dropped before label assignment when in the whitelist.
+    ///
+    /// Each flag value must be exactly one Unicode character/codepoint. Repeat
+    /// the flag for each character:
+    ///
+    ///   --include ア --include イ --include ウ
+    ///
+    /// Composes with --filter: blacklisted characters are still removed even if
+    /// they appear in the include list. An empty include list means "include
+    /// everything" (no whitelist applied). Works for etlcdb and kanjivg.
+    #[arg(long)]
+    include: Vec<String>,
+
+    /// Include only characters whose Unicode name contains the substring
+    /// (whitelist by name). When non-empty, a character must match at least one
+    /// --include-name pattern (or be listed via --include) to survive.
+    ///
+    /// Matching is case-insensitive substring matching:
+    ///
+    ///   --include-name katakana          # keep all katakana
+    ///   --include-name hiragana          # keep all hiragana
+    ///   --include-name "cjk unified ideograph"  # keep joyo kanji range (if only...)
+    ///   --include-name katakana --include-name hiragana  # keep both
+    ///
+    /// Composes with --filter-name: blacklisted names are still excluded even
+    /// when they would match an include-name pattern. Works for etlcdb and
+    /// kanjivg.
+    #[arg(long, value_delimiter = ',', num_args = 0..)]
+    include_name: Vec<String>,
+
     /// Expand output npz image files from (N,H,W) to (N,3,H,W) by computing
     /// three preprocessing channels for every image in parallel.
     ///
@@ -326,51 +357,83 @@ pub fn run(args: ConvertArgs) {
 
     let paths = output_paths(&args.out, args.train_split);
 
-    // --- Build merged filter lists: config (base) + CLI args (additive) ----
+    // Build merged filter and include lists: config base + CLI args additive
     //
     // If --filter-config is provided it is loaded first and its chars/names
-    // form the starting set. Any --filter / --filter-name values on the
-    // command line are then appended so the two sources compose freely.
+    // form the starting set. Any --filter / --filter-name / --include /
+    // --include-name values on the command line are then appended so the two
+    // sources compose freely.
     // The merge_halfwidth flag defaults to true, but can be overridden by
     // --filter-config or CLI args.
-    let (filter_chars, filter_names, merge_hw) = {
+    let (filter_chars, filter_names, include_chars, include_names, merge_hw) = {
         let mut merge_hw = args.merge_halfwidth;
 
-        let (mut cfg_chars, mut cfg_names): (Vec<char>, Vec<String>) =
-            if let Some(ref path) = args.filter_config {
-                let cfg = FilterConfig::from_file(path).unwrap_or_else(|e| {
-                    eprintln!("--filter-config: {e}");
-                    std::process::exit(1);
-                });
-                tracing::info!(
-                    path,
-                    chars = cfg.chars.len(),
-                    names = cfg.names.len(),
-                    merge_hw = cfg.merge_halfwidth,
-                    "loaded filter config"
-                );
-                // Config file value is used as default, CLI args override
-                merge_hw = cfg.merge_halfwidth;
-                (cfg.parse_chars(), cfg.names_lowercased())
-            } else {
-                (Vec::new(), Vec::new())
-            };
+        let (mut cfg_chars, mut cfg_names, mut cfg_include_chars, mut cfg_include_names): (
+            Vec<char>,
+            Vec<String>,
+            Vec<char>,
+            Vec<String>,
+        ) = if let Some(ref path) = args.filter_config {
+            let cfg = FilterConfig::from_file(path).unwrap_or_else(|e| {
+                eprintln!("--filter-config: {e}");
+                std::process::exit(1);
+            });
+            tracing::info!(
+                path,
+                chars = cfg.chars.len(),
+                names = cfg.names.len(),
+                include_chars = cfg.include_chars.len(),
+                include_names = cfg.include_names.len(),
+                merge_hw = cfg.merge_halfwidth,
+                "loaded filter config"
+            );
+            // Config file value is used as default, CLI args override
+            merge_hw = cfg.merge_halfwidth;
+            (
+                cfg.parse_chars(),
+                cfg.names_lowercased(),
+                cfg.parse_include_chars(),
+                cfg.include_names_lowercased(),
+            )
+        } else {
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        };
 
-        // Append CLI --filter chars (deduplicated).
+        // Append CLI --filter chars deduplicated.
         for ch in parse_chars(&args.filter) {
             if !cfg_chars.contains(&ch) {
                 cfg_chars.push(ch);
             }
         }
 
-        // Append CLI --filter-name substrings (deduplicated, lowercased).
+        // Append CLI --filter-name substrings deduplicated and lowercased.
         for name in args.filter_name.iter().map(|s| s.to_lowercase()) {
             if !cfg_names.contains(&name) {
                 cfg_names.push(name);
             }
         }
 
-        (cfg_chars, cfg_names, merge_hw)
+        // Append CLI --include chars deduplicated.
+        for ch in parse_chars(&args.include) {
+            if !cfg_include_chars.contains(&ch) {
+                cfg_include_chars.push(ch);
+            }
+        }
+
+        // Append CLI --include-name substrings deduplicated and lowercased.
+        for name in args.include_name.iter().map(|s| s.to_lowercase()) {
+            if !cfg_include_names.contains(&name) {
+                cfg_include_names.push(name);
+            }
+        }
+
+        (
+            cfg_chars,
+            cfg_names,
+            cfg_include_chars,
+            cfg_include_names,
+            merge_hw,
+        )
     };
 
     // Build the equiv map once from the resolved merge flag. Every writer and
@@ -390,6 +453,8 @@ pub fn run(args: ConvertArgs) {
             args.aug_seed,
             &filter_chars,
             &filter_names,
+            &include_chars,
+            &include_names,
             &equiv,
         )
         .unwrap_or_else(|e| {
@@ -438,6 +503,8 @@ pub fn run(args: ConvertArgs) {
                 dst_h,
                 &filter_chars,
                 &filter_names,
+                &include_chars,
+                &include_names,
                 &equiv,
             )
             .unwrap_or_else(|e| {
@@ -451,6 +518,8 @@ pub fn run(args: ConvertArgs) {
                 args.train_split,
                 &filter_chars,
                 &filter_names,
+                &include_chars,
+                &include_names,
                 &equiv,
             )
             .unwrap_or_else(|e| {

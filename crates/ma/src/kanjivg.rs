@@ -24,46 +24,7 @@ use crate::etl::{OutputPaths, write_classmap, write_npz, write_stats};
 // KanjiVG images are always rendered and stored at 28x28 pixels.
 const KANJI_IMG_SIZE: usize = 28;
 
-/// Why a character was excluded if it was at all. used for debug logs mainly.
-#[derive(Debug)]
-enum FilterReason {
-    /// Explicitly listed via `--filter`.
-    ExplicitChar,
-    /// Unicode name contained a `--filter-name` substring; carries the matched
-    /// substring and the full unicode name of the character.
-    NameSubstring { pattern: String, name: String },
-}
-
-/// Test whether some unicode char `ch` should be excluded.
-///
-/// Returns `Some(reason)` if the character is to be dropped, `None` to keep it.
-/// Bit weird but it works out easier this way. Caller must lowercase first or
-/// this won't work.
-fn filter_reason(
-    ch: char,
-    filter_chars: &[char],
-    filter_name_lc: &[String],
-) -> Option<FilterReason> {
-    if filter_chars.contains(&ch) {
-        return Some(FilterReason::ExplicitChar);
-    }
-    if !filter_name_lc.is_empty() {
-        let name = unicode_names2::name(ch)
-            .map(|n| n.to_string())
-            .unwrap_or_default();
-        let name_lc = name.to_lowercase();
-        if let Some(pattern) = filter_name_lc
-            .iter()
-            .find(|sub| name_lc.contains(sub.as_str()))
-        {
-            return Some(FilterReason::NameSubstring {
-                pattern: pattern.clone(),
-                name,
-            });
-        }
-    }
-    None
-}
+use crate::etl::{FilterReason, filter_reason};
 
 /// Stroke widths in KanjiVG's 109-unit coordinate space to render. The default
 /// in the SVG files is 3. Vary it to simulate different pen pressures and brush
@@ -97,6 +58,8 @@ pub fn convert_kanjivg_dir(
     aug_seed: Option<u64>,
     filter_chars: &[char],
     filter_names: &[String],
+    include_chars: &[char],
+    include_names: &[String],
     equiv: &std::collections::HashMap<char, char>,
 ) -> io::Result<()> {
     let mut entries: Vec<(char, std::path::PathBuf)> = std::fs::read_dir(dir)?
@@ -127,25 +90,45 @@ pub fn convert_kanjivg_dir(
     entries.sort_by_key(|(ch, _)| *ch as u32);
     tracing::info!(dir, chars = entries.len(), "KanjiVG files found");
 
-    // Apply --filter &/or --filter-name exclusions before building the label map
-    // so that class indices remain contiguous without gaps.
-    if !filter_chars.is_empty() || !filter_names.is_empty() {
+    // Apply --filter / --filter-name aka blacklist and --include / --include-name
+    // whitelist exclusions before building the label map so that class indices
+    // remain contiguous without gaps.
+    let has_filter = !filter_chars.is_empty() || !filter_names.is_empty();
+    let has_include = !include_chars.is_empty() || !include_names.is_empty();
+    if has_filter || has_include {
         if !filter_chars.is_empty() {
             let chars_repr: Vec<String> = filter_chars
                 .iter()
-                .map(|c| format!("{c:?} U+{:04X}", *c as u32)) // TODO: have a --filter-unicode option for specific unicode charpoint filtering?
+                .map(|c| format!("{c:?} U+{:04X}", *c as u32))
                 .collect();
             tracing::info!(patterns = %chars_repr.join(", "), "--filter is filtering");
         }
         if !filter_names.is_empty() {
             tracing::info!(patterns = %filter_names.join(", "), "--filter-name is filtering");
         }
+        if !include_chars.is_empty() {
+            let chars_repr: Vec<String> = include_chars
+                .iter()
+                .map(|c| format!("{c:?} U+{:04X}", *c as u32))
+                .collect();
+            tracing::info!(patterns = %chars_repr.join(", "), "--include is whitelisting");
+        }
+        if !include_names.is_empty() {
+            tracing::info!(patterns = %include_names.join(", "), "--include-name is whitelisting");
+        }
 
         let mut removed_by_char: usize = 0;
         let mut removed_by_name: usize = 0;
+        let mut removed_by_whitelist: usize = 0;
 
-        entries.retain(
-            |(ch, _)| match filter_reason(*ch, filter_chars, filter_names) {
+        entries.retain(|(ch, _)| {
+            match filter_reason(
+                *ch,
+                filter_chars,
+                filter_names,
+                include_chars,
+                include_names,
+            ) {
                 None => true,
                 Some(FilterReason::ExplicitChar) => {
                     tracing::debug!(
@@ -170,21 +153,32 @@ pub fn convert_kanjivg_dir(
                     removed_by_name += 1;
                     false
                 }
-            },
-        );
+                Some(FilterReason::NotInWhitelist { ref name }) => {
+                    tracing::debug!(
+                        char = %ch,
+                        codepoint = format!("U+{:04X}", *ch as u32),
+                        unicode_name = %name,
+                        "excluded: not in --include / --include-name whitelist"
+                    );
+                    removed_by_whitelist += 1;
+                    false
+                }
+            }
+        });
 
-        let removed = removed_by_char + removed_by_name;
+        let removed = removed_by_char + removed_by_name + removed_by_whitelist;
         if removed > 0 {
             tracing::info!(
                 removed,
                 removed_by_char,
                 removed_by_name,
+                removed_by_whitelist,
                 remaining = entries.len(),
                 "characters filtered out"
             );
         } else {
             tracing::warn!(
-                "filter flags were provided however nothing matched, either the inputs aren't in the dat set or are invalid re-run with RUST_LOG=debug for more details"
+                "filter/include flags were provided however nothing was removed either the inputs aren't in the dataset or the patterns are wrong. Re-run with RUST_LOG=debug for more details"
             );
         }
     }
