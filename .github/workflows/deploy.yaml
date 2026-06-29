@@ -7,6 +7,7 @@ on:
       - master
     tags:
       - live
+      - 'v[0-9]*.[0-9]*.[0-9]*'
   workflow_dispatch:
 
 permissions:
@@ -214,9 +215,12 @@ jobs:
 
   deploy-next:
     name: Deploy /next/ to GitHub Pages
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    if: ${{ github.ref_type == 'branch' }}
     needs: [check-linux, check-macos, build-wasm-webgpu-lto, build-wasm-webgl-lto]
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}next/
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -239,23 +243,27 @@ jobs:
           cp -r _webgpu/* _site/next/wasm/
           cp -r _webgl/*  _site/next/wasm-webgl/
           cp index.html   _site/next/index.html
+          touch _site/.nojekyll
           echo "--- /next/ site layout ---"
-          find _site/next -type f | sort
+          find _site -type f | sort
 
-      - name: Deploy /next/ to gh-pages
-        uses: peaceiris/actions-gh-pages@v4
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: _site/next
-          destination_dir: next
-          keep_files: true
-          commit_message: "deploy: /next/ from ${{ github.sha }}"
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
 
   deploy-live:
     name: Deploy / (root) to GitHub Pages
-    if: ${{ startsWith(github.ref, 'refs/tags/') && github.ref == 'refs/tags/live' }}
+    if: ${{ github.ref == 'refs/tags/live' }}
     needs: [check-linux, check-macos, build-wasm-webgpu-lto, build-wasm-webgl-lto]
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -278,21 +286,22 @@ jobs:
           cp -r _webgpu/* _site/wasm/
           cp -r _webgl/*  _site/wasm-webgl/
           cp index.html   _site/index.html
+          touch _site/.nojekyll
           echo "--- root site layout ---"
           find _site -type f | sort
 
-      - name: Deploy root to gh-pages
-        uses: peaceiris/actions-gh-pages@v4
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: _site
-          destination_dir: .
-          keep_files: true
-          commit_message: "deploy: live from ${{ github.sha }} (tag: live)"
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
 
   cleanup-deployments:
     name: Clean Up Old Deployments
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    if: ${{ github.ref_type == 'branch' }}
     needs: [deploy-next]
     runs-on: ubuntu-latest
     permissions:
@@ -316,9 +325,90 @@ jobs:
             fi
           done
 
+  create-prerelease:
+    name: Create Pre-Release
+    if: ${{ github.ref_type == 'branch' }}
+    needs: [check-linux, check-macos, build-wasm-webgpu-lto, build-wasm-webgl-lto, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          mkdir -p wasm-dist/wasm wasm-dist/wasm-webgl
+          cp -r artifacts/wasm-webgpu/* wasm-dist/wasm/
+          cp -r artifacts/wasm-webgl/*  wasm-dist/wasm-webgl/
+          cp index.html wasm-dist/
+          tar czf release/mitchty-wasm.tar.gz -C wasm-dist .
+          cp artifacts/mitchty-windows-x86_64/mitchty-windows-x86_64.exe release/
+          cp artifacts/mitchty-darwin-aarch64/mitchty-darwin-aarch64 release/
+          ls -lh release/
+
+      - name: Delete existing pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view pre-release >/dev/null 2>&1; then
+            echo "Deleting existing pre-release"
+            gh release delete pre-release --yes --cleanup-tag
+          fi
+
+      - name: Create pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > /tmp/release-notes.md << 'RELEASE_NOTES'
+          Automated pre-release build from main branch
+
+          **Commit:** `${{ github.sha }}`
+
+          ### 🌐 WASM (Web)
+
+          **Work in progress builds:** [mitchty.github.io/next/](https://mitchty.github.io/next/) latest main commit, may be unstable/broken/angy/sus/sad/buggy etc...
+
+          **Active/Live build:** [mitchty.github.io](https://mitchty.github.io) tagged as `live` in git, whatever commit I designate as good enough to ship as the live site. Not guaranteed to not have bugs just less or not all that important of bugs.
+
+          Or download `mitchty-wasm.tar.gz` to self-host. The tarball contains both
+          `wasm/` WebGPU and `wasm-webgl/` WebGL fallback alongside `index.html`
+          which picks the best available renderer at runtime.
+
+          ### 📦 Native Downloads
+
+          **macOS (Apple Silicon):**
+          ```bash
+          curl -Lo mitchty https://github.com/${{ github.repository }}/releases/download/pre-release/mitchty-darwin-aarch64
+          chmod +x mitchty
+          ./mitchty
+          ```
+
+          **Windows (x86_64):**
+          Download `mitchty-windows-x86_64.exe` and run it... somehow?
+
+          ---
+          ⚠️ **Note:** These are automated builds from the main development branch, they could be sus.
+
+          Windows builds are cross-compiled and largely untested but here for funsies. Let me know if they work.
+          RELEASE_NOTES
+
+          gh release create pre-release \
+            --title "Latest main" \
+            --notes-file /tmp/release-notes.md \
+            --prerelease \
+            release/mitchty-wasm.tar.gz \
+            release/mitchty-windows-x86_64.exe \
+            release/mitchty-darwin-aarch64
+
+  # live tag -> versioned snapshot release, keep last N.
   create-live-release:
     name: Create Live Release
-    if: ${{ startsWith(github.ref, 'refs/tags/') && github.ref == 'refs/tags/live' }}
+    if: ${{ github.ref == 'refs/tags/live' }}
     needs: [deploy-live, build-windows, build-macos]
     runs-on: ubuntu-latest
     env:
@@ -410,8 +500,10 @@ jobs:
                 gh release delete "${tag}" --yes --cleanup-tag || true
               done
 
-  create-prerelease:
-    name: Create Pre-Release
+  # vM.N.O tag -> permanent versioned release, never pruned.
+  create-release:
+    name: Create Release
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
     needs: [check-linux, check-macos, build-wasm-webgpu-lto, build-wasm-webgl-lto, build-windows, build-macos]
     runs-on: ubuntu-latest
     steps:
@@ -426,8 +518,6 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
-          # Bundle both wasm builds into one tarball for self-hosting by others
-          # just like github or the .#web/.#web-lto derivation apps do.
           mkdir -p wasm-dist/wasm wasm-dist/wasm-webgl
           cp -r artifacts/wasm-webgpu/* wasm-dist/wasm/
           cp -r artifacts/wasm-webgl/*  wasm-dist/wasm-webgl/
@@ -437,65 +527,59 @@ jobs:
           cp artifacts/mitchty-darwin-aarch64/mitchty-darwin-aarch64 release/
           ls -lh release/
 
-      - name: Delete existing pre-release
+      - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Delete the pre-release tag and release if it exists
-          if gh release view pre-release >/dev/null 2>&1; then
-            echo "Deleting existing pre-release"
-            gh release delete pre-release --yes --cleanup-tag
-          fi
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          TAG="${{ github.ref_name }}"
+          CARGO_VERSION="$(grep -A5 '\[workspace.package\]' Cargo.toml | grep '^version' | sed 's/version = "\(.*\)"/\1/')"
 
-      - name: Create pre-release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cat > /tmp/release-notes.md << 'RELEASE_NOTES'
-          Automated pre-release build from main branch
+          cat > /tmp/release-notes.md << RELEASE_NOTES
+          Release ${TAG}
 
-          **Commit:** `${{ github.sha }}`
+          **Commit:** \`${{ github.sha }}\`
+          **Version:** \`${CARGO_VERSION}\`
 
           ### 🌐 WASM (Web)
 
-          **Work in progress builds:** [mitchty.github.io/next/](https://mitchty.github.io/next/) latest main commit, may be unstable/broken/angy/sus/sad/buggy etc...
-
-          **Active/Live build:** [mitchty.github.io](https://mitchty.github.io) tagged as `live` in git, whatever commit I designate as good enough to ship as the live site. Not guaranteed to not have bugs just less or not all that important of bugs.
-
-          Or download `mitchty-wasm.tar.gz` to self-host. The tarball contains both
-          `wasm/` WebGPU and `wasm-webgl/` WebGL fallback alongside `index.html`
+          Download \`mitchty-wasm.tar.gz\` to self-host. The tarball contains both
+          \`wasm/\` WebGPU and \`wasm-webgl/\` WebGL fallback alongside \`index.html\`
           which picks the best available renderer at runtime.
 
           ### 📦 Native Downloads
 
           **macOS (Apple Silicon):**
-          ```bash
-          curl -Lo mitchty https://github.com/${{ github.repository }}/releases/download/pre-release/mitchty-darwin-aarch64
+          \`\`\`bash
+          curl -Lo mitchty https://github.com/${{ github.repository }}/releases/download/${TAG}/mitchty-darwin-aarch64
           chmod +x mitchty
           ./mitchty
-          ```
+          \`\`\`
 
           **Windows (x86_64):**
-          Download `mitchty-windows-x86_64.exe` and run it... somehow?
-
-          ---
-          ⚠️ **Note:** These are automated builds from the main development branch, they could be sus.
-
-          Windows builds are cross-compiled and largely untested but here for funsies. Let me know if they work.
+          Download \`mitchty-windows-x86_64.exe\` and run it.
           RELEASE_NOTES
 
-          gh release create pre-release \
-            --title "Latest main" \
+          gh release create "${TAG}" \
+            --target "${{ github.sha }}" \
+            --title "${TAG}" \
             --notes-file /tmp/release-notes.md \
-            --prerelease \
             release/mitchty-wasm.tar.gz \
             release/mitchty-windows-x86_64.exe \
             release/mitchty-darwin-aarch64
 
   record-sizes:
     name: Record Binary Sizes
-    if: ${{ startsWith(github.ref, 'refs/tags/') && github.ref == 'refs/tags/live' }}
-    needs: [create-live-release]
+    # Runs after any tag-triggered release: live snapshot or vM.N.O versioned release.
+    # always() is required so a skipped release job (the one that didn't match
+    # this tag) doesn't cause GitHub to skip this job too. The inner guard then
+    # makes sure we only actually execute on tag pushes where at least one of
+    # the release jobs succeeded.
+    if: >-
+      always() &&
+      github.ref_type == 'tag' &&
+      (needs.create-live-release.result == 'success' || needs.create-release.result == 'success')
+    needs: [create-live-release, create-release]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -515,9 +599,17 @@ jobs:
           name: ${{ env.CACHIX_CACHE_NAME }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Run ci script to record pre-release binary sizes after downloading
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Run ci script to record binary sizes
         run: |
-          nix develop --command ./bin/ci-record-sizes.sh
+          nix run .#ci-record-sizes -- \
+            artifacts/wasm-webgl/mitchty_bg.wasm \
+            artifacts/mitchty-windows-x86_64/mitchty-windows-x86_64.exe \
+            artifacts/mitchty-darwin-aarch64/mitchty-darwin-aarch64
 
       - name: Commit build metadata
         run: |
@@ -528,9 +620,6 @@ jobs:
             echo "no changes to commit"
           else
             git commit -n -m "chore: record sizes for ${GITHUB_SHA:0:7} [skip ci]"
-            # Always push back to main this job runs off the 'live' tag so
-            # GITHUB_REF_NAME would be 'live' which would corrupt the tag when
-            # we're only trying to push to the main branch the size data.
             git pull --rebase origin main
             git push origin HEAD:main
           fi

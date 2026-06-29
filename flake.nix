@@ -1615,6 +1615,31 @@
               };
             };
 
+          # Run the CI binary-size script.
+          #
+          # Usage (mirrors what CI does):
+          #   nix run .#ci-record-sizes -- <wasm-bg.wasm> <win.exe> <mac-binary>
+          ci-record-sizes = {
+            type = "app";
+            program = "${
+              pkgs.writeShellApplication {
+                name = "ci-record-sizes";
+                runtimeInputs = with pkgs; [
+                  git
+                  jq
+                  coreutils
+                  # numfmt lives in coreutils on Linux; on Darwin it's in
+                  # pkgs.coreutils as well (the GNU variant from nixpkgs).
+                ];
+                text = builtins.readFile ./bin/record-sizes.sh;
+              }
+            }/bin/ci-record-sizes";
+            meta = {
+              description = "Record binary artifact sizes to .build-meta/sizes/history.json";
+              mainProgram = "ci-record-sizes";
+            };
+          };
+
           # Makes updating everything at once a bit easier.
           # nix run .#update
           update = {
