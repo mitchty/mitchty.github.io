@@ -1,13 +1,15 @@
-use bevy::{
-    input::mouse::{MouseScrollUnit, MouseWheel},
-    picking::hover::HoverMap,
-    prelude::*,
-};
-use markdown::{ParseOptions, mdast::Node as MdNode, to_mdast};
+use bevy::prelude::*;
 
+use crate::plugins::fonts::RegisteredFonts;
 use crate::plugins::{PluginEnabled, PluginRegistry, run_if_enabled};
 
-// Build.rs generated data from the reveries dir markdown files.
+/// Font used to render reverie *content* in the 3-D typst MVP view.
+///
+/// TODO: Future me needs to deal with fonts that have ligatures more as typst
+/// dumps out ligatures a lot. And some fonts apparently are broken.
+const REVERIE_FONT_NAME: &str = "FiraMono-Medium.ttf";
+
+// Build.rs generated data from the reveries dir typst files.
 include!(concat!(env!("OUT_DIR"), "/reveries_generated.rs"));
 
 /// All lookup keys for a specific reverie.
@@ -44,7 +46,7 @@ impl ReverieKey {
 #[derive(Component)]
 pub struct ReverieDisplayName(pub &'static str);
 
-/// Raw markdown content of the reverie file, embedded at compile time. (for now, I might make this dynamic in future)
+/// Raw typst content of the reverie file, embedded at compile time. (for now, I might make this dynamic in future)
 #[derive(Component)]
 pub struct ReverieContent(pub &'static str);
 
@@ -82,9 +84,13 @@ impl Plugin for ReveriesPlugin {
                 ReveriesSystems.run_if(run_if_enabled::<ReveriesPlugin>()),
             )
             .init_resource::<ActiveReverie>()
-            .add_systems(Update, sync_scroll_view_visibility.in_set(ReveriesSystems))
-            .add_systems(Update, send_scroll_events.in_set(ReveriesSystems))
-            .add_observer(on_scroll);
+            .init_resource::<ReverieViewState>()
+            .add_systems(
+                Update,
+                (sync_typst_reverie_view, reveal_ready_reverie_view)
+                    .chain()
+                    .in_set(ReveriesSystems),
+            );
 
         if let Some(mut registry) = app.world_mut().get_resource_mut::<PluginRegistry>() {
             registry.register::<ReveriesPlugin>("Reveries", true);
@@ -273,229 +279,255 @@ pub fn render_reverie_nodes(
     }
 }
 
-/// Marker on the single Bevy UI node rendering the active reverie.
-/// Stores the reverie entity it currently displays to detect changes.
+/// Marker on a [`flan::typst_text::TypstTextNode`] entity rendering one
+/// reverie's content in world space via the slug shader.
+///
+/// One such entity exists per reverie that has been in an app session. Entities
+/// are never mutated in place or despawned once spawned. Once spawned
+/// visibility and transforms control redisplay. No despawn is setup.
 #[derive(Component)]
-pub struct LoremScrollView {
+pub struct TypstReverieView {
+    /// The reverie ECS entity whose content this view is showing.
     pub reverie: Entity,
 }
 
-const LINE_HEIGHT: f32 = 20.0;
+/// Tracks which [`TypstReverieView`] entity is currently visible or being
+/// waited to spawn, so [`sync_typst_reverie_view`] and
+/// [`reveal_ready_reverie_view`] can coordinate the hidden-until-ready handoff
+/// across frames/ticks.
+#[derive(Resource, Default)]
+struct ReverieViewState {
+    /// The view entity currently `Visibility::Visible`, if any.
+    visible: Option<Entity>,
+    /// A view entity that has been spawned (or already existed) and is
+    /// waiting to fully materialize before being swapped in.
+    pending: Option<Entity>,
+}
 
-/// Spawn, swap, or despawn the scroll-view node when `ActiveReverie` changes.
-fn sync_scroll_view_visibility(
+/// Compute a `Transform` that places a reverie view directly in front of the
+/// current camera, facing it, sized to fill around 85% of the viewport height.
+///
+/// TODO: width too, I was lazy.
+fn compute_reverie_transform(cam_gt: &GlobalTransform, proj: &Projection) -> Transform {
+    let cam_mat = cam_gt.to_matrix();
+    let cam_pos = cam_gt.translation();
+    let cam_right = cam_mat.x_axis.truncate().normalize();
+    let cam_up = cam_mat.y_axis.truncate().normalize();
+
+    // Camera looks in its local -Z; world-space forward = -z_axis.
+    let cam_forward = -cam_mat.z_axis.truncate().normalize();
+
+    let depth = 3.0_f32;
+    let clip = proj.get_clip_from_view();
+    let cot_fov = clip.y_axis.y.max(0.001);
+    let vis_h = 2.0 * depth / cot_fov;
+    let scale = vis_h * 0.85;
+
+    let text_pos = cam_pos + cam_forward * depth;
+
+    let rot = Quat::from_mat3(&Mat3::from_cols(
+        cam_right,
+        cam_up,
+        -cam_forward, // model +Z toward camera; det = +1 ✓
+    ));
+
+    Transform {
+        translation: text_pos,
+        rotation: rot,
+        scale: Vec3::splat(scale),
+    }
+}
+
+/// Dispatch [`ActiveReverie`] on changes to find-or-spawn the target reverie's
+/// view entity and mark it [`ReverieViewState::pending`]. Actually swapping it
+/// in is handled by [`reveal_ready_reverie_view`] once it has fully spawned.
+///
+/// - `ActiveReverie(None)` = hide the currently visible view and cancel any
+///   in-flight pending swap. Does not despawn anything, so cached views stay
+///   warm for reselection in case someone wants to click buttons fast.
+/// - `ActiveReverie(Some(reverie))`:
+///   - Already the visible reverie = no-op, cancels any stale pending swap to handle rapid reselections.
+///   - A cached view entity already exists for this reverie = mark it pending;
+///     it may already be ready, in which case [`reveal_ready_reverie_view`]
+///     swaps it in as soon as next frame.
+///   - No cached view entity yet = spawn a new entity with `Visibility::Hidden`
+///     and [`flan::typst_text::TypstDirty`], leave it to spawn untouched, and
+///     mark pending when ready.
+///
+/// Requires [`REVERIE_FONT_NAME`] to already be present in [`RegisteredFonts`];
+/// if it hasn't loaded yet the system is a no-op. Re-runs whenever
+/// [`RegisteredFonts`] changes so that selecting a reverie *before* the font
+/// finishes loading still resolves correctly once registration completes,
+/// without needing a dedicated one-shot setup system like
+/// `text3d::setup_flan_font`.
+fn sync_typst_reverie_view(
     active: Res<ActiveReverie>,
     content_q: Query<&ReverieContent>,
-    view_q: Query<(Entity, &LoremScrollView)>,
+    view_q: Query<(Entity, &TypstReverieView)>,
+    registered_fonts: Res<RegisteredFonts>,
+    mut state: ResMut<ReverieViewState>,
     mut commands: Commands,
 ) {
-    if !active.is_changed() {
+    if !active.is_changed() && !registered_fonts.is_changed() {
         return;
     }
+
+    let Some(font_id) = registered_fonts
+        .0
+        .iter()
+        .find(|e| e.name == REVERIE_FONT_NAME)
+        .map(|e| e.font_id)
+    else {
+        bevy::log::trace!(
+            "sync_typst_reverie_view: {REVERIE_FONT_NAME} not yet registered, waiting"
+        );
+        return;
+    };
+
+    bevy::log::trace!(
+        "sync_typst_reverie_view: ActiveReverie changed -> {:?}",
+        active.0
+    );
 
     match active.0 {
         None => {
-            if let Ok((view_entity, _)) = view_q.single() {
-                commands.entity(view_entity).despawn();
+            if let Some(visible) = state.visible.take() {
+                bevy::log::trace!(
+                    "sync_typst_reverie_view: hiding {:?} (deactivated)",
+                    visible
+                );
+                commands.entity(visible).insert(Visibility::Hidden);
             }
+            state.pending = None;
         }
         Some(reverie_entity) => {
-            let content = content_q
-                .get(reverie_entity)
-                .map(|c| c.0)
-                .unwrap_or_default();
+            let already_visible = state.visible.is_some_and(|v| {
+                view_q
+                    .get(v)
+                    .is_ok_and(|(_, view)| view.reverie == reverie_entity)
+            });
+            if already_visible {
+                bevy::log::trace!(
+                    "sync_typst_reverie_view: {:?} already visible, skipping",
+                    reverie_entity
+                );
+                // Cancel a stale in-flight switch away from the reverie
+                // already being displayed.
+                state.pending = None;
+                return;
+            }
 
-            if let Ok((view_entity, shown)) = view_q.single() {
-                if shown.reverie != reverie_entity {
-                    commands.entity(view_entity).despawn();
-                    spawn_scroll_view(&mut commands, reverie_entity, content);
+            let existing = view_q
+                .iter()
+                .find(|(_, view)| view.reverie == reverie_entity)
+                .map(|(e, _)| e);
+
+            match existing {
+                Some(view_entity) => {
+                    bevy::log::trace!(
+                        "sync_typst_reverie_view: cached view {:?} found for {:?}, \
+                         marking pending",
+                        view_entity,
+                        reverie_entity
+                    );
+                    state.pending = Some(view_entity);
                 }
-                // same entity -> already showing the right content
-            } else {
-                spawn_scroll_view(&mut commands, reverie_entity, content);
+                None => {
+                    let typst_source = content_q
+                        .get(reverie_entity)
+                        .map(|c| c.0)
+                        .unwrap_or_default();
+
+                    bevy::log::trace!(
+                        "sync_typst_reverie_view: spawning new hidden view for {:?} \
+                         (font={:?}, source len={})",
+                        reverie_entity,
+                        font_id,
+                        typst_source.len()
+                    );
+
+                    let view_entity = commands
+                        .spawn((
+                            flan::typst_text::TypstTextNode {
+                                source: typst_source.to_owned(),
+                                font_id,
+                                pixels_per_pt: 1.2,
+                                color: [220, 220, 210, 255],
+                            },
+                            flan::typst_text::TypstDirty,
+                            Transform::default(),
+                            Visibility::Hidden,
+                            Mesh3d::default(),
+                            TypstReverieView {
+                                reverie: reverie_entity,
+                            },
+                        ))
+                        .id();
+
+                    state.pending = Some(view_entity);
+                }
             }
         }
     }
 }
 
-#[derive(EntityEvent, Debug)]
-#[entity_event(propagate, auto_propagate)]
-struct Scroll {
-    entity: Entity,
-    delta: Vec2,
-}
-
-fn on_scroll(mut ev: On<Scroll>, mut query: Query<(&mut ScrollPosition, &Node, &ComputedNode)>) {
-    let Ok((mut pos, node, computed)) = query.get_mut(ev.entity) else {
+/// Swap a fully-materialized [`ReverieViewState::pending`] view entity: hide
+/// anything visible, recompute the pending entity's `Transform` against the
+/// *current* camera pose, and set it `Visibility::Visible` last.
+///
+/// "Fully materialized" means the typst pipeline has completely drained for
+/// that entity. It either works or it doesn't and I gotta debug again.
+///
+/// Runs unconditionally every frame since readiness resolves asynchronously
+/// over multiple ticks independent of any single [`ActiveReverie`] change.
+#[allow(clippy::type_complexity)]
+fn reveal_ready_reverie_view(
+    mut state: ResMut<ReverieViewState>,
+    ready_q: Query<
+        Entity,
+        (
+            With<TypstReverieView>,
+            Without<flan::typst_text::TypstDirty>,
+            Without<flan::Text3dDirty>,
+        ),
+    >,
+    camera_q: Query<(&GlobalTransform, &Projection), With<Camera3d>>,
+    mut commands: Commands,
+) {
+    let Some(pending) = state.pending else {
         return;
     };
 
-    let max_offset = (computed.content_size() - computed.size()) * computed.inverse_scale_factor();
-    let delta = &mut ev.delta;
-
-    if node.overflow.x == OverflowAxis::Scroll && delta.x != 0.0 {
-        let at_max = if delta.x > 0.0 {
-            pos.x >= max_offset.x
-        } else {
-            pos.x <= 0.0
-        };
-        if !at_max {
-            pos.x += delta.x;
-            delta.x = 0.0;
-        }
+    if !ready_q.contains(pending) {
+        // Still shaping/meshing/uploading try again next frame.
+        return;
     }
 
-    if node.overflow.y == OverflowAxis::Scroll && delta.y != 0.0 {
-        let at_max = if delta.y > 0.0 {
-            pos.y >= max_offset.y
-        } else {
-            pos.y <= 0.0
-        };
-        if !at_max {
-            pos.y += delta.y;
-            delta.y = 0.0;
-        }
+    let Ok((cam_gt, proj)) = camera_q.single() else {
+        bevy::log::warn!("reveal_ready_reverie_view: no single Camera3d found, skipping");
+        return;
+    };
+
+    let transform = compute_reverie_transform(cam_gt, proj);
+
+    if let Some(prev) = state.visible
+        && prev != pending
+    {
+        bevy::log::trace!("reveal_ready_reverie_view: hiding previous view {:?}", prev);
+        commands.entity(prev).insert(Visibility::Hidden);
     }
 
-    if *delta == Vec2::ZERO {
-        ev.propagate(false);
-    }
-}
-
-pub fn send_scroll_events(
-    mut wheel: MessageReader<MouseWheel>,
-    hover_map: Res<HoverMap>,
-    keyboard: Res<ButtonInput<KeyCode>>,
-    scroll_view: Query<Entity, With<LoremScrollView>>,
-    mut commands: Commands,
-) {
-    for ev in wheel.read() {
-        let mut delta = -Vec2::new(ev.x, ev.y);
-        if ev.unit == MouseScrollUnit::Line {
-            delta *= LINE_HEIGHT;
-        }
-        if keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]) {
-            std::mem::swap(&mut delta.x, &mut delta.y);
-        }
-
-        let mut dispatched = false;
-        for pointer_map in hover_map.values() {
-            for &entity in pointer_map.keys() {
-                commands.trigger(Scroll { entity, delta });
-                dispatched = true;
-            }
-        }
-
-        if !dispatched && let Ok(entity) = scroll_view.single() {
-            commands.trigger(Scroll { entity, delta });
-        }
-    }
-}
-
-fn spawn_scroll_view(commands: &mut Commands, reverie: Entity, content: &str) {
-    let sections = parse_markdown_sections(content);
-
+    bevy::log::trace!(
+        "reveal_ready_reverie_view: revealing {:?} at {:?}",
+        pending,
+        transform.translation
+    );
     commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                top: Val::Px(40.0),
-                bottom: Val::Px(0.0),
-                left: Val::Px(210.0),
-                right: Val::Px(0.0),
-                overflow: Overflow::scroll_y(),
-                padding: UiRect::all(Val::Px(12.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(12.0),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.04, 0.04, 0.06, 0.88)),
-            ScrollPosition::default(),
-            LoremScrollView { reverie },
-        ))
-        .with_children(|p| {
-            for (heading, body) in &sections {
-                p.spawn((
-                    Text::new(heading.clone()),
-                    TextFont {
-                        font_size: bevy::text::FontSize::Px(18.0),
-                        ..default()
-                    },
-                    TextColor(Color::srgb(0.85, 0.75, 0.35)),
-                ));
-                p.spawn((
-                    Text::new(body.clone()),
-                    TextFont {
-                        font_size: bevy::text::FontSize::Px(14.0),
-                        ..default()
-                    },
-                    TextColor(Color::srgb(0.88, 0.88, 0.84)),
-                    Node {
-                        margin: UiRect::bottom(Val::Px(6.0)),
-                        ..default()
-                    },
-                ));
-            }
-        });
-}
+        .entity(pending)
+        .insert((transform, Visibility::Visible));
 
-// Markdown stuff, probably better yeeted in the lib crate in future.
-
-fn inline_text(node: &MdNode) -> String {
-    match node {
-        MdNode::Text(t) => t.value.clone(),
-        MdNode::InlineCode(c) => c.value.clone(),
-        MdNode::Strong(s) => s.children.iter().map(inline_text).collect(),
-        MdNode::Emphasis(e) => e.children.iter().map(inline_text).collect(),
-        MdNode::Delete(d) => d.children.iter().map(inline_text).collect(),
-        MdNode::Link(l) => l.children.iter().map(inline_text).collect(),
-        _ => String::new(),
-    }
-}
-
-fn parse_markdown_sections(src: &str) -> Vec<(String, String)> {
-    let Ok(root) = to_mdast(src, &ParseOptions::default()) else {
-        return Vec::new();
-    };
-
-    let MdNode::Root(root) = root else {
-        return Vec::new();
-    };
-
-    let mut sections: Vec<(String, String)> = Vec::new();
-    let mut current_heading: Option<String> = None;
-    let mut current_body = String::new();
-
-    for node in &root.children {
-        match node {
-            MdNode::Heading(h) => {
-                if let Some(heading) = current_heading.take() {
-                    let body = current_body.trim().to_string();
-                    if !body.is_empty() {
-                        sections.push((heading, body));
-                    }
-                    current_body.clear();
-                }
-                current_heading = Some(h.children.iter().map(inline_text).collect::<String>());
-            }
-            MdNode::Paragraph(para) if current_heading.is_some() => {
-                if !current_body.is_empty() {
-                    current_body.push(' ');
-                }
-                current_body.push_str(&para.children.iter().map(inline_text).collect::<String>());
-            }
-            _ => {}
-        }
-    }
-
-    if let Some(heading) = current_heading {
-        let body = current_body.trim().to_string();
-        if !body.is_empty() {
-            sections.push((heading, body));
-        }
-    }
-
-    sections
+    state.visible = Some(pending);
+    state.pending = None;
 }
 
 #[cfg(test)]

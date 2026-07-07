@@ -195,7 +195,7 @@
             (lib.fileset.fileFilter (file: file.hasExt "wesl") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "toml") ./crates)
             # This is stuff thats embedded beyond the bevy asset server
-            (lib.fileset.fileFilter (file: file.hasExt "md") ./crates)
+            (lib.fileset.fileFilter (file: file.hasExt "typ") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "ttf") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "glb") ./crates)
             (lib.fileset.fileFilter (file: file.hasExt "mpk") ./crates)
@@ -624,7 +624,7 @@
               (craneLib.fileset.commonCargoSources crate)
               (lib.fileset.fileFilter (file: file.hasExt "rs") ./crates)
               (lib.fileset.fileFilter (file: file.hasExt "toml") ./crates)
-              (lib.fileset.fileFilter (file: file.hasExt "md") ./crates)
+              (lib.fileset.fileFilter (file: file.hasExt "typ") ./crates)
               (lib.fileset.fileFilter (file: file.hasExt "ktx2") ./crates)
               (lib.fileset.fileFilter (file: file.hasExt "ttf") ./crates)
               (lib.fileset.fileFilter (file: file.hasExt "glb") ./crates)
@@ -867,6 +867,24 @@
           CARGO_PROFILE = "dev";
         };
 
+        # Extra env vars needed for any derivation that compiles tikv-jemalloc-sys
+        # with --enable-prof (i.e. the jemalloc-pprof feature).
+        #
+        # In a nix sandbox CC defaults to the stdenv C compiler, but tikv-jemalloc-sys's
+        # build.rs uses cc::Build which resolves the compiler independently and may land on
+        # "gcc". Setting CC_x86_64_unknown_linux_gnu (the target-prefixed var cc::Build
+        # checks first) ensures jemalloc's configure gets clang.
+        #
+        # jemalloc's configure uses je_cv_* cache variables for its strerror_r return-type
+        # test. Pre-seeding them skips the compile test, which can fail in sandboxed
+        # environments where headers are not on the default search path.
+        # On NixOS/glibc with _GNU_SOURCE, strerror_r returns char* (GNU variant).
+        jemallocProfilingArgs = lib.optionalAttrs pkgs.stdenv.isLinux {
+          "CC_x86_64_unknown_linux_gnu" = "${pkgs.llvmPackages.clang}/bin/clang";
+          je_cv_strerror_r_returns_char_with_gnu_source = "yes";
+          je_cv_strerror_r_header_pass = "yes";
+        };
+
         releaseArgs = {
           CARGO_PROFILE = "release";
           RUSTFLAGS = "-D warnings ${lib.optionalString pkgs.stdenv.isLinux linuxMoldFlags}";
@@ -968,6 +986,40 @@
               ${lib.optionalString pkgs.stdenv.isLinux "--prefix LD_LIBRARY_PATH : ${
                 lib.makeLibraryPath (commonXinputs ++ [ pkgs.stdenv.cc.cc.lib ])
               }"}
+          '';
+          meta.mainProgram = "mitchty";
+        };
+
+        # Dev-profile debug build with jemalloc heap profiling wired in, see
+        # crates/mitchty/src/profiling.rs for the full manual recipe this
+        # replaces. Built off devArgs rather than bothering with a dedicated
+        # cargo profile in nix the dev profile is already unoptimized with debug
+        # info, which is what jeprof needs to resolve symbols anyway.
+        #
+        # I had a profiling profile for a bit here but it just ends up another
+        # dep tree to build needlessly.
+        # Use: nix run .#mitchty-profile
+        mitchty-profiling-unwrapped = craneLib.buildPackage (
+          individualCrateArgs
+          // nixEnvArgs
+          // devArgs
+          // jemallocProfilingArgs
+          // {
+            pname = "mitchty-profiling";
+            cargoExtraArgs = "-p mitchty --features mitchty/jemalloc-pprof";
+            src = fileSetForCrate ./crates/mitchty;
+            doCheck = false;
+          }
+        );
+
+        mitchty-profiling = pkgs.symlinkJoin {
+          name = "mitchty-profiling";
+          paths = [ mitchty-profiling-unwrapped ];
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          postBuild = ''
+            wrapProgram $out/bin/mitchty \
+              --set BEVY_ASSET_PATH ${mitchty-dev-asset-root} \
+              ${lib.optionalString pkgs.stdenv.isLinux "--prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath commonXinputs}"}
           '';
           meta.mainProgram = "mitchty";
         };
@@ -1490,6 +1542,7 @@
             mitchty
             mitchty-lto
             mitchty-tracy
+            mitchty-profiling
             ma
             mitchty-webgl
             mitchty-webgl-lto
@@ -1543,6 +1596,48 @@
             // {
               meta = metaCommon "Tracy-instrumented build (start Tracy GUI first)";
             };
+
+          # Builds mitchty with cargo dev profile and jemalloc-pprof feature
+          # then runs with _RJEM_MALLOC_CONF set up automatically so jemalloc
+          # dumps heap profiles. I'm terribad at remembering how to run this all
+          # and the flakes here for me to forget.
+          #
+          # Each run gets its own timestamped dir under $TMPDIR/mitchty-heap.*
+          # so old snapshots aren't clobbered. jeprof needs the *unwrapped* ELF
+          # binary, the path to it is printed below.
+          #
+          # nix run .#mitchty-profile
+          mitchty-profile = {
+            type = "app";
+            program = "${
+              pkgs.writeShellApplication {
+                name = "mitchty-profile";
+                text = ''
+                  set -euo pipefail
+
+                  base_dir=$(mktemp -d "''${TMPDIR:-/tmp}/mitchty-heap.XXXXXX")
+                  prefix="''${base_dir}/heap"
+
+                  export _RJEM_MALLOC_CONF="prof:true,prof_active:true,prof_prefix:''${prefix}"
+
+                  echo "mitchty-profile: dev build + jemalloc-pprof feature"
+                  echo "mitchty-profile: heap dumps -> ''${prefix}.<pid>.<seq>.heap"
+                  echo "mitchty-profile: _RJEM_MALLOC_CONF=''${_RJEM_MALLOC_CONF}"
+                  echo "mitchty-profile: to diff two snapshots once you have a few:"
+                  echo "  jeprof --base=''${prefix}.<pid>.0001.heap --pdf \\"
+                  echo "    ${mitchty-profiling-unwrapped}/bin/mitchty ''${prefix}.<pid>.NNNN.heap > leak_diff.pdf"
+                  echo ""
+
+                  exec "${mitchty-profiling}/bin/mitchty" "$@"
+                '';
+              }
+            }/bin/mitchty-profile";
+            meta = {
+              description = "Run a jemalloc-heap-profiling dev build";
+              mainProgram = "mitchty-profile";
+            };
+          };
+
           ma = {
             type = "app";
             program = "${ma}/bin/ma";
@@ -1822,6 +1917,8 @@
                 wasm-bindgen-cli
                 binaryen
                 wasm-pack
+                jemalloc
+                ghostscript # for jeprof to produce pdf diffsnsuch
               ]
               ++ [
                 cargo-deny-0_19
@@ -1869,6 +1966,31 @@
 
             # Use mold for faster linking in devshell interactive builds.
             RUSTFLAGS = lib.optionalString pkgs.stdenv.isLinux linuxMoldFlags;
+
+            # tikv-jemalloc-sys builds jemalloc from source via autoconf.
+            # On NixOS two things go wrong with this:
+            #
+            # 1. tikv-jemalloc-sys's build.rs uses cc::Build to find CC.
+            #    cc::Build looks at CC_<target> first, then CC, then scans PATH.
+            #    In the devshell only clang is on PATH, so cc finds
+            #    nothing and falls back to the literal string "gcc". The build.rs
+            #    then passes CC="gcc" explicitly to configure, which fails.
+            #    Setting CC_x86_64_unknown_linux_gnu the target-prefixed var
+            #    cc::Build checks before CC env to clang fixes this.
+            #
+            # 2. jemalloc's configure uses je_cv_* cache variables (NOT ac_cv_*)
+            #    for its strerror_r test. The test is compile-only (not runtime),
+            #    but fails because gcc is not on PATH. Once CC is fixed (above)
+            #    the test compiles. Pre-seeding je_cv_* is a belt-and-suspenders
+            #    fallback in case the compiler still can't find glibc headers.
+            #    On NixOS/glibc with _GNU_SOURCE, strerror_r returns char*.
+            #
+            # TODO: I think I fixed the profile stuff, but if not I'll fix this
+            # later its late.
+            "CC_x86_64_unknown_linux_gnu" =
+              lib.optionalString pkgs.stdenv.isLinux "${pkgs.llvmPackages.clang}/bin/clang";
+            je_cv_strerror_r_returns_char_with_gnu_source = lib.optionalString pkgs.stdenv.isLinux "yes";
+            je_cv_strerror_r_header_pass = lib.optionalString pkgs.stdenv.isLinux "yes";
 
             # Set library path for Bevy and on linux cuda crap
             LD_LIBRARY_PATH =

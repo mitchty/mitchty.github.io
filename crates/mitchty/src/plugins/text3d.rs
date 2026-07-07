@@ -7,10 +7,11 @@
 //! - Initial visibility (`setup_3d_text` sets `state.visible = true`)
 //! - Reverie / world-clock text sync (`sync_text3d_to_active_reverie`)
 //! - Re-exports consumed by egui and other mitchty modules
+//! - Typst demo entity spawn (feature = "typst" on flan, this is a complete work in progress)
 
 use bevy::prelude::*;
 
-use crate::plugins::fonts::{RegisteredFontEntry, RegisteredFonts};
+use crate::plugins::fonts::RegisteredFonts;
 use crate::plugins::reveries::{ActiveReverie, ReverieDisplayName};
 
 pub use flan::{
@@ -21,60 +22,71 @@ pub use flan::{
 pub use flan::Text3dFontId as FlanFontId;
 pub use flan::Text3dFontId;
 
-/// Handle to the NotoSansJP font, held until the asset is loaded.
-#[derive(Resource)]
-pub struct Text3dFontHandle(pub Handle<Font>);
+/// Sentinel resource: present while `setup_flan_font` still needs to run.
+#[derive(Resource, Default)]
+pub struct Text3dFontHandle;
 
-/// Startup: kick off async loading of NotoSansJP.
-pub fn load_text3d_font(mut commands: Commands, asset_server: Res<AssetServer>) {
-    use crate::assets::asset_path;
-    let handle = asset_server.load(asset_path("fonts/NotoSansJP-Regular.ttf"));
-    commands.insert_resource(Text3dFontHandle(handle));
-}
+/// The font name this plugin manages for 3-D slug text.
+///
+/// Kept as NotoSansJP-Regular.ttf because [`flan::text3d::SlugText3dState`]'s
+/// default text is `"mitchty 美智君"` and it needs kanji glyph coverage that
+/// FiraMono doesn't have. I did try NotoSansJP-Regular.ttf but it appears to
+/// have a broken `liga` GSUB substitution for Latin "ffi" but the reverie
+/// *content* rendering path for latin text has been switched to FiraMono from
+/// this.
+const SLUG_3D_FONT_NAME: &str = "NotoSansJP-Regular.ttf";
 
-/// Update system once font bytes are loaded, register with `SlugAtlas`, populate
-/// `RegisteredFonts` so the egui picker shows it, store `Text3dFontId`, update
-/// `state.font_id`, and immediately send `SlugText3dApply` so the entity
-/// spawns without waiting for the debounce timer.
+/// Update system to wait until NotoSansJP has been registered by the
+/// [`FontsPlugin`] pipeline, then:
+/// * Reuses the already-registered [`FontId`] from [`RegisteredFonts`] does
+///   not call `atlas.register_font()` again.
+/// * Stores [`Text3dFontId`] and updates [`SlugText3dState`].
+/// * Fires [`SlugText3dApply`] so the 3-D slug entity spawns immediately.
+/// * Marks [`ActiveReverie`] as changed so `sync_typst_reverie_view` re-runs
+///   if a reverie was already selected before the font was ready.
+/// * Spawns the typst demo entity if needed/called for by the cli
+///
+/// The system removes itself from the schedule via `commands.remove_resource`
+/// once the font is found.
 pub fn setup_flan_font(
     mut commands: Commands,
-    font_handle: Option<Res<Text3dFontHandle>>,
-    font_assets: Res<Assets<Font>>,
-    mut atlas: ResMut<flan::slug::SlugAtlas>,
+    registered_fonts: Res<RegisteredFonts>,
     mut state: ResMut<SlugText3dState>,
-    mut registered_fonts: ResMut<RegisteredFonts>,
     mut apply_msg: bevy::ecs::message::MessageWriter<SlugText3dApply>,
+    mut active_reverie: ResMut<crate::plugins::reveries::ActiveReverie>,
 ) {
-    let Some(handle) = font_handle else { return };
-    let Some(font) = font_assets.get(&handle.0) else {
+    // Wait until FontsPlugin has finished registering NotoSansJP.
+    let Some(entry) = registered_fonts
+        .0
+        .iter()
+        .find(|e| e.name == SLUG_3D_FONT_NAME)
+    else {
+        // Font bytes not yet registered so try again next frame.
         return;
     };
 
+    let id = entry.font_id;
+
+    // Drop the load token so this system stops running again.
     commands.remove_resource::<Text3dFontHandle>();
 
-    match atlas.register_font(font.data.data().to_vec()) {
-        Ok(id) => {
-            // Resource for the font picker active-font display.
-            commands.insert_resource(Text3dFontId(id));
-            // Add to RegisteredFonts so the combo-box can show the name.
-            // Avoid duplicates in case of hot-reload.
-            if !registered_fonts.0.iter().any(|e| e.font_id == id) {
-                registered_fonts.0.push(RegisteredFontEntry {
-                    name: "NotoSansJP-Regular.ttf".to_string(),
-                    font_id: id,
-                });
-            }
-            // Set state - bypasses the debounce so the entity spawns immediately
-            // without two separate 150 ms waits.
-            state.font_id = Some(id);
-            // Fire apply right now so the entity spawns in this frame rather
-            // than after another full debounce cycle.
-            apply_msg.write(SlugText3dApply);
-        }
-        Err(e) => {
-            bevy::log::error!("SlugText3d: failed to register NotoSansJP font: {e}");
-        }
-    }
+    // Publish the authoritative FontId resource.
+    commands.insert_resource(Text3dFontId(id));
+
+    // Update slug-text state and fire apply immediately (bypasses 150 ms
+    // debounce so the 3-D entity spawns in this frame).
+    state.font_id = Some(id);
+    apply_msg.write(SlugText3dApply);
+
+    // Touch ActiveReverie so sync_typst_reverie_view re-fires if a reverie was
+    // already selected before this font was ready. Really only relevant at
+    // startup.
+    active_reverie.set_changed();
+
+    bevy::log::info!(
+        "text3d: using {:?} ({SLUG_3D_FONT_NAME}) for 3-D slug text",
+        id
+    );
 }
 
 /// Startup: make the 3-D text visible by default.
@@ -89,6 +101,12 @@ pub fn sync_text3d_to_active_reverie(
     display_q: Query<&ReverieDisplayName>,
     world_clock: Option<Res<crate::ui::WorldClockState>>,
     mut state: ResMut<SlugText3dState>,
+    // Track the last text we set so we can compare without touching state
+    // (ResMut marks the resource changed on access via DerefMut, but a plain
+    // field read through Deref doesn't). We do the compare via this Local and
+    // only call state.text = ... when there's an actual change, which is the
+    // only operation that goes through DerefMut and triggers is_changed().
+    mut last_text: Local<Option<String>>,
 ) {
     use jiff::Timestamp;
     let now = Timestamp::now();
@@ -109,7 +127,7 @@ pub fn sync_text3d_to_active_reverie(
             })
     });
 
-    let new_text = if let Some(cd) = countdown_str {
+    let new_text: String = if let Some(cd) = countdown_str {
         cd
     } else {
         match active_post.0 {
@@ -121,8 +139,12 @@ pub fn sync_text3d_to_active_reverie(
         }
     };
 
-    if state.text != new_text {
-        state.text = new_text;
+    // Compare against our Local cache firstand only write when the text
+    // genuinely changed.
+    let changed = last_text.as_deref() != Some(new_text.as_str());
+    if changed {
+        state.text = new_text.clone();
+        *last_text = Some(new_text);
     }
 }
 
@@ -156,7 +178,13 @@ impl Plugin for Text3dPlugin {
         }
         app.add_plugins(flan::SlugText3dPlugin);
 
-        app.add_systems(Startup, (setup_3d_text, load_text3d_font))
+        // Typst demo simply registers the TypstTextPlugin so TypstTextNode entities
+        // are compiled and meshed. The actual demo entity is spawned in
+        // setup_flan_font once the font is ready.
+        app.add_plugins(flan::typst_text::TypstTextPlugin);
+
+        app.init_resource::<Text3dFontHandle>();
+        app.add_systems(Startup, setup_3d_text)
             .add_systems(
                 Update,
                 setup_flan_font.run_if(resource_exists::<Text3dFontHandle>),

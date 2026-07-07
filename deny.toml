@@ -19,6 +19,11 @@ ignore = [
   { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained but no alternative exists yet; no security impact" },
   { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained but it is considered complete and not in need of updates" },
   { id = "RUSTSEC-2025-0052", reason = "async-std is used by dark-light, can't remove until its fixed in that upstream crate" },
+  { id = "RUSTSEC-2024-0320", reason = "yaml-rust is used by typst, I can't fix it here" },
+  { id = "RUSTSEC-2026-0192", reason = "I do use ttf-parser in flan, but its used elsewhere like typst and rustybuzz so while I can fix flan I can't fix everything" },
+  # RUSTSEC-2026-0195 wayland crate thing it seems
+  { id = "RUSTSEC-2026-0194", reason = "typst issue not mine" },
+  { id = "RUSTSEC-2026-0195", reason = "typst issue not mine" },
 ]
 
 [licenses]
@@ -232,7 +237,6 @@ skip = [
   { name = "phf", version = "=0.12.1" },
   { name = "rand", version = "=0.8.6" },
   { name = "rand", version = "=0.9.4" },
-  { name = "rand", version = "=0.10.1" },
   { name = "rand_chacha", version = "=0.3.1" },
   { name = "rand_chacha", version = "=0.9.0" },
   { name = "rand_core", version = "=0.6.4" },
@@ -257,6 +261,8 @@ skip = [
   { name = "async-channel", version = "=2.5.0" },
   { name = "event-listener", version = "=2.5.3" },
   { name = "event-listener", version = "=5.4.1" },
+  { name = "spin", version = "=0.9.8" },
+  { name = "spin", version = "=0.10.0" },
   # Bevy and transform gizmo
   { name = "glam", version = "=0.30.10" },
   { name = "glam", version = "=0.32.1" },
@@ -276,6 +282,37 @@ skip = [
   { name = "bit-vec", version = "=0.9.1" },
   { name = "codespan-reporting", version = "=0.12.0" },
   { name = "codespan-reporting", version = "=0.13.1" },
+  # ma and bevy and typst
+  { name = "rustc-hash", version = "=1.1.0" },
+  { name = "rustc-hash", version = "=2.1.3" },
+  # ma and typst
+  { name = "bincode", version = "=1.3.3" },
+  { name = "bincode", version = "=2.0.1" },
+  { name = "toml", version = "=0.8.23" },
+  { name = "toml", version = "=0.9.12+spec-1.1.0" },
+  { name = "phf_generator", version = "=0.11.3" },
+  { name = "phf_generator", version = "=0.13.1" },
+  # egui and typst
+  { name = "fearless_simd", version = "=0.3.0" },
+  { name = "fearless_simd", version = "=0.4.1" },
+  { name = "vello_common", version = "=0.0.6" },
+  { name = "vello_common", version = "=0.0.8" },
+  { name = "vello_cpu", version = "=0.0.6" },
+  { name = "vello_cpu", version = "=0.0.8" },
+  # burn and typst
+  { name = "serde_spanned", version = "=0.6.9" },
+  { name = "serde_spanned", version = "=1.1.1" },
+  # bevy and typst
+  { name = "guillotiere", version = "=0.6.2" },
+  { name = "guillotiere", version = "=0.7.0" },
+  { name = "moxcms", version = "=0.7.11" },
+  { name = "moxcms", version = "=0.8.1" },
+  { name = "quick-xml", version = "=0.38.4" },
+  { name = "quick-xml", version = "=0.39.4" },
+  { name = "toml_datetime", version = "=0.6.11" },
+  { name = "toml_datetime", version = "=1.1.1+spec-1.1.0" },
+  { name = "toml_edit", version = "=0.22.27" },
+  { name = "toml_edit", version = "=0.25.12+spec-1.1.0" },
 ]
 skip-tree = []
 
@@ -283,7 +320,10 @@ skip-tree = []
 unknown-registry = "warn"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["git+https://github.com/schell/wgsl-rs"]
+allow-git = [
+  "git+https://github.com/schell/wgsl-rs",
+  "git+https://github.com/mitchty/transform-gizmo",
+]
 
 [sources.allow-org]
 github = []

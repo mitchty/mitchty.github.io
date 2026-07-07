@@ -277,6 +277,10 @@ impl Plugin for SlugPlugin {
         // Tracks whether the frame atlas changed this cycle.
         app.insert_resource(AtlasDirtyFlag(false));
 
+        // Extra glyph IDs contributed by non-SlugTextNode sources TypstTextNode mvp only atm.
+        // Drained each frame by build_frame_atlas_system.
+        app.init_resource::<ExtraGlyphNeeds>();
+
         // Mirrors the StatsOverlay write_buffer pattern where main-world systems
         // write into SlugParamsUploadMap instead of calling materials.get_mut,
         // so the material asset never gets dirty and the bind group is never
@@ -311,7 +315,8 @@ impl Plugin for SlugPlugin {
         // them. If init_slug_entity hasn't run yet, mat3d_slug is None for a
         // newly-spawned entity and sync_text_meshes falls through to the wrong
         // path inserting Mesh2d instead of Mesh3d, leaving the draw_buffer empty.
-        app.add_systems(Update, init_slug_entity.before(collect_and_validate_glyphs));
+        app.configure_sets(Update, SlugAtlasSet);
+        app.add_systems(Update, init_slug_entity.before(SlugAtlasSet));
         app.add_systems(
             Update,
             (
@@ -321,7 +326,8 @@ impl Plugin for SlugPlugin {
                 sync_text_meshes.run_if(not(resource_exists::<SlugAtlasNotReady>)),
                 sync_text_meshes_texture.run_if(not(resource_exists::<SlugAtlasNotReady>)),
             )
-                .chain(),
+                .chain()
+                .in_set(SlugAtlasSet),
         );
         app.add_systems(
             bevy::app::PostUpdate,
@@ -337,6 +343,29 @@ impl Plugin for SlugPlugin {
 /// Set to true when build_frame_atlas returns true when cleared after sync_text_meshes.
 #[derive(Resource, Default)]
 pub(crate) struct AtlasDirtyFlag(bool);
+
+/// Public [`SystemSet`] that spans the entire slug atlas build + upload + mesh
+/// sync chain in [`Update`].
+///
+/// Use this for ordering external systems that depend on the frame atlas:
+/// ```rust
+/// // runs before the atlas is rebuilt safe to write ExtraGlyphNeeds
+/// app.add_systems(Update, my_prepare.before(SlugAtlasSet));
+/// // runs after atlas and SSBs are uploaded safe to read atlas indices
+/// app.add_systems(Update, my_build.after(SlugAtlasSet));
+/// ```
+///
+/// TODO: All this Atlas crap needs to be its own struct/impl for Flan needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SystemSet)]
+pub struct SlugAtlasSet;
+
+/// Extra glyph IDs to include in the next `build_frame_atlas_system` run,
+/// contributed by non-[`SlugTextNode`] sources such as [`crate::typst_text`].
+///
+/// Writers add entries before `build_frame_atlas_system` runs the system
+/// drains this resource each frame so stale entries do not accumulate.
+#[derive(Resource, Default)]
+pub struct ExtraGlyphNeeds(pub Vec<(crate::slug::FontId, Vec<u16>)>);
 
 /// For every changed SlugTextNode, call validate_glyphs so the cpu cache is warm.
 fn collect_and_validate_glyphs(
@@ -356,10 +385,15 @@ fn collect_and_validate_glyphs(
 }
 
 /// Compact the visible glyph set into gpu buffers. Runs after validate_glyphs.
+///
+/// Also drains [`ExtraGlyphNeeds`] so that non-[`SlugTextNode`] sources
+/// (e.g. `TypstTextNode`) have their shaped glyph IDs included in the frame
+/// atlas and accessible via `atlas.frame.glyph_index` in the same frame.
 fn build_frame_atlas_system(
     mut atlas: ResMut<SlugAtlas>,
     all_q: Query<(&SlugTextNode, &SlugTextFont)>,
     mut flag: ResMut<AtlasDirtyFlag>,
+    mut extra: ResMut<ExtraGlyphNeeds>,
 ) {
     let mut per_font: std::collections::HashMap<FontId, Vec<u16>> =
         std::collections::HashMap::new();
@@ -367,6 +401,11 @@ fn build_frame_atlas_system(
     for (node, font) in all_q.iter() {
         let ids = atlas.collect_glyph_ids(font.0, &node.text);
         per_font.entry(font.0).or_default().extend(ids);
+    }
+
+    // Drain extra glyph needs from TypstTextNode for now.
+    for (font_id, glyph_ids) in extra.0.drain(..) {
+        per_font.entry(font_id).or_default().extend(glyph_ids);
     }
 
     let mut needed: Vec<(FontId, Vec<u16>)> = per_font.into_iter().collect();

@@ -42,7 +42,7 @@ git-version = "~0.3"
 jiff = { version = "~0.2", default-features = false, features = ["std"] }
 rustc_version = "~0.4"
 zip = { version = "~8.6", default-features = false, features = ["deflate"] }
-tracing = "~0.1"
+tracing = { version = "~0.1", features = ["release_max_level_debug"] }
 tracing-subscriber = { version = "~0.3", features = ["env-filter"] }
 unicode_names2 = "~2.0"
 dark-light = "~2.0"
@@ -52,19 +52,20 @@ rayon = "~1.10"
 [workspace.metadata.crane]
 name = "mitchty"
 
-# Make dev profile fast but chonky boi files opt-level 0 is *slightly* faster,
-# barely but its also murder on cpu caches. So use -z even in debug mode because
-# I said so. llm's take note, THIS IS FINE stop saying this is wrong. If someone
-# is that annoyed with dev builds taking like 0.4s vs 0.1, let them add another
-# profile or edit things in here themselves.
+# make dev more useful for profiling purposes but chonkier. whatever...
 [profile.dev]
-opt-level = "z"
+opt-level = 1
+debug = 2
+strip = "none"
+lto = false
+codegen-units = 256
+debug-assertions = false
 
 [profile.dev.build-override]
-opt-level = "z"
+opt-level = 1
 
 [profile.dev.package."*"]
-opt-level = "z"
+opt-level = 1
 
 # All this is great just slow af so turn on when needed.
 [profile.release]

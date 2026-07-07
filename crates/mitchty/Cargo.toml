@@ -62,7 +62,6 @@ transform-gizmo-bevy = { git = "https://github.com/mitchty/transform-gizmo", def
   "gizmo_picking_backend",
 ] }
 # bevy_pretty_text = "~0.4" # TODO: waiting for bevy 0.19 support
-markdown = "~1.0.0"
 jiff = { version = "~0.2", features = ["tzdb-bundle-platform"] }
 humantime = "~2"
 jiff-tzdb = "~0.1"
@@ -80,7 +79,8 @@ reqwest = { version = "~0.13", default-features = false, features = ["json"] }
 [target.'cfg(not(any(target_arch = "wasm32", target_env = "msvc")))'.dependencies]
 tikv-jemallocator = { version = "~0.7", features = [
   "profiling",
-  "unprefixed_malloc_on_supported_platforms",
+  # nuked unprefixed_malloc_on_supported_platforms cause it was snagging mallocs
+  # to vulkan stuff on linux and making me angy trying to track down leaks.
 ], optional = true }
 tikv-jemalloc-ctl = { version = "~0.7", features = ["stats"], optional = true }
 

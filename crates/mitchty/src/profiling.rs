@@ -14,23 +14,48 @@
 //! fun thing to add into this heap of complexity.
 //!
 //! ## `stats-alloc`
-//! Logs live heap bytes and per 5 sec delta. Try using this feature first to track when:
-//! - delta is near zero, but RSS grows -> fragmentation in the allocator,
-//!   thread stacks, GPU/mmap RSS, or time switch to `jemalloc-pprof` to debug heap issues.
-//! - delta consistently positive we have a leak on the heap, try `dhat-heap` to
-//!   find out where or turn plugins on/off to bisect where the issue is.
+//! Logs live heap bytes and per-interval delta. Use this first to detect:
+//! - delta near zero, RSS grows -> fragmentation or GPU/mmap RSS outside the heap;
+//!   switch to `jemalloc-pprof` to confirm.
+//! - live_allocs flat but bytes grow -> a small number of large/growing allocations
+//!   (Vec/buffer capacity growth, cache without eviction); jeprof diff two snapshots.
+//! - delta consistently positive -> heap leak; try `dhat-heap` or bisect plugins.
 //!
 //! ## `jemalloc-pprof`
-//! Logs jemalloc's `allocated` vs `resident` bytes every 5 s.
-//! - allocated is flat but resident grows = allocator internal fragmentation; jemalloc
-//!   itself shoul improve this, not seen this YET but who knows what polars abusage might bring.
-//! - allocated grows = heap growth like above and then its time to enable prof dumps.
+//! Logs jemalloc's `allocated` / `resident` / `retained` every `STATS_DURATION` s.
+//! Interpretation:
+//! - `allocated` grows               -> true heap leak; enable prof dumps and jeprof it.
+//! - `allocated` flat, `resident` grows   -> internal allocator fragmentation.
+//! - `resident` flat, `retained` grows    -> jemalloc holding freed VA space; not a real leak.
 //!
-//! For heap dump files, run crap with:
+//! To capture heap-dump files for call-site attribution:
+//!
+//! **IMPORTANT**: this crate uses `unprefixed_malloc_on_supported_platforms`
+//! so jemalloc reads `MALLOC_CONF` (not `_RJEM_MALLOC_CONF`). Also,
+//! `prof:true` **must** be set at process start - it cannot be enabled at
+//! runtime via ctl. The `prof_active` and `lg_prof_interval` tunables can
+//! be changed at runtime. Programmatic dumps are triggered via
+//! `jemalloc_ctl::raw::write("prof.dump", ...)` and are used below.
+//!
+//! **Env var**: `unprefixed_malloc_on_supported_platforms` is NOT enabled (it
+//! routes all shared-lib malloc through jemalloc, contaminating profiles with
+//! driver allocations). Without it, jemalloc reads `_RJEM_MALLOC_CONF`, not
+//! `MALLOC_CONF`. Always use the prefixed form.
+//!
+//! Build separately then run directly so build-subprocess jemalloc noise
+//! (from system jemalloc seeing the env var) doesn't appear in output:
 //! ```text
-//! _RJEM_MALLOC_CONF=prof:true,prof_prefix:heap cargo run --features jemalloc-pprof
+//! cargo build --features jemalloc-pprof --profile profiling
+//! _RJEM_MALLOC_CONF=prof:true,prof_active:true,prof_prefix:/tmp/heap \
+//!   ./target/profiling/mitchty
 //! ```
-//! Then: `jeprof --pdf ./target/debug/mitchty heap.*.heap > out.pdf`
+//! The plugin dumps automatically each `STATS_DURATION` tick when allocated is
+//! growing, so no `lg_prof_interval` threshold is needed.
+//! Diff two snapshots to isolate growth:
+//! ```text
+//! jeprof --base=/tmp/heap.<pid>.0001.heap --pdf \
+//!   ./target/debug/mitchty /tmp/heap.<pid>.0003.heap > leak_diff.pdf
+//! ```
 
 use bevy::prelude::*;
 
@@ -118,9 +143,13 @@ fn log_jemalloc_stats(mut prev_allocated: Local<Option<i64>>) {
         return;
     }
 
-    let (allocated, resident) = match (stats::allocated::mib(), stats::resident::mib()) {
-        (Ok(a), Ok(r)) => match (a.read(), r.read()) {
-            (Ok(av), Ok(rv)) => (av as i64, rv as i64),
+    let (allocated, resident, retained) = match (
+        stats::allocated::mib(),
+        stats::resident::mib(),
+        stats::retained::mib(),
+    ) {
+        (Ok(a), Ok(r), Ok(ret)) => match (a.read(), r.read(), ret.read()) {
+            (Ok(av), Ok(rv), Ok(retv)) => (av as i64, rv as i64, retv as i64),
             _ => {
                 warn!("jemalloc failed to read stats");
                 return;
@@ -132,31 +161,78 @@ fn log_jemalloc_stats(mut prev_allocated: Local<Option<i64>>) {
         }
     };
 
+    // fragmentation = RSS that jemalloc holds but hasn't given to live objects
+    // retained = virtual address space returned to jemalloc but not yet munmap'd
     let fragmentation = resident - allocated;
 
-    match *prev_allocated {
-        Some(prev) => {
-            let delta = allocated - prev;
+    // Compute delta outside the match so it's available for the dump call below.
+    let delta = prev_allocated.map(|prev| allocated - prev);
+
+    match delta {
+        Some(d) => {
             info!(
-                "jemalloc allocated={} resident={} frag={} delta={}/5s{}",
+                "jemalloc allocated={} resident={} frag={} retained={} delta={}/{}s{}",
                 fmt_bytes(allocated),
                 fmt_bytes(resident),
                 fmt_bytes(fragmentation),
-                fmt_bytes_signed(delta),
-                if delta > 0 { " growing" } else { "" },
+                fmt_bytes(retained),
+                fmt_bytes_signed(d),
+                STATS_DURATION,
+                if d > 0 { " growing" } else { "" },
             );
         }
         None => {
             info!(
-                "jemalloc allocated={} resident={} frag={} prime sample",
+                "jemalloc allocated={} resident={} frag={} retained={} prime sample",
                 fmt_bytes(allocated),
                 fmt_bytes(resident),
                 fmt_bytes(fragmentation),
+                fmt_bytes(retained),
             );
         }
     }
 
     *prev_allocated = Some(allocated);
+
+    // When allocated is growing, fire a programmatic heap dump so we get
+    // call-site data without relying on lg_prof_interval byte thresholds.
+    // Silently skips if prof:true was not set at startup.
+    if delta.is_some_and(|d| d > 0) {
+        dump_heap_profile();
+    }
+}
+
+/// Attempt a programmatic jemalloc heap dump.
+///
+/// Requires `MALLOC_CONF=prof:true,prof_prefix:/tmp/heap` (or equivalent) at
+/// process start. The dump path is controlled by `prof_prefix`; jemalloc
+/// appends `.<pid>.<seq>.heap` automatically.
+///
+/// Silently no-ops when profiling was not enabled at startup - jemalloc
+/// returns EFAULT/ENOENT for `prof.dump` when `prof:true` was absent, which
+/// we swallow quietly to avoid noise in normal non-debug runs.
+#[cfg(all(
+    feature = "jemalloc-pprof",
+    not(target_arch = "wasm32"),
+    not(target_env = "msvc")
+))]
+fn dump_heap_profile() {
+    // tikv_jemalloc_ctl doesn't expose a typed `prof.dump` mib, so use the
+    // raw write interface. Passing a null ptr tells jemalloc to use the
+    // prefix configured via `prof_prefix` in MALLOC_CONF.
+    // Returns an error (EFAULT or ENOENT) when prof:true was not set at
+    // startup - treat that as a silent no-op, not a warning.
+    let result = unsafe {
+        tikv_jemalloc_ctl::raw::write::<*const std::ffi::c_char>(b"prof.dump\0", std::ptr::null())
+    };
+
+    match result {
+        Ok(_) => info!("jemalloc heap dump written (prof_prefix path)"),
+        Err(_) => {
+            // Profiling not enabled at startup (prof:true absent from
+            // MALLOC_CONF) - silently skip rather than warn every interval.
+        }
+    }
 }
 
 /// Format an absolute byte count as a human-readable string.

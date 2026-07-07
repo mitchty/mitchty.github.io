@@ -88,9 +88,10 @@ impl Plugin for FpsPlugin {
             .add_systems(Update, sync_overlay_visibility)
             .add_systems(
                 Update,
-                sample_fps_for_overlay.run_if(bevy::time::common_conditions::on_timer(
-                    std::time::Duration::from_millis(753),
-                )),
+                sample_fps_for_overlay.run_if(
+                    bevy::time::common_conditions::on_timer(std::time::Duration::from_millis(753))
+                        .and_then(bevy::ecs::schedule::common_conditions::any_with_component::<FpsDisplay>),
+                ),
             )
             .add_systems(Update, toggle_fps_display);
 

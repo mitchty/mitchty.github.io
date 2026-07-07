@@ -4,6 +4,14 @@ use std::fmt::Write as FmtWrite;
 use std::path::Path;
 
 fn main() {
+    println!("cargo::rustc-check-cfg=cfg(embed_assets)");
+
+    // Enable embed_assets cfg only for release* profiles.
+    let profile = std::env::var("CARGO_PROFILE").unwrap_or_else(|_| String::from("dev"));
+    if profile == "release" || profile == "release-fast" {
+        println!("cargo:rustc-cfg=embed_assets");
+    }
+
     let reveries_dir = Path::new("src/assets/reveries");
     println!("cargo:rerun-if-changed={}", reveries_dir.display());
 
@@ -53,7 +61,7 @@ fn main() {
 }
 
 /// Recursively walk `dir`, appending one `(key, display, abs_path)` entry to
-/// `out` for every `.md` file found at any depth.
+/// `out` for every `.typ` file found at any depth.
 ///
 /// `prefix` is the slash-joined path of ancestor directory stems relative to
 /// the reveries root. Empty for stuff in the parent dir.
@@ -73,7 +81,7 @@ fn collect_reveries(
         };
 
         if meta.is_file() {
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            if path.extension().and_then(|e| e.to_str()) != Some("typ") {
                 continue;
             }
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {

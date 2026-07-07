@@ -32,6 +32,16 @@ use bevy::{
 
 pub mod layout;
 pub mod post_process;
+/// Typst layout engine integration for feature = "typst".
+///
+/// Named `slug_typst` to avoid ambiguity with the `typst` external crate.
+#[cfg(feature = "typst")]
+#[path = "typst/mod.rs"]
+pub mod slug_typst;
+
+/// Bevy component + plugin for typst-sourced text rendering (feature = "typst").
+#[cfg(feature = "typst")]
+pub mod typst_text;
 pub use post_process::{
     ActiveShader, AvailableShaders, EffectsEnabled, PostProcessPlugin, PostProcessSettings,
     ShaderInfo,
@@ -45,8 +55,8 @@ pub mod text3d_font;
 
 pub use layout::{Horizontal, Layout, Vertical};
 pub use slug_text::{
-    SlugPlugin, SlugTextFont, SlugTextMesh, SlugTextNode, Text3dDirty, build_mesh_from_run,
-    normalize_run_3d,
+    ExtraGlyphNeeds, SlugAtlasSet, SlugPlugin, SlugTextFont, SlugTextMesh, SlugTextNode,
+    Text3dDirty, build_mesh_from_run, normalize_run_3d,
 };
 #[cfg(not(feature = "webgl"))]
 pub use slug_text_material::{SlugAtlasBuffers, SlugText3dMaterial, SlugTextMaterial};

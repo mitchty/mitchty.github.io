@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-#[cfg(not(debug_assertions))]
+#[cfg(embed_assets)]
 use bevy::asset::embedded_asset;
 
 use bevy::asset::io::web::WebAssetPlugin;
@@ -83,8 +83,9 @@ pub struct AssetConfigPlugin;
 impl Plugin for AssetConfigPlugin {
     #[allow(unused_variables)]
     fn build(&self, app: &mut App) {
-        // Only embed assets in release builds
-        #[cfg(not(debug_assertions))]
+        // Only embed assets in release builds, the rest don't need this stuff.
+        // build.rs controlled.
+        #[cfg(embed_assets)]
         {
             // Environment maps for the cube hues
             embedded_asset!(app, "assets/environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2");

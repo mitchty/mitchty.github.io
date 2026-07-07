@@ -302,18 +302,31 @@ impl EnsureGlyphsResult {
     }
 }
 
-/// Records where a particular font's data starts in the combined frame atlas.
-/// Built by `build_frame_atlas` and consumed by `shape`.
+/// Per-font absolute-glyph-index lookup within the combined frame atlas.
+/// Built incrementally by `build_frame_atlas` and consumed by `shape`.
 #[derive(Clone, Debug, Default)]
 struct FontSlot {
-    /// Absolute index into `FrameAtlas::glyphs` where this font's glyphs begin.
-    glyph_base: u32,
-    /// Maps each GlyphId (raw u16) to its absolute frame glyph index.
+    /// Maps each GlyphId (raw u16) to its absolute frame glyph index. Entries
+    /// are permanent once inserted. I don't want to deal with gc/removal right
+    /// now.
     glyph_index_map: HashMap<u16, u32>,
 }
 
-/// The compacted GPU buffers for the current frame's visible glyphs.
-/// Rebuilt by `build_frame_atlas` whenever the visible glyph set changes.
+/// The compacted GPU buffers for the visible glyph set, accumulated
+/// append-only across the life of the atlas by `build_frame_atlas`.
+///
+/// # Index stability
+///
+/// Once a `(font_id, glyph_id)` pair is assigned an absolute index it keeps
+/// that index forever `build_frame_atlas` never renumbers or evicts existing
+/// entries, it only appends newly-needed glyphs to the end of the buffers. This
+/// is required because consumers `typst_text` and `slug_text` bake a glyph's
+/// absolute index directly into mesh vertex data at materialize time and do not
+/// re-mesh already rendered/computed, non-dirty entities just because the frame
+/// atlas grew for an unrelated reason. A renumbering scheme would be needed or
+/// honestly I think just generating a new Atlas and swapping from this to that
+/// new Atlas would be an approach worth exploring insted of trying to gc within
+/// the atlas and poking holes in memory needlessly.
 #[derive(Default)]
 pub struct FrameAtlas {
     /// Packed `SlugGlyph` structs (80 bytes each) for all fonts combined.
@@ -324,20 +337,16 @@ pub struct FrameAtlas {
     pub curve_indices: Vec<u8>,
     /// Per-font slot info (for shape() to look up absolute glyph indices).
     slots: Vec<FontSlot>,
-    /// Hash of the glyph-id sets last used to build this atlas.
+    /// Hash of the glyph-id sets last passed to `build_frame_atlas`, used
+    /// purely as a fast-path when the exact same set is requested again to
+    /// avoid re-walking every id to confirm that nothing new got added.
     last_hash: u64,
-    /// Set to true whenever the frame atlas was rebuilt this cycle.
+    /// Set to true whenever `build_frame_atlas` appended new glyph data
+    /// this cycle (GPU buffers grew and need re-upload).
     pub dirty: bool,
 }
 
 impl FrameAtlas {
-    fn clear_buffers(&mut self) {
-        self.glyphs.clear();
-        self.curves.clear();
-        self.curve_indices.clear();
-        self.slots.clear();
-    }
-
     /// Returns the absolute glyph index for `(font_id, glyph_id)` if present.
     pub fn glyph_index(&self, font_id: FontId, glyph_id: u16) -> Option<u32> {
         self.slots
@@ -458,20 +467,28 @@ impl SlugAtlas {
     /// Pass all `SlugTextRun` font-ids and the text strings that will be
     /// rendered this frame so the atlas knows which glyphs to include.
     ///
-    /// Returns `true` if the atlas was rebuilt (the visible set changed).
-    /// Returns `false` if nothing changed; existing GPU buffers remain valid.
+    /// Append any newly-needed `(font_id, glyph_id)` pairs to the frame atlas.
+    /// Already-present pairs keep their existing absolute index unchanged
+    /// `needed` describes the union of everything that should be resolvable via
+    /// `glyph_index` after this call.
     ///
-    /// After a `true` return, all existing [`SlugTextRun`]s are stale (their
-    /// absolute glyph indices may no longer be valid). Call `shape` again
-    /// for every string before drawing.
+    /// Returns `true` if any new glyph data was appended aka GPU buffers grew
+    /// and must be re-uploaded. Returns `false` if every requested pair was
+    /// already present. Which means no work need be done to upload data.
+    ///
+    /// Previously-built [`SlugTextRun`]s remain valid after either return
+    /// value: their baked absolute glyph indices never go stale. Only newly
+    /// dirty/changed text needs `shape` to be called again but that is a
+    /// degenerate case for now.
     pub fn build_frame_atlas(
         &mut self,
         // Iterator of (font_id, glyph_ids_needed) pairs.
         // Each glyph_id is the raw u16 from `Face::glyph_index`.
         needed: &[(FontId, Vec<u16>)],
     ) -> bool {
-        // Compute a cheap hash of the (font_id, glyph_id) sets so we can skip
-        // a rebuild when nothing changed.
+        // Fast path to skip entirely if this is the same combined need
+        // set as last call nothing new could possibly be appended, since
+        // indices are stable/never evicted. So don't do waste cpu.
         let new_hash = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -488,24 +505,21 @@ impl SlugAtlas {
             self.frame.dirty = false;
             return false;
         }
-
-        // Rebuild from scratch.
-        self.frame.clear_buffers();
         self.frame.last_hash = new_hash;
 
-        let mut abs_curves_base: u32 = 0;
-        let mut abs_indices_base: u32 = 0;
-
-        // Ensure slots vec has the right length.
+        // Ensure slots vec has the right length. Persistent across the Atlas
+        // lifetime.
         while self.frame.slots.len() < self.fonts.len() {
             self.frame.slots.push(FontSlot::default());
         }
-        for slot in &mut self.frame.slots {
-            slot.glyph_index_map.clear();
-            slot.glyph_base = 0;
-        }
 
-        let mut abs_glyph_idx: u32 = 0;
+        // Resume appending from the current buffer end.
+        let mut abs_curves_base: u32 = (self.frame.curves.len() / 24) as u32;
+        let mut abs_indices_base: u32 = (self.frame.curve_indices.len() / 4) as u32;
+        let mut abs_glyph_idx: u32 =
+            (self.frame.glyphs.len() / std::mem::size_of::<SlugGlyph>()) as u32;
+
+        let mut any_added = false;
 
         for (font_id, glyph_ids) in needed {
             let fi = font_id.0 as usize;
@@ -513,16 +527,23 @@ impl SlugAtlas {
                 continue;
             };
 
-            self.frame.slots[fi].glyph_base = abs_glyph_idx;
-
-            // Deduplicate and sort so frame layout is deterministic.
+            // Deduplicate and sort within this call for deterministic
+            // append order when multiple entities request overlapping ids
+            // in the same frame.
             let mut unique = glyph_ids.clone();
             unique.sort_unstable();
             unique.dedup();
 
             for &gid in &unique {
+                // Stable indices, skip glyphs already assigned in a prior
+                // call. We don't renumber mid stream.
+                if self.frame.slots[fi].glyph_index_map.contains_key(&gid) {
+                    continue;
+                }
+
                 let Some(cached) = entry.glyph_cache.get(&gid) else {
-                    continue; // glyph not in cache (whitespace / missing)
+                    // glyph not in cache due to not being renderable whitespace / missing / waldo
+                    continue;
                 };
 
                 let curves_start = abs_curves_base;
@@ -549,7 +570,7 @@ impl SlugAtlas {
                     .glyphs
                     .extend_from_slice(bytemuck::bytes_of(&gpu_glyph));
 
-                // Record mapping for shape().
+                // Record mapping for shape() and glyph_index().
                 self.frame.slots[fi]
                     .glyph_index_map
                     .insert(gid, abs_glyph_idx);
@@ -557,11 +578,12 @@ impl SlugAtlas {
                 abs_curves_base += cached.curves.len() as u32;
                 abs_indices_base += cached.local_curve_indices.len() as u32;
                 abs_glyph_idx += 1;
+                any_added = true;
             }
         }
 
-        self.frame.dirty = true;
-        true
+        self.frame.dirty = any_added;
+        any_added
     }
 
     /// Shape `text` into natural-origin coordinates at `font_size`.
@@ -779,6 +801,62 @@ impl SlugAtlas {
         ids.sort_unstable();
         ids.dedup();
         ids
+    }
+
+    /// Return the raw font bytes for a `font_id`.
+    pub fn font_bytes(&self, font_id: FontId) -> Option<&[u8]> {
+        self.fonts
+            .get(font_id.0 as usize)
+            .map(|e| e._data.as_slice())
+    }
+
+    /// Ensure a set of raw OpenType glyph IDs have entries in the CPU glyph
+    /// cache for `font_id`.
+    ///
+    /// Unlike `validate_glyphs` which maps Unicode chars through
+    /// `face.glyph_index()`, this method takes glyph IDs already produced by an
+    /// external shaper, for now typst/rustybuzz. This is necessary because
+    /// HarfBuzz-style shaping may produce ligature or contextual glyph IDs that
+    /// have no direct `char -> glyph_id` mapping. TODO: ^^^^ is a gap I need to
+    /// figure out, bug ligatures look like ass to implement.
+    ///
+    /// Returns the same [`EnsureGlyphsResult`] as `validate_glyphs`:
+    /// - `newly_added` = glyph IDs whose curves were just extracted.
+    /// - `missing` = glyph IDs exist in the font but have no usable outline aka
+    ///   `.notdef`, or whitespace pseudo-glyphs like tab/space etc...
+    pub fn validate_glyph_ids(&mut self, font_id: FontId, glyph_ids: &[u16]) -> EnsureGlyphsResult {
+        let mut result = EnsureGlyphsResult::default();
+        let Some(entry) = self.fonts.get_mut(font_id.0 as usize) else {
+            bevy::log::warn!(
+                "SlugAtlas::validate_glyph_ids: unknown FontId {:?}",
+                font_id
+            );
+            return result;
+        };
+
+        for &gid_raw in glyph_ids {
+            if entry.glyph_cache.contains_key(&gid_raw) {
+                continue;
+            }
+            let gid = GlyphId(gid_raw);
+            match extract_cached_glyph(&entry.face, gid) {
+                Some(cached) => {
+                    entry.glyph_cache.insert(gid_raw, cached);
+                    // validate_glyph_ids uses chars for
+                    // EnsureGlyphsResult.newly_added but we have no char if we
+                    // get here, so we push U+FFFD as a sentinel glyph so
+                    // callers can still use atlas_grew() to detect cache
+                    // changes. Its not a great solution but it'll do for now.
+                    result.newly_added.push('\u{FFFD}');
+                }
+                None => {
+                    // Glyph has no usable outline whitespace, .notdef, etc...
+                    result.missing.push('\u{FFFD}');
+                }
+            }
+        }
+
+        result
     }
 }
 
@@ -1250,5 +1328,270 @@ mod tests {
     #[test]
     fn check_font_chars_skips_whitespace() {
         assert!(check_font_chars(INTER_TTF, " \t\n").is_ok());
+    }
+
+    // These tests cover the typst->atlas path where glyph IDs aren't derived
+    // from Unicode chars but arrive via typst directly.
+
+    /// `validate_glyph_ids` must warm the CPU cache for the supplied ids
+    /// so `build_frame_atlas` can include them in GPU buffers.
+    #[test]
+    fn validate_glyph_ids_warms_cache() {
+        let (mut atlas, fid) = make_atlas(FIRA_TTF);
+        let face = ttf_parser::Face::parse(FIRA_TTF, 0).unwrap();
+
+        // Collect raw glyph ids for "officia" via ttf-parser.
+        let ids: Vec<u16> = "officia"
+            .chars()
+            .filter_map(|c| face.glyph_index(c).map(|g| g.0))
+            .collect();
+
+        assert!(!ids.is_empty());
+        let result = atlas.validate_glyph_ids(fid, &ids);
+        // Newly added must be non-empty here
+        assert!(
+            !result.newly_added.is_empty(),
+            "validate_glyph_ids must add glyphs to the cache on first call"
+        );
+        // Second call nothing new so we should not add more glyphs and leak memory weirdly.
+        let result2 = atlas.validate_glyph_ids(fid, &ids);
+        assert!(
+            result2.newly_added.is_empty(),
+            "validate_glyph_ids must not add glyphs already in the cache"
+        );
+    }
+
+    /// Every glyph ID that has an outline must appear in the frame atlas after
+    /// `validate_glyph_ids` + `build_frame_atlas`.
+    #[test]
+    fn validate_glyph_ids_round_trips_through_frame_atlas() {
+        let (mut atlas, fid) = make_atlas(FIRA_TTF);
+        let face = ttf_parser::Face::parse(FIRA_TTF, 0).unwrap();
+
+        let mut ids: Vec<u16> = "officia"
+            .chars()
+            .filter_map(|c| face.glyph_index(c).map(|g| g.0))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+
+        atlas.validate_glyph_ids(fid, &ids);
+        atlas.build_frame_atlas(&[(fid, ids.clone())]);
+
+        for &gid in &ids {
+            // Only check ids that actually have an outline in the cache.
+            if atlas.cached_glyph(fid, gid).is_some() {
+                assert!(
+                    atlas.frame.glyph_index(fid, gid).is_some(),
+                    "glyph_id {} is in the CPU cache but absent from the frame atlas",
+                    gid,
+                );
+            }
+        }
+    }
+
+    /// Absolute glyph indices assigned by `build_frame_atlas` must be
+    /// sequential (0, 1, 2, ...) so the shader can index into `glyphs[]` by
+    /// position without holes.
+    #[test]
+    fn build_frame_atlas_glyph_indices_are_sequential() {
+        let (mut atlas, fid) = make_atlas(FIRA_TTF);
+        let face = ttf_parser::Face::parse(FIRA_TTF, 0).unwrap();
+
+        // Use distinct characters so we get distinct glyph IDs.
+        let text = "abcde";
+        let mut ids: Vec<u16> = text
+            .chars()
+            .filter_map(|c| face.glyph_index(c).map(|g| g.0))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+
+        atlas.validate_glyph_ids(fid, &ids);
+        atlas.build_frame_atlas(&[(fid, ids.clone())]);
+
+        // Collect the absolute indices for all glyphs that have outlines.
+        let mut abs_indices: Vec<u32> = ids
+            .iter()
+            .filter(|&&gid| atlas.cached_glyph(fid, gid).is_some())
+            .filter_map(|&gid| atlas.frame.glyph_index(fid, gid))
+            .collect();
+        abs_indices.sort_unstable();
+
+        // Must be 0..N with no gaps in between.
+        let expected: Vec<u32> = (0..abs_indices.len() as u32).collect();
+        assert_eq!(
+            abs_indices, expected,
+            "frame atlas glyph indices must be sequential starting at 0"
+        );
+    }
+
+    /// When two separate glyph-ID sets (simulating a `SlugTextNode` + a
+    /// `TypstTextNode` / `ExtraGlyphNeeds` contribution) are merged into a
+    /// single `build_frame_atlas` call, all IDs from both sets must be
+    /// resolvable via their `glyph_index`.
+    ///
+    /// This mirrors what `build_frame_atlas_system` does after draining
+    /// `ExtraGlyphNeeds` into `per_font`.
+    #[test]
+    fn merged_glyph_id_sets_all_resolve_in_atlas() {
+        let (mut atlas, fid) = make_atlas(FIRA_TTF);
+        let face = ttf_parser::Face::parse(FIRA_TTF, 0).unwrap();
+
+        // Simulate SlugTextNode adding "abc".
+        let slug_ids: Vec<u16> = "abc"
+            .chars()
+            .filter_map(|c| face.glyph_index(c).map(|g| g.0))
+            .collect();
+
+        // Simulate TypstTextNode or ExtraGlyphNeeds adding "xyz".
+        let typst_ids: Vec<u16> = "xyz"
+            .chars()
+            .filter_map(|c| face.glyph_index(c).map(|g| g.0))
+            .collect();
+
+        let mut merged = slug_ids.clone();
+        merged.extend_from_slice(&typst_ids);
+        merged.sort_unstable();
+        merged.dedup();
+
+        atlas.validate_glyph_ids(fid, &merged);
+        atlas.build_frame_atlas(&[(fid, merged.clone())]);
+
+        for &gid in &merged {
+            if atlas.cached_glyph(fid, gid).is_some() {
+                assert!(
+                    atlas.frame.glyph_index(fid, gid).is_some(),
+                    "glyph_id {} (from merged set) is missing from frame atlas",
+                    gid,
+                );
+            }
+        }
+    }
+
+    /// `glyph_index` must return `None` for a glyph that was never included in
+    /// the last `build_frame_atlas` call, even if it is in the CPU cache currently.
+    #[test]
+    fn glyph_index_returns_none_for_unclaimed_glyph() {
+        let (mut atlas, fid) = make_atlas(FIRA_TTF);
+        let face = ttf_parser::Face::parse(FIRA_TTF, 0).unwrap();
+
+        let abc_ids: Vec<u16> = "abc"
+            .chars()
+            .filter_map(|c| face.glyph_index(c).map(|g| g.0))
+            .collect();
+        let z_id = face.glyph_index('z').unwrap().0;
+
+        // Warm cache for 'a', 'b', 'c', 'z', but only build the atlas for
+        // 'a','b','c'.
+        let mut all = abc_ids.clone();
+        all.push(z_id);
+        atlas.validate_glyph_ids(fid, &all);
+        atlas.build_frame_atlas(&[(fid, abc_ids)]);
+
+        // 'z' is cached but not in the frame atlas.
+        assert!(
+            atlas.cached_glyph(fid, z_id).is_some(),
+            "'z' must be in the CPU cache after validate_glyph_ids"
+        );
+        assert!(
+            atlas.frame.glyph_index(fid, z_id).is_none(),
+            "glyph_index must return None for 'z' that was not in build_frame_atlas"
+        );
+    }
+
+    #[test]
+    fn build_frame_atlas_preserves_existing_indices_when_new_ids_sort_before_them() {
+        let (mut atlas, fid) = make_atlas(FIRA_TTF);
+        let face = ttf_parser::Face::parse(FIRA_TTF, 0).unwrap();
+
+        let gid = |c: char| face.glyph_index(c).unwrap().0;
+
+        // First "reverie": only high-sorting glyphs.
+        let first_ids: Vec<u16> = ['x', 'y', 'z'].iter().map(|&c| gid(c)).collect();
+        atlas.validate_glyph_ids(fid, &first_ids);
+        atlas.build_frame_atlas(&[(fid, first_ids.clone())]);
+
+        let before: std::collections::HashMap<u16, u32> = first_ids
+            .iter()
+            .map(|&id| (id, atlas.frame.glyph_index(fid, id).unwrap()))
+            .collect();
+
+        // Second "reverie": introduces new low-sorting glyph ids 'a', 'b', 'c'
+        // that, if indices were reassigned by (font, sorted glyph id), land
+        // *before* x/y/z and shift ^^^. This was a weird bug but this is a regression
+        let second_ids: Vec<u16> = ['a', 'b', 'c'].iter().map(|&c| gid(c)).collect();
+        atlas.validate_glyph_ids(fid, &second_ids);
+
+        // Simulate the real pipeline: both reveries glyphs are "needed"
+        // simultaneously, aka the old reverie keeps re-pushing to stay warm.
+        let mut combined = first_ids.clone();
+        combined.extend_from_slice(&second_ids);
+        atlas.build_frame_atlas(&[(fid, combined)]);
+
+        for &id in &first_ids {
+            assert_eq!(
+                atlas.frame.glyph_index(fid, id),
+                Some(before[&id]),
+                "glyph {} must keep its original absolute index after new \
+                 lower-sorting glyphs were added",
+                id
+            );
+        }
+
+        // New glyphs must also resolve, at indices >= the original count
+        // (appended, not interleaved).
+        let max_before = *before.values().max().unwrap();
+        for &id in &second_ids {
+            let idx = atlas
+                .frame
+                .glyph_index(fid, id)
+                .expect("newly added glyph must resolve");
+            assert!(
+                idx > max_before,
+                "newly appended glyph {} must get an index after all \
+                 pre-existing ones (got {}, max pre-existing was {})",
+                id,
+                idx,
+                max_before
+            );
+        }
+    }
+
+    /// A second `build_frame_atlas` call with an identical combined need
+    /// set to a prior call must be a nop and no new indices assigned,
+    /// `dirty` stays false-equivalent aka `rebuilt == false`.
+    #[test]
+    fn build_frame_atlas_repeat_call_does_not_reassign_or_grow() {
+        let (mut atlas, fid) = make_atlas(FIRA_TTF);
+        let face = ttf_parser::Face::parse(FIRA_TTF, 0).unwrap();
+        let ids: Vec<u16> = "hello"
+            .chars()
+            .filter_map(|c| face.glyph_index(c).map(|g| g.0))
+            .collect();
+
+        atlas.validate_glyph_ids(fid, &ids);
+        atlas.build_frame_atlas(&[(fid, ids.clone())]);
+        let glyph_bytes_after_first = atlas.frame.glyphs.len();
+        let indices_after_first: Vec<Option<u32>> = ids
+            .iter()
+            .map(|&id| atlas.frame.glyph_index(fid, id))
+            .collect();
+
+        let rebuilt = atlas.build_frame_atlas(&[(fid, ids.clone())]);
+        assert!(!rebuilt, "identical need set must not report a rebuild");
+        assert_eq!(
+            atlas.frame.glyphs.len(),
+            glyph_bytes_after_first,
+            "glyph buffer must not grow on an identical repeat call"
+        );
+        let indices_after_second: Vec<Option<u32>> = ids
+            .iter()
+            .map(|&id| atlas.frame.glyph_index(fid, id))
+            .collect();
+        assert_eq!(
+            indices_after_first, indices_after_second,
+            "indices must be unchanged after a no-op repeat call"
+        );
     }
 }
