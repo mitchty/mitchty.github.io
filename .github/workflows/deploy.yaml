@@ -55,7 +55,7 @@ jobs:
         run: nix flake check -L
 
   check-macos:
-    name: Run flake checks macOS
+    name: Run unit tests (nextest) macOS
     runs-on: macos-latest
     steps:
       - name: Checkout code
@@ -73,8 +73,19 @@ jobs:
           name: ${{ env.CACHIX_CACHE_NAME }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Run flake check
-        run: nix flake check -L
+      - name: Space before check
+        run: df -h /System/Volumes/Data
+
+      # Running the full check suite in parallel after adding typst caused us to
+      # fill up a runner sometimes. So instead of running the full nix check
+      # suite, just run the one thing we need to to actually check macos, the
+      # test suite. The linux side will run the docs, deny, clippy, etc stuff
+      # for us.
+      - name: Run nextest
+        run: nix build .#nextest -L
+
+      - name: Space after check
+        run: df -h /System/Volumes/Data
 
   build-wasm-webgpu-lto:
     name: Build WASM WebGPU
