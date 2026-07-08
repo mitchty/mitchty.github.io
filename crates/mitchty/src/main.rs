@@ -79,8 +79,8 @@ fn main() {
     #[cfg(target_arch = "wasm32")]
     let ui_config = plugins::cli::parse_wasm_args();
 
-    // wasm is always a release build so debug_assertions is never set;
-    // without_plugins declared here only so the let _ = below compiles.
+    // wasm always builds with CARGO_PROFILE=release, so without_plugins
+    // declared here only so the let _ = below compiles.
     #[cfg(target_arch = "wasm32")]
     let without_plugins: Vec<String> = Vec::new();
 
@@ -88,8 +88,9 @@ fn main() {
 
     // Insert DisabledPlugins before any plugin's build() runs so they can
     // read it via bavy::disabled::is_disabled(app.world(), "name").
-    // Only exists in debug builds; release always sees is_disabled() == false.
-    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+    // Only exists in dev builds with dev_build cfg set release* always sees
+    // is_disabled() == false.
+    #[cfg(all(dev_build, not(target_arch = "wasm32")))]
     {
         let set = without_plugins
             .into_iter()
@@ -99,7 +100,7 @@ fn main() {
     }
 
     // Suppress unused-variable warning in release / wasm builds.
-    #[cfg(any(not(debug_assertions), target_arch = "wasm32"))]
+    #[cfg(any(not(dev_build), target_arch = "wasm32"))]
     let _ = without_plugins;
 
     app.init_resource::<PluginRegistry>()

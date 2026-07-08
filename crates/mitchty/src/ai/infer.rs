@@ -1,4 +1,4 @@
-#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+#[cfg(all(dev_build, not(target_arch = "wasm32")))]
 use burn::record::CompactRecorder;
 use burn::{
     backend::NdArray,
@@ -215,7 +215,7 @@ impl InferenceEngine {
     /// - `{artifact_dir}/model.mpk`   - `CompactRecorder` weights
     ///
     /// Returns `None` if either file is missing or fails to parse/load.
-    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+    #[cfg(all(dev_build, not(target_arch = "wasm32")))]
     pub fn load(artifact_dir: &str) -> Option<Self> {
         let config_path = format!("{artifact_dir}/config.json");
         let model_path = format!("{artifact_dir}/model");

@@ -22,7 +22,7 @@ impl RasterSize {
     }
 
     /// Display label used for gooey.
-    #[cfg(debug_assertions)]
+    #[cfg(dev_build)]
     pub fn label(self) -> &'static str {
         match self {
             Self::S128 => "128x128",

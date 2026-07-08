@@ -116,7 +116,8 @@ pub struct Cli {
     #[arg(long = "pinned", value_name = "EPOCH")]
     pub pinned: Option<i64>,
 
-    /// Disable one or more plugins at startup (debug builds only).
+    /// Disable one or more plugins at startup for dev builds with dev_build cfg
+    /// gate set.
     ///
     /// Comma-separated or repeated. Known values: `postprocess`, `plot`,
     /// `mesheffect`, `prettytext`. Unrecognised names are silently ignored so
@@ -125,7 +126,7 @@ pub struct Cli {
     /// Example: `--without-plugins postprocess,mesheffect`
     // TODO: This is just half finished leftovers for me debugging slow memory
     // leaks. Future me will fix it.
-    #[cfg(debug_assertions)]
+    #[cfg(dev_build)]
     #[arg(long = "without-plugins", value_delimiter = ',', value_name = "PLUGIN", action = clap::ArgAction::Append)]
     pub without_plugins: Vec<String>,
 }
@@ -216,9 +217,9 @@ pub fn parse_native_args() -> (bool, ui::UiConfig, Vec<String>) {
         }
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(dev_build)]
     let without_plugins = cli.without_plugins.clone();
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(dev_build))]
     let without_plugins: Vec<String> = Vec::new();
 
     (cli.with_gamepad, cfg, without_plugins)

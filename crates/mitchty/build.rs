@@ -4,12 +4,15 @@ use std::fmt::Write as FmtWrite;
 use std::path::Path;
 
 fn main() {
-    println!("cargo::rustc-check-cfg=cfg(embed_assets)");
+    println!("cargo::rustc-check-cfg=cfg(dev_build)");
 
-    // Enable embed_assets cfg only for release* profiles.
+    // dev_build cfg var means "only a dev build in a git clone really needs this stuff".
+    //
+    // Any builds with release profiles do not get this, mostly affects things
+    // like dynamic file loading and file embedding.
     let profile = std::env::var("CARGO_PROFILE").unwrap_or_else(|_| String::from("dev"));
-    if profile == "release" || profile == "release-fast" {
-        println!("cargo:rustc-cfg=embed_assets");
+    if !profile.starts_with("release") {
+        println!("cargo:rustc-cfg=dev_build");
     }
 
     let reveries_dir = Path::new("src/assets/reveries");

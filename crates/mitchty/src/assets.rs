@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-#[cfg(embed_assets)]
+#[cfg(not(dev_build))]
 use bevy::asset::embedded_asset;
 
 use bevy::asset::io::web::WebAssetPlugin;
@@ -47,12 +47,15 @@ pub fn asset_path_release(path: &str) -> String {
 }
 
 /// Trampoline to asset_path_debub/release depending on build profile.
+///
+/// In this case dev_build's only need to dynamically load files from a git
+/// clone otherwise assume embedded assets.
 pub fn asset_path(path: &str) -> String {
-    #[cfg(debug_assertions)]
+    #[cfg(dev_build)]
     {
         asset_path_debug(path)
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(dev_build))]
     {
         asset_path_release(path)
     }
@@ -69,7 +72,7 @@ pub fn asset_path(path: &str) -> String {
 #[macro_export]
 macro_rules! asset_path_raw {
     ($path:expr) => {
-        if cfg!(debug_assertions) {
+        if cfg!(dev_build) {
             concat!("crates/mitchty/src/assets/", $path)
         } else {
             concat!("embedded://mitchty/assets/", $path)
@@ -83,9 +86,9 @@ pub struct AssetConfigPlugin;
 impl Plugin for AssetConfigPlugin {
     #[allow(unused_variables)]
     fn build(&self, app: &mut App) {
-        // Only embed assets in release builds, the rest don't need this stuff.
-        // build.rs controlled.
-        #[cfg(embed_assets)]
+        // Only embed assets in release* builds, the rest don't need this
+        // stuff. build.rs controlled.
+        #[cfg(not(dev_build))]
         {
             // Environment maps for the cube hues
             embedded_asset!(app, "assets/environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2");
@@ -119,10 +122,11 @@ pub fn create_default_plugins(enable_gamepad: bool) -> bevy::app::PluginGroupBui
         silence_startup_warning: true,
     };
 
-    // In debug builds, configure AssetPlugin to auto reload from the
-    // filesystem. UnapprovedPathMode::Allow lets absolute paths pass through
-    // FileAssetReader without being blocked thats kinda the point for this app.
-    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+    // Only configure the AssetPlugin to auto reload from the filesystem when
+    // dev_build is set. UnapprovedPathMode::Allow lets absolute paths pass
+    // through FileAssetReader without being blocked thats kinda the point for
+    // this setup.
+    #[cfg(all(dev_build, not(target_arch = "wasm32")))]
     let plugins = {
         use bevy::asset::{AssetPlugin, UnapprovedPathMode};
 
@@ -168,11 +172,11 @@ pub fn create_default_plugins(enable_gamepad: bool) -> bevy::app::PluginGroupBui
             .add_before::<AssetPlugin>(web_asset_plugin)
     };
 
-    // Release native builds embedded assets are registered via
-    // AssetConfigPlugin, but FileAssetReader is also setup so absolute local
-    // paths work too. UnapprovedPathMode::Allow is needed for crap that starts
-    // with a / or I think like C:\ on windows but not sure on that.
-    #[cfg(all(not(debug_assertions), not(target_arch = "wasm32")))]
+    // Release* native builds without dev_build embedded assets are registered
+    // via AssetConfigPlugin, but FileAssetReader is also setup so absolute
+    // local paths work too. UnapprovedPathMode::Allow is needed for crap that
+    // starts with a / or I think like C:\ on windows but not sure on that.
+    #[cfg(all(not(dev_build), not(target_arch = "wasm32")))]
     let plugins = {
         use bevy::asset::{AssetPlugin, UnapprovedPathMode};
         DefaultPlugins
@@ -256,12 +260,12 @@ mod tests {
         let path = "environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2";
         let result = asset_path(path);
 
-        // In debug builds, should use debug path
-        #[cfg(debug_assertions)]
+        // dev_build set so not a release we can use filesystem debug path.
+        #[cfg(dev_build)]
         assert_eq!(result, asset_path_debug(path));
 
-        // In release builds, should use release path
-        #[cfg(not(debug_assertions))]
+        // dev_build unset aka a release* profile we only use the embedded:// path.
+        #[cfg(not(dev_build))]
         assert_eq!(result, asset_path_release(path));
     }
 }

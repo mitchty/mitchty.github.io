@@ -1,6 +1,6 @@
 mod about;
 mod apps;
-#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+#[cfg(all(dev_build, not(target_arch = "wasm32")))]
 mod debug;
 mod experiments;
 #[cfg(not(target_arch = "wasm32"))]
@@ -32,7 +32,7 @@ use crate::ui::losant::{
     LosantAuthTask, LosantDiscoveryTask, LosantSseChannel, LosantSseTask, LosantState,
 };
 use crate::ui::losant::{poll_losant_auth_task, poll_losant_discovery_task, poll_losant_sse};
-#[cfg(debug_assertions)]
+#[cfg(dev_build)]
 use crate::ui::recognizer::RasterSize;
 use crate::ui::recognizer::{BASE_BRUSH_R, InferenceResult, RecognizerState};
 use crate::ui::state::{UiBackend, UiPanel, UiState, egui_backend_active};
@@ -185,9 +185,9 @@ impl Plugin for SettingsUiPlugin {
 
         // On native builds, fall back to the on-disk artifact directories so
         // that a freshly-trained model in recognizer/ still overrides the
-        // compiled-in default during development. We do this for debug builds.
+        // compiled-in default during development.
         // Note: explicitly exclude wasm32 InferenceEngine::load is native-only for now.
-        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+        #[cfg(all(dev_build, not(target_arch = "wasm32")))]
         let engine = engine.or_else(|| {
             ["recognizer", "../../../recognizer", "../recognizer"]
                 .iter()
@@ -305,7 +305,7 @@ impl Plugin for SettingsUiPlugin {
         #[cfg(not(target_arch = "wasm32"))]
         app.add_plugins(file::FileMenuPlugin);
 
-        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+        #[cfg(all(dev_build, not(target_arch = "wasm32")))]
         app.add_plugins(debug::DebugMenuPlugin);
 
         if let Some(mut registry) = app.world_mut().get_resource_mut::<PluginRegistry>() {
@@ -1032,9 +1032,7 @@ fn settings_ui(
     mut ui_config: ResMut<UiConfig>,
     mut camera_proj: ParamSet<(Res<CameraMode>, ResMut<CameraProjectionToggleRequested>)>,
     mut reset_camera_events: MessageWriter<ResetCamera>,
-    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))] mut plugin_registry: ResMut<
-        PluginRegistry,
-    >,
+    #[cfg(all(dev_build, not(target_arch = "wasm32")))] mut plugin_registry: ResMut<PluginRegistry>,
 ) -> Result {
     if !ui_state.enabled || !ui_state.menu_bar_visible {
         return Ok(());
@@ -1108,7 +1106,7 @@ fn settings_ui(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 theme_toggle::render_theme_toggle_menu(ui, &mut ui_config);
                 about::render_about_menu(ui, cached_adapter_info.0.as_deref());
-                #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+                #[cfg(all(dev_build, not(target_arch = "wasm32")))]
                 debug::render_debug_menu(ui, &mut plugin_registry);
                 experiments::render_experiments_menu(
                     ui,
@@ -1224,10 +1222,10 @@ fn recognizer_window(
                         "Draw a red bounding box around the tight crop sent to the classifier",
                     );
 
-                // Size picker: debug builds only, here to let me test models
-                // trained at different input resolutions without recompiling.
-                // Will rip this out eventually.
-                #[cfg(debug_assertions)]
+                // Size picker only in dev builds, here to let me test
+                // models trained at different input resolutions without
+                // recompiling. Will rip this out eventually?
+                #[cfg(dev_build)]
                 {
                     ui.separator();
                     ui.label("Size:");
