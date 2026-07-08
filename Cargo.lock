@@ -724,7 +724,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bavy"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "bevy",
 ]
@@ -5003,7 +5003,7 @@ checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
 name = "flan"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "bevy",
  "bytemuck",
@@ -6917,7 +6917,7 @@ checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 
 [[package]]
 name = "lib"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "const_format",
  "git-version",
@@ -7108,7 +7108,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "ma"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "burn",
  "clap",
@@ -7300,7 +7300,7 @@ dependencies = [
 
 [[package]]
 name = "mitchty"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "arboard",
  "bavy",
@@ -10727,7 +10727,7 @@ dependencies = [
 
 [[package]]
 name = "sys"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "bevy",
  "mach2",
