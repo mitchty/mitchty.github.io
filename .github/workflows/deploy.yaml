@@ -216,33 +216,40 @@ jobs:
   deploy-next:
     name: Deploy /next/ to GitHub Pages
     if: ${{ github.ref_type == 'branch' }}
-    needs: [check-linux, check-macos, build-wasm-webgpu-lto, build-wasm-webgl-lto]
+    needs: [create-prerelease]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}next/
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download WebGPU wasm
-        uses: actions/download-artifact@v4
-        with:
-          name: wasm-webgpu
-          path: _webgpu
-
-      - name: Download WebGL wasm
-        uses: actions/download-artifact@v4
-        with:
-          name: wasm-webgl
-          path: _webgl
-
-      - name: Assemble /next/ site tree
+      - name: Fetch pre-release WASM (own /next/ content)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p _site/next/wasm _site/next/wasm-webgl
-          cp -r _webgpu/* _site/next/wasm/
-          cp -r _webgl/*  _site/next/wasm-webgl/
-          cp index.html   _site/next/index.html
+          mkdir -p _site/next
+          gh release download pre-release --repo ${{ github.repository }} \
+            --pattern 'mitchty-wasm.tar.gz' --dir /tmp/next-wasm --clobber
+          tar xzf /tmp/next-wasm/mitchty-wasm.tar.gz -C _site/next
+
+      - name: Fetch latest live release WASM (for root)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p _site
+          LIVE_TAG="$(gh release list --repo ${{ github.repository }} --limit 100 \
+            --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("live-"))] | sort_by(.createdAt) | reverse | .[0].tagName')"
+          if [ -n "$LIVE_TAG" ] && [ "$LIVE_TAG" != "null" ]; then
+            echo "Splicing in root content from live release: $LIVE_TAG"
+            gh release download "$LIVE_TAG" --repo ${{ github.repository }} \
+              --pattern 'mitchty-wasm.tar.gz' --dir /tmp/live-wasm --clobber
+            tar xzf /tmp/live-wasm/mitchty-wasm.tar.gz -C _site
+          else
+            echo "No live-* release found; root will be missing content until first live deploy."
+          fi
+
+      - name: Finalize site tree
+        run: |
           touch _site/.nojekyll
           echo "--- /next/ site layout ---"
           find _site -type f | sort
@@ -259,33 +266,38 @@ jobs:
   deploy-live:
     name: Deploy / (root) to GitHub Pages
     if: ${{ github.ref == 'refs/tags/live' }}
-    needs: [check-linux, check-macos, build-wasm-webgpu-lto, build-wasm-webgl-lto]
+    needs: [create-live-release]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download WebGPU wasm
-        uses: actions/download-artifact@v4
-        with:
-          name: wasm-webgpu
-          path: _webgpu
-
-      - name: Download WebGL wasm
-        uses: actions/download-artifact@v4
-        with:
-          name: wasm-webgl
-          path: _webgl
-
-      - name: Assemble root site tree
+      - name: Fetch live release WASM (own root content)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p _site/wasm _site/wasm-webgl
-          cp -r _webgpu/* _site/wasm/
-          cp -r _webgl/*  _site/wasm-webgl/
-          cp index.html   _site/index.html
+          mkdir -p _site
+          gh release download "${{ needs.create-live-release.outputs.release_tag }}" \
+            --repo ${{ github.repository }} \
+            --pattern 'mitchty-wasm.tar.gz' --dir /tmp/live-wasm --clobber
+          tar xzf /tmp/live-wasm/mitchty-wasm.tar.gz -C _site
+
+      - name: Fetch latest pre-release WASM (for /next/)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p _site/next
+          if gh release view pre-release --repo ${{ github.repository }} >/dev/null 2>&1; then
+            echo "Splicing /next/ content from pre-release"
+            gh release download pre-release --repo ${{ github.repository }} \
+              --pattern 'mitchty-wasm.tar.gz' --dir /tmp/next-wasm --clobber
+            tar xzf /tmp/next-wasm/mitchty-wasm.tar.gz -C _site/next
+          else
+            echo "No pre-release found yet; /next/ will be missing until first main deploy."
+          fi
+
+      - name: Finalize site tree
+        run: |
           touch _site/.nojekyll
           echo "--- root site layout ---"
           find _site -type f | sort
@@ -409,8 +421,10 @@ jobs:
   create-live-release:
     name: Create Live Release
     if: ${{ github.ref == 'refs/tags/live' }}
-    needs: [deploy-live, build-windows, build-macos]
+    needs: [check-linux, check-macos, build-wasm-webgpu-lto, build-wasm-webgl-lto, build-windows, build-macos]
     runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.create.outputs.tag }}
     env:
        # Just a history of the pages in case I ever need em for god knows why. I
        # can increase this if its not enough but I don't see how it wouldn't be.
@@ -441,6 +455,7 @@ jobs:
           ls -lh release/
 
       - name: Create live release
+        id: create
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -448,6 +463,7 @@ jobs:
           DATESTAMP="$(date -u +%Y%m%d)"
           RELEASE_TAG="live-${DATESTAMP}-${SHORT_SHA}"
           CARGO_VERSION="$(grep -A5 '\[workspace.package\]' Cargo.toml | grep '^version' | sed 's/version = "\(.*\)"/\1/')"
+          echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
 
           cat > /tmp/live-release-notes.md << RELEASE_NOTES
           Live site release tag commit.
