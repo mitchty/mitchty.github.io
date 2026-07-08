@@ -194,8 +194,12 @@ impl Default for DataViewerState {
 
 /// An in-memory npz dataset to use for display purposes.
 pub struct LoadedDataset {
-    /// Flat pixel buffer for all images `n_images x img_height x img_width`
-    /// bytes to save on pointer chasing.
+    /// Flat pixel buffer for all images `n_images x channels x img_height x
+    /// img_width` bytes to save on pointer chasing.
+    ///
+    /// For 3-channel npz files channel 0 is the original grayscale image,
+    /// channel 1 is Otsu, channel 2 is Sauvola. The viewer only
+    /// displays/processes channel 0.
     images: Vec<u8>,
     /// TODO: REMOVEME?
     /// One label per image, u32 to fit the 2-7k kanji classes.
@@ -211,13 +215,23 @@ pub struct LoadedDataset {
     pub img_width: usize,
     /// Native pixel height of each image as stored in the npz.
     pub img_height: usize,
+    /// Channels per image as stored in the npz: 1 for plain (N,H,W) arrays,
+    /// 3 for (N,C,H,W) three-channel (original, Otsu, Sauvola) arrays.
+    pub channels: usize,
 }
 
 impl LoadedDataset {
-    /// Borrow the pixel slice for image `idx` length is `img_height * img_width`.
+    /// Borrow the pixel slice for image `idx`, length is `img_height *
+    /// img_width`.
+    ///
+    /// Only channel 0 (the original grayscale image) is returned even when
+    /// the source npz is multi-channel - the rest of the pipeline here is
+    /// single-channel grayscale only.
     pub fn image(&self, idx: usize) -> &[u8] {
         let ppi = self.img_height * self.img_width;
-        &self.images[idx * ppi..(idx + 1) * ppi]
+        let stride = self.channels * ppi;
+        let start = idx * stride;
+        &self.images[start..start + ppi]
     }
 
     /// Character for class `idx`, or `'?'` if out of range.
@@ -279,15 +293,21 @@ pub fn try_load(dir: &str) -> Result<LoadedDataset, String> {
                 imgs_hdr.dtype
             ));
         }
-        if imgs_hdr.shape.len() != 3 {
+        // Accept plain (N, H, W) grayscale arrays as well as (N, C, H, W)
+        // arrays from `ma convert --three-channel` (original/Otsu/Sauvola
+        // stacked as channels). Anything else is a you problem.
+        if imgs_hdr.shape.len() != 3 && imgs_hdr.shape.len() != 4 {
             return Err(format!(
-                "{imgs_path}: expected a 3-D array of (N, H, W), got shape {:?} instead?",
+                "{imgs_path}: expected a 3-D (N,H,W) or 4-D (N,C,H,W) array, got shape {:?} instead?",
                 imgs_hdr.shape
             ));
         }
         let n_images = imgs_hdr.shape[0];
-        let img_height = imgs_hdr.shape[1];
-        let img_width = imgs_hdr.shape[2];
+        let (channels, img_height, img_width) = match imgs_hdr.shape.len() {
+            3 => (1, imgs_hdr.shape[1], imgs_hdr.shape[2]),
+            4 => (imgs_hdr.shape[1], imgs_hdr.shape[2], imgs_hdr.shape[3]),
+            _ => unreachable!("checked above"),
+        };
         let img_data = imgs_raw[imgs_hdr.data_offset..].to_vec();
 
         let lbl_raw = lib::npz::read_npz_first_entry(&labels_path)?;
@@ -325,6 +345,7 @@ pub fn try_load(dir: &str) -> Result<LoadedDataset, String> {
             n_classes,
             img_width,
             img_height,
+            channels,
         })
     }
 }
