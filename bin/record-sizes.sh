@@ -192,14 +192,12 @@ fmtcell() {
       ($c.builds["mitchty-darwin-aarch64"].total_bytes | tostring),
       (if $p then ($c.builds["mitchty-wasm-bg"].total_bytes        - $p.builds["mitchty-wasm-bg"].total_bytes        | tostring) else "n/a" end),
       (if $p then ($c.builds["mitchty-windows-x86_64"].total_bytes - $p.builds["mitchty-windows-x86_64"].total_bytes | tostring) else "n/a" end),
-      (if $p then ($c.builds["mitchty-darwin-aarch64"].total_bytes - $p.builds["mitchty-darwin-aarch64"].total_bytes | tostring) else "n/a" end),
-      $c.detail_path
+      (if $p then ($c.builds["mitchty-darwin-aarch64"].total_bytes - $p.builds["mitchty-darwin-aarch64"].total_bytes | tostring) else "n/a" end)
     ] | @tsv' "$HISTORY" \
-    | while IFS="$TAB" read -r ver sha date wasm win mac wasm_d win_d mac_d detail; do
+    | while IFS="$TAB" read -r ver sha date wasm win mac wasm_d win_d mac_d; do
       wasm_cell=$(fmtcell "$wasm" "$wasm_d")
       win_cell=$(fmtcell "$win" "$win_d")
       mac_cell=$(fmtcell "$mac" "$mac_d")
-      detail_base=$(basename "$detail")
       printf "| \`%s\` | \`%s\` | %s | %s | %s | %s |\n" \
         "$ver" "$sha" "$date" "$wasm_cell" "$win_cell" "$mac_cell"
     done
