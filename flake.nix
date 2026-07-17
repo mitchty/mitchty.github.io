@@ -432,7 +432,7 @@
                   cudaPackages.cuda_cudart
                   cudaPackages.cuda_nvcc
                   cudaPackages.cuda_nvrtc
-                  cudaPackages.cuda_cccl
+                  cudaPackages.cccl
                   cudaPackages.libcublas
                   vulkan-loader
                   wayland
@@ -473,61 +473,35 @@
           }
         );
 
-        # Cargo artifacts for release builds
-        cargoArtifactsRelease = craneLib.buildDepsOnly (
-          commonArgs
-          // releaseArgs
-          // {
-            src = srcDeps;
-          }
-        );
-
-        # Cargo artifacts for WASM release builds. Note the `ma` crate is used
-        # for burn inference and has a butt ton of stuff that doesn't build in a
-        # wasm environment. I could probably get it to work without the tui
-        # feature but this is a future sucker mitch task.
-        cargoArtifactsWasm = craneLibWasm.buildDepsOnly (
-          commonArgsWasm
-          // wasmReleaseArgs
-          // {
-            src = srcDeps;
-            cargoExtraArgs = "-p mitchty --features mitchty/webgl";
-          }
-        );
-
-        # Cargo artifacts for the WASM webgpu compile-check.
-        #
-        # mitchty/webgpu enables flan/render which pulls in wgpu, image,
-        # pollster and wesl - deps not present in the webgl cache. A separate
-        # cache avoids a full rebuild every time the check runs.
-        cargoArtifactsWasmWebgpu = craneLibWasm.buildDepsOnly (
-          commonArgsWasm
-          // wasmReleaseArgs
-          // {
-            src = srcDeps;
-            cargoExtraArgs = "-p mitchty --features mitchty/webgpu";
-          }
-        );
-
-        # Cargo artifacts for WASM release-fast builds no lto or codegen unit restrictions
-        cargoArtifactsWasmFast = craneLibWasm.buildDepsOnly (
-          commonArgsWasm
-          // releaseFastArgs
-          // {
-            src = srcDeps;
-            cargoExtraArgs = "-p mitchty --features mitchty/webgl";
-          }
-        );
-
-        # Cargo artifacts for WASM release-fast webgpu builds
-        cargoArtifactsWasmWebgpuFast = craneLibWasm.buildDepsOnly (
-          commonArgsWasm
-          // releaseFastArgs
-          // {
-            src = srcDeps;
-            cargoExtraArgs = "-p mitchty --features mitchty/webgpu";
-          }
-        );
+        # Pulled out all the derivations into a wrapper function to stop getting
+        # issues with dep recomputation.
+        mkCrateBuild =
+          {
+            craneLib,
+            envArgs,
+            cargoExtraArgs,
+            crate,
+            pathDeps ? [ ],
+            extraArgs ? { },
+          }:
+          let
+            crateCargoArtifacts = craneLib.buildDepsOnly (
+              envArgs
+              // {
+                src = srcDeps;
+                inherit cargoExtraArgs;
+              }
+            );
+          in
+          craneLib.buildPackage (
+            envArgs
+            // {
+              cargoArtifacts = crateCargoArtifacts;
+              inherit cargoExtraArgs;
+              src = fileSetForCrate crate pathDeps;
+            }
+            // extraArgs
+          );
 
         # Cargo artifacts for WASM builds (debug)
         # Apparently yes, there is a limit and I've now hit it
@@ -541,57 +515,19 @@
         #   }
         # );
 
-        # Cargo artifacts for Darwin builds (release)
-        cargoArtifactsDarwin =
-          if pkgs.stdenv.isDarwin then
-            craneLibDarwin.buildDepsOnly (
-              commonArgsDarwin
-              // releaseArgs
-              // {
-                src = srcDeps;
-                RUSTFLAGS = "${releaseArgs.RUSTFLAGS} ${darwinLldFlags}";
-              }
-            )
-          else
-            null;
-
-        cargoArtifactsWindows = craneLibWindows.buildDepsOnly (
-          commonArgsWindows
-          // windowsReleaseArgs
-          // {
-            src = srcDeps;
-          }
-        );
-
-        # Cargo dep cache for the ma-cuda derivation specifically.
-        cargoArtifactsMaCuda =
-          if pkgs.stdenv.isLinux then
-            craneLibCuda.buildDepsOnly (
-              commonArgsCuda
-              // nixEnvArgs
-              // releaseArgs
-              // {
-                src = srcDeps;
-                cargoExtraArgs = "-p ma --features ma/cuda";
-              }
-            )
-          else
-            null;
-
         # Release build of the ma-cuda binary using the burn CUDA backend for
         # slightly faster training.
         ma-cuda =
           if pkgs.stdenv.isLinux then
-            craneLibCuda.buildPackage (
-              commonArgsCuda
-              // nixEnvArgs
-              // releaseArgs
-              // {
+            mkCrateBuild {
+              craneLib = craneLibCuda;
+              envArgs = commonArgsCuda // nixEnvArgs // releaseArgs;
+              cargoExtraArgs = "-p ma --bin ma --features ma/cuda";
+              crate = ./crates/ma;
+              pathDeps = maPathDeps;
+              extraArgs = {
                 pname = "ma-cuda";
                 version = version;
-                cargoArtifacts = cargoArtifactsMaCuda;
-                cargoExtraArgs = "-p ma --bin ma --features ma/cuda";
-                src = fileSetForCrate ./crates/ma;
                 doCheck = false;
                 meta = {
                   description = "ma training CLI CUDA flavor";
@@ -601,39 +537,70 @@
                     "aarch64-linux"
                   ];
                 };
-              }
-            )
+              };
+            }
           else
             null;
 
         version = self.rev or self.dirtyShortRev or "nix-flake-cant-get-git-commit-sha";
 
-        individualCrateArgs = commonArgs // {
-          inherit cargoArtifacts;
-          # NB: we disable tests since we'll run them all via cargo-nextest
-          doCheck = false;
-        };
+        # TODO: make this dynamic somehow in future, this is a bit hacky, here
+        # just to simplify all deps shared by and for or with ma/mitchty. Its
+        # not perfect but it'll do.
+        mitchtyPathDeps = [
+          ./crates/bavy
+          ./crates/lib
+          ./crates/flan
+          ./crates/sys
+        ];
+        maPathDeps = [
+          ./crates/lib
+        ];
 
+        # Stable source of all derivations that keep Cargo.toml consistent for
+        # derivation dep calculation.
+        dummyWorkspaceSrc = craneLib.mkDummySrc { src = ./.; };
+
+        # Build all the filesets needed for each crate and its path deps in a
+        # way that keeps the deps from needlessly recomputing.
         fileSetForCrate =
-          crate:
-          lib.fileset.toSource {
-            root = ./.;
-            fileset = lib.fileset.unions [
-              ./Cargo.toml
-              ./Cargo.lock
-              (craneLib.fileset.commonCargoSources crate)
-              (lib.fileset.fileFilter (file: file.hasExt "rs") ./crates)
-              (lib.fileset.fileFilter (file: file.hasExt "toml") ./crates)
-              (lib.fileset.fileFilter (file: file.hasExt "typ") ./crates)
-              (lib.fileset.fileFilter (file: file.hasExt "ktx2") ./crates)
-              (lib.fileset.fileFilter (file: file.hasExt "ttf") ./crates)
-              (lib.fileset.fileFilter (file: file.hasExt "glb") ./crates)
-              (lib.fileset.fileFilter (file: file.hasExt "wgsl") ./crates)
-              (lib.fileset.fileFilter (file: file.hasExt "wesl") ./crates)
-              (lib.fileset.fileFilter (file: file.hasExt "mpk") ./crates)
-              (lib.fileset.fileFilter (file: file.hasExt "json") ./crates)
-            ];
-          };
+          crate: pathDeps:
+          let
+            dirs = [ crate ] ++ pathDeps;
+            realSrc = lib.fileset.toSource {
+              root = ./.;
+              fileset = lib.fileset.unions (
+                [
+                  ./Cargo.toml
+                  ./Cargo.lock
+                ]
+                ++ (map craneLib.fileset.commonCargoSources dirs)
+                ++ (lib.concatMap (dir: [
+                  (lib.fileset.fileFilter (file: file.hasExt "rs") dir)
+                  (lib.fileset.fileFilter (file: file.hasExt "typ") dir)
+                  (lib.fileset.fileFilter (file: file.hasExt "ktx2") dir)
+                  (lib.fileset.fileFilter (file: file.hasExt "ttf") dir)
+                  (lib.fileset.fileFilter (file: file.hasExt "glb") dir)
+                  (lib.fileset.fileFilter (file: file.hasExt "wgsl") dir)
+                  (lib.fileset.fileFilter (file: file.hasExt "wesl") dir)
+                  (lib.fileset.fileFilter (file: file.hasExt "mpk") dir)
+                  (lib.fileset.fileFilter (file: file.hasExt "json") dir)
+                ]) dirs)
+              );
+            };
+          in
+
+          # The "magic" is here where we overlay the crate sources on top of the
+          # dummy derivation. As long as the toml/lock files don't update this
+          # keeps src deps from recompiling on just .rs changes in workspace
+          # crates correctly.
+          pkgs.runCommand "source" { } ''
+            mkdir -p $out
+            cp --recursive --no-preserve=mode,ownership ${dummyWorkspaceSrc}/. $out/
+            chmod -R u+w $out
+            cp --recursive --no-preserve=mode,ownership ${realSrc}/. $out/
+            chmod -R u+w $out
+          '';
 
         webServerRuntimeInputs = [
           pkgs.python3
@@ -924,16 +891,18 @@
         # cargo won't be able to find the sources for all members.
 
         # Default build: dev profile with debug symbols to match cargo parlance
-        mitchty-unwrapped = craneLib.buildPackage (
-          individualCrateArgs
-          // nixEnvArgs
-          // devArgs
-          // {
+        mitchty-unwrapped = mkCrateBuild {
+          inherit craneLib;
+          envArgs = commonArgs // nixEnvArgs // devArgs;
+          cargoExtraArgs = "-p mitchty";
+          crate = ./crates/mitchty;
+          pathDeps = mitchtyPathDeps;
+          extraArgs = {
             pname = "mitchty";
-            cargoExtraArgs = "-p mitchty";
-            src = fileSetForCrate ./crates/mitchty;
-          }
-        );
+            # NB: we disable tests since we'll run them all via cargo-nextest
+            doCheck = false;
+          };
+        };
 
         # "fake" asset root based off of the current source for the debug
         # version of mitchty. I figure that I can just use cargo run outside of
@@ -962,17 +931,17 @@
         # Built as a derivation so the stdenv properly wires up the C++
         # toolchain for tracy-client-sys (which compiles TracyClient.cpp).
         # Use: nix run .#mitchty-tracy  (start Tracy GUI first)
-        mitchty-tracy-unwrapped = craneLib.buildPackage (
-          individualCrateArgs
-          // nixEnvArgs
-          // devArgs
-          // {
+        mitchty-tracy-unwrapped = mkCrateBuild {
+          inherit craneLib;
+          envArgs = commonArgs // nixEnvArgs // devArgs;
+          cargoExtraArgs = "-p mitchty --features mitchty/tracy";
+          crate = ./crates/mitchty;
+          pathDeps = mitchtyPathDeps;
+          extraArgs = {
             pname = "mitchty-tracy";
-            cargoExtraArgs = "-p mitchty --features mitchty/tracy";
-            src = fileSetForCrate ./crates/mitchty;
             doCheck = false;
-          }
-        );
+          };
+        };
 
         mitchty-tracy = pkgs.symlinkJoin {
           name = "mitchty-tracy";
@@ -999,18 +968,17 @@
         # I had a profiling profile for a bit here but it just ends up another
         # dep tree to build needlessly.
         # Use: nix run .#mitchty-profile
-        mitchty-profiling-unwrapped = craneLib.buildPackage (
-          individualCrateArgs
-          // nixEnvArgs
-          // devArgs
-          // jemallocProfilingArgs
-          // {
+        mitchty-profiling-unwrapped = mkCrateBuild {
+          inherit craneLib;
+          envArgs = commonArgs // nixEnvArgs // devArgs // jemallocProfilingArgs;
+          cargoExtraArgs = "-p mitchty --features mitchty/jemalloc-pprof";
+          crate = ./crates/mitchty;
+          pathDeps = mitchtyPathDeps;
+          extraArgs = {
             pname = "mitchty-profiling";
-            cargoExtraArgs = "-p mitchty --features mitchty/jemalloc-pprof";
-            src = fileSetForCrate ./crates/mitchty;
             doCheck = false;
-          }
-        );
+          };
+        };
 
         mitchty-profiling = pkgs.symlinkJoin {
           name = "mitchty-profiling";
@@ -1025,19 +993,18 @@
         };
 
         # Optimized LTO build with release profile
-        mitchty-lto-unwrapped = craneLib.buildPackage (
-          commonArgs
-          // nixEnvArgs
-          // releaseArgs
-          // {
+        mitchty-lto-unwrapped = mkCrateBuild {
+          inherit craneLib;
+          envArgs = commonArgs // nixEnvArgs // releaseArgs;
+          cargoExtraArgs = "-p mitchty";
+          crate = ./crates/mitchty;
+          pathDeps = mitchtyPathDeps;
+          extraArgs = {
             pname = "mitchty";
-            cargoArtifacts = cargoArtifactsRelease;
-            cargoExtraArgs = "-p mitchty";
-            src = fileSetForCrate ./crates/mitchty;
             doCheck = false;
             BEVY_ASSET_PATH = ./crates/mitchty/src/assets;
-          }
-        );
+          };
+        };
 
         mitchty-lto = pkgs.symlinkJoin {
           name = "mitchty-lto";
@@ -1051,22 +1018,21 @@
         };
 
         # Release build of the plain ma binary with wgpu backend
-        ma = craneLib.buildPackage (
-          commonArgs
-          // nixEnvArgs
-          // releaseArgs
-          // {
+        ma = mkCrateBuild {
+          inherit craneLib;
+          envArgs = commonArgs // nixEnvArgs // releaseArgs;
+          cargoExtraArgs = "-p ma --bin ma";
+          crate = ./crates/ma;
+          pathDeps = maPathDeps;
+          extraArgs = {
             pname = "ma";
-            cargoArtifacts = cargoArtifactsRelease;
-            cargoExtraArgs = "-p ma --bin ma";
-            src = fileSetForCrate ./crates/ma;
             doCheck = false;
             meta = {
               description = "ma nn utility cli";
               mainProgram = "ma";
             };
-          }
-        );
+          };
+        };
 
         # This builds the mitchty derivation in release mode (I tried passing in
         # the binary etc.. but no bueno pugio needs to build crap on its own
@@ -1084,7 +1050,7 @@
         #   // {
         #     pname = "ci-pugio-graph";
         #     cargoArtifacts = cargoArtifactsRelease;
-        #     src = fileSetForCrate ./crates/mitchty;
+        #     src = fileSetForCrate ./crates/mitchty mitchtyPathDeps;
         #     doCheck = false;
         #     doInstallCargoArtifacts = false;
 
@@ -1119,16 +1085,15 @@
         # WebGL LTO build: release profile + wasm-opt, webgl2 feature
         mitchty-webgl-lto =
           let
-            wasmBuild = craneLibWasm.buildPackage (
-              commonArgsWasm
-              // nixEnvArgs
-              // wasmReleaseArgs
-              // {
+            wasmBuild = mkCrateBuild {
+              craneLib = craneLibWasm;
+              envArgs = commonArgsWasm // nixEnvArgs // wasmReleaseArgs;
+              cargoExtraArgs = "-p mitchty --features mitchty/webgl";
+              crate = ./crates/mitchty;
+              pathDeps = mitchtyPathDeps;
+              extraArgs = {
                 pname = "mitchty-webgl-lto";
                 version = version;
-                cargoArtifacts = cargoArtifactsWasm;
-                cargoExtraArgs = "-p mitchty --features mitchty/webgl";
-                src = fileSetForCrate ./crates/mitchty;
                 BEVY_ASSET_PATH = ./crates/mitchty/src/assets;
 
                 doCheck = false;
@@ -1139,8 +1104,8 @@
                   cp -r target/wasm32-unknown-unknown/release $out/
                   runHook postInstall
                 '';
-              }
-            );
+              };
+            };
           in
           pkgsWasm.runCommand "mitchty-webgl-lto-bindgen"
             {
@@ -1174,16 +1139,15 @@
         # WebGPU LTO build: release profile + wasm-opt, webgpu feature
         mitchty-webgpu-lto =
           let
-            wasmBuild = craneLibWasm.buildPackage (
-              commonArgsWasm
-              // nixEnvArgs
-              // wasmReleaseArgs
-              // {
+            wasmBuild = mkCrateBuild {
+              craneLib = craneLibWasm;
+              envArgs = commonArgsWasm // nixEnvArgs // wasmReleaseArgs;
+              cargoExtraArgs = "-p mitchty --features mitchty/webgpu";
+              crate = ./crates/mitchty;
+              pathDeps = mitchtyPathDeps;
+              extraArgs = {
                 pname = "mitchty-webgpu-lto";
                 version = version;
-                cargoArtifacts = cargoArtifactsWasmWebgpu;
-                cargoExtraArgs = "-p mitchty --features mitchty/webgpu";
-                src = fileSetForCrate ./crates/mitchty;
                 BEVY_ASSET_PATH = ./crates/mitchty/src/assets;
 
                 doCheck = false;
@@ -1194,8 +1158,8 @@
                   cp -r target/wasm32-unknown-unknown/release $out/
                   runHook postInstall
                 '';
-              }
-            );
+              };
+            };
           in
           pkgsWasm.runCommand "mitchty-webgpu-lto-bindgen"
             {
@@ -1229,16 +1193,15 @@
         # WebGL fast build: release-fast profile, no wasm-opt, webgl2 feature
         mitchty-webgl =
           let
-            wasmBuild = craneLibWasm.buildPackage (
-              commonArgsWasm
-              // nixEnvArgs
-              // releaseFastArgs
-              // {
+            wasmBuild = mkCrateBuild {
+              craneLib = craneLibWasm;
+              envArgs = commonArgsWasm // nixEnvArgs // releaseFastArgs;
+              cargoExtraArgs = "-p mitchty --features mitchty/webgl";
+              crate = ./crates/mitchty;
+              pathDeps = mitchtyPathDeps;
+              extraArgs = {
                 pname = "mitchty-webgl";
                 version = version;
-                cargoArtifacts = cargoArtifactsWasmFast;
-                cargoExtraArgs = "-p mitchty --features mitchty/webgl";
-                src = fileSetForCrate ./crates/mitchty;
                 BEVY_ASSET_PATH = ./crates/mitchty/src/assets;
 
                 doCheck = false;
@@ -1249,8 +1212,8 @@
                   cp -r target/wasm32-unknown-unknown/release-fast $out/
                   runHook postInstall
                 '';
-              }
-            );
+              };
+            };
           in
           pkgsWasm.runCommand "mitchty-webgl-bindgen"
             {
@@ -1271,16 +1234,15 @@
         # WebGPU fast build: release-fast profile, no wasm-opt, webgpu feature
         mitchty-webgpu =
           let
-            wasmBuild = craneLibWasm.buildPackage (
-              commonArgsWasm
-              // nixEnvArgs
-              // releaseFastArgs
-              // {
+            wasmBuild = mkCrateBuild {
+              craneLib = craneLibWasm;
+              envArgs = commonArgsWasm // nixEnvArgs // releaseFastArgs;
+              cargoExtraArgs = "-p mitchty --features mitchty/webgpu";
+              crate = ./crates/mitchty;
+              pathDeps = mitchtyPathDeps;
+              extraArgs = {
                 pname = "mitchty-webgpu";
                 version = version;
-                cargoArtifacts = cargoArtifactsWasmWebgpuFast;
-                cargoExtraArgs = "-p mitchty --features mitchty/webgpu";
-                src = fileSetForCrate ./crates/mitchty;
                 BEVY_ASSET_PATH = ./crates/mitchty/src/assets;
 
                 doCheck = false;
@@ -1291,8 +1253,8 @@
                   cp -r target/wasm32-unknown-unknown/release-fast $out/
                   runHook postInstall
                 '';
-              }
-            );
+              };
+            };
           in
           pkgsWasm.runCommand "mitchty-webgpu-bindgen"
             {
@@ -1313,17 +1275,21 @@
         # Darwin release build (system libraries only, portable)
         mitchty-release-darwin =
           if pkgs.stdenv.isDarwin then
-            craneLibDarwin.buildPackage (
-              commonArgsDarwin
-              // nixEnvArgs
-              // releaseArgs
-              // {
+            mkCrateBuild {
+              craneLib = craneLibDarwin;
+              envArgs =
+                commonArgsDarwin
+                // nixEnvArgs
+                // releaseArgs
+                // {
+                  RUSTFLAGS = "${releaseArgs.RUSTFLAGS} ${darwinLldFlags}";
+                };
+              cargoExtraArgs = "-p mitchty";
+              crate = ./crates/mitchty;
+              pathDeps = mitchtyPathDeps;
+              extraArgs = {
                 pname = "mitchty-release";
                 version = version;
-                cargoArtifacts = cargoArtifactsDarwin;
-                cargoExtraArgs = "-p mitchty";
-                src = fileSetForCrate ./crates/mitchty;
-                RUSTFLAGS = "${releaseArgs.RUSTFLAGS} ${darwinLldFlags}";
 
                 # Don't check during cross-compilation
                 doCheck = false;
@@ -1347,28 +1313,27 @@
                     "aarch64-darwin"
                   ];
                 };
-              }
-            )
+              };
+            }
           else
             null;
 
-        mitchty-release-windows = craneLibWindows.buildPackage (
-          commonArgsWindows
-          // nixEnvArgs
-          // windowsReleaseArgs
-          // {
+        mitchty-release-windows = mkCrateBuild {
+          craneLib = craneLibWindows;
+          envArgs = commonArgsWindows // nixEnvArgs // windowsReleaseArgs;
+          cargoExtraArgs = "-p mitchty";
+          crate = ./crates/mitchty;
+          pathDeps = mitchtyPathDeps;
+          extraArgs = {
             pname = "mitchty-release";
             version = version;
-            cargoArtifacts = cargoArtifactsWindows;
-            cargoExtraArgs = "-p mitchty";
-            src = fileSetForCrate ./crates/mitchty;
 
             # Don't check during cross-compilation
             doCheck = false;
 
             meta = metaCommon "release windows x86_64 build";
-          }
-        );
+          };
+        };
 
         deny = craneLib.cargoDeny {
           inherit src;
@@ -1460,12 +1425,25 @@
             license = with licenses; [ mit ];
           };
         };
+
+        ciRecordSizesScript = pkgs.writeShellApplication {
+          name = "ci-record-sizes";
+          runtimeInputs = with pkgs; [
+            git
+            jq
+            coreutils
+          ];
+          text = builtins.readFile ./bin/record-sizes.sh;
+        };
       in
       {
         checks = {
           inherit deny;
           formatter = treefmtEval.config.build.check self;
           git-hooks = git-hooks-check;
+
+          # Mostly so I don't get shellcheck issues in github actions again out of nowhere.
+          shellcheck-ci-record-sizes = ciRecordSizesScript;
 
           # Run clippy (and deny all warnings) on the workspace source,
           # again, reusing the dependency artifacts from above.
@@ -1551,14 +1529,8 @@
             pugio
             dotdeps
             ;
-          mitchty-deny = deny;
           wasm-bindgen-cli = wasmBindgenCli;
           default = mitchty;
-          # Expose checks as packages for individual running with shorter names
-          clippy = self.checks.${system}.mitchty-clippy;
-          doc = self.checks.${system}.mitchty-doc;
-          nextest = self.checks.${system}.mitchty-nextest;
-          deny = self.checks.${system}.deny;
         }
         // lib.optionalAttrs pkgs.stdenv.isLinux {
           inherit mitchty-release-windows;
@@ -1716,19 +1688,7 @@
           #   nix run .#ci-record-sizes -- <wasm-bg.wasm> <win.exe> <mac-binary>
           ci-record-sizes = {
             type = "app";
-            program = "${
-              pkgs.writeShellApplication {
-                name = "ci-record-sizes";
-                runtimeInputs = with pkgs; [
-                  git
-                  jq
-                  coreutils
-                  # numfmt lives in coreutils on Linux; on Darwin it's in
-                  # pkgs.coreutils as well (the GNU variant from nixpkgs).
-                ];
-                text = builtins.readFile ./bin/record-sizes.sh;
-              }
-            }/bin/ci-record-sizes";
+            program = "${ciRecordSizesScript}/bin/ci-record-sizes";
             meta = {
               description = "Record binary artifact sizes to .build-meta/sizes/history.json";
               mainProgram = "ci-record-sizes";
@@ -1934,7 +1894,7 @@
                   cudaPackages.cuda_cudart
                   cudaPackages.cuda_nvcc
                   cudaPackages.cuda_nvrtc
-                  cudaPackages.cuda_cccl
+                  cudaPackages.cccl
                   cudaPackages.libcublas
                   autoAddDriverRunpath
                   # Mold must be on PATH for -fuse-ld=mold to work.
