@@ -1350,6 +1350,30 @@
             };
           };
 
+          # Build only the binary derivations at once to help out in ci type situations.
+          mitchty-ci =
+            pkgs.runCommand "mitchty-ci"
+              {
+                buildInputs = [
+                  mitchty-lto
+                  mitchty-webgl-lto
+                  mitchty-webgpu-lto
+                  ma
+                ]
+                ++ lib.optionals pkgs.stdenv.isLinux [
+                  mitchty-release-windows
+                  ma-cuda
+                ];
+              }
+              ''
+                mkdir -p $out/bin
+                cat > $out/bin/mitchty-ci <<'EOF'
+                #!/bin/sh
+                echo ok
+                EOF
+                chmod +x $out/bin/mitchty-ci
+              '';
+
           deny = craneLib.cargoDeny {
             inherit src;
             inherit (inputs) advisory-db;
@@ -1546,6 +1570,7 @@
               ;
             wasm-bindgen-cli = wasmBindgenCli;
             default = mitchty;
+            ci = mitchty-ci;
           }
           // lib.optionalAttrs pkgs.stdenv.isLinux {
             inherit mitchty-release-windows;
@@ -1669,6 +1694,15 @@
                   mainProgram = "mitchty-build-all";
                 };
               };
+
+            ci = {
+              type = "app";
+              program = "${mitchty-ci}/bin/mitchty-ci";
+              meta = {
+                description = "Build all LTO targets";
+                mainProgram = "mitchty-ci";
+              };
+            };
 
             # Hacky flake app to open the graph_output dir if its not empty
             dotdeps =
