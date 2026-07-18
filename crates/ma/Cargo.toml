@@ -25,7 +25,7 @@ rand.workspace = true
 csv = "~1.4"
 # EUC-JP decoding for JIS 0208 in ETL conversion testing
 encoding_rs = "~0.8"
-regex = "~1.12"
+regex = "~1.13"
 serde = { version = "~1", features = ["derive"] }
 serde_json = "~1"
 serde_yaml = "~0.9"

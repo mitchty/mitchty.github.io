@@ -16,8 +16,8 @@ use bevy::render::{
 use bytemuck;
 
 use flan::{
-    SlugAtlasLayout, SlugRunDesc, StatsOverlayData, StatsOverlayHandle, StatsOverlayMaterial,
-    StatsOverlayMaterialPlugin, StatsOverlayParams,
+    SlugAtlasLayout, SlugRunDesc, StatsOverlayColorMode, StatsOverlayData, StatsOverlayHandle,
+    StatsOverlayMaterial, StatsOverlayMaterialPlugin, StatsOverlayParams,
 };
 
 /// Marker component: while present the FPS stats overlay is visible.
@@ -357,7 +357,7 @@ fn sample_fps_for_overlay(
             line_width: 0.01,
             layout_flags: 0x08,
             alpha_discard: 0.01,
-            _pad: 0.0,
+            color_mode: StatsOverlayColorMode::Invert.as_u32(),
             text_color: Vec4::new(0.0, 0.0, 0.0, 1.0),
             background_color: Vec4::ZERO,
         },

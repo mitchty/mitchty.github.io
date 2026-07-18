@@ -17,6 +17,8 @@ pub mod stats_overlay_helpers {
     use wgsl_rs::std::*;
 
     pub const PLOT_FRAC: f32 = 0.43478261; // 100 / 230
+    pub const COLOR_MODE_COLOR: u32 = 0u32;
+    pub const COLOR_MODE_INVERT: u32 = 1u32;
 
     /// `true` when `uv.x` falls in the plot (left-hand) sub-region.
     pub fn in_plot_region(uv: Vec2f) -> bool {
@@ -50,6 +52,25 @@ pub mod stats_overlay_helpers {
         }
         f32(i) / f32(count - 1u32)
     }
+
+    pub fn stats_overlay_shade(
+        coverage: f32,
+        alpha_discard: f32,
+        color_mode: u32,
+        text_color: Vec4f,
+        background: Vec4f,
+    ) -> Vec4f {
+        if color_mode == COLOR_MODE_INVERT {
+            if coverage < alpha_discard {
+                discard!();
+            }
+            return vec4f(coverage, coverage, coverage, 1.0);
+        }
+        if coverage < alpha_discard {
+            return background;
+        }
+        text_color * coverage
+    }
 }
 
 #[wgsl]
@@ -65,7 +86,7 @@ pub mod stats_overlay_types {
     /// offset 16: line_width        f32        (4)
     /// offset 20: layout_flags      u32        (4)
     /// offset 24: alpha_discard     f32        (4)
-    /// offset 28: _pad              f32        (4)
+    /// offset 28: color_mode        u32        (4)
     /// offset 32: text_color        vec4<f32>  (16)
     /// offset 48: background_color  vec4<f32>  (16)
     /// total = 64 bytes
@@ -78,7 +99,7 @@ pub mod stats_overlay_types {
         pub line_width: f32,
         pub layout_flags: u32,
         pub alpha_discard: f32,
-        pub _pad: f32,
+        pub color_mode: u32,
         pub text_color: Vec4f,
         pub background_color: Vec4f,
     }
@@ -354,6 +375,7 @@ pub mod stats_overlay_default {
         let text_color = params.text_color;
         let layout_flags = params.layout_flags;
         let alpha_discard = params.alpha_discard;
+        let color_mode = params.color_mode;
         let node_size = params.node_size;
         let min_fps = params.min_fps;
         let max_fps = params.max_fps;
@@ -362,10 +384,7 @@ pub mod stats_overlay_default {
         if in_plot_region(uv) {
             let plot_uv = to_plot_uv(uv);
             let coverage = draw_sparkline(plot_uv, min_fps, max_fps, line_width);
-            if coverage < alpha_discard {
-                return background;
-            }
-            text_color * coverage
+            stats_overlay_shade(coverage, alpha_discard, color_mode, text_color, background)
         } else {
             let text_uv = to_text_uv(uv);
             let text_frac = 1.0 - PLOT_FRAC;
@@ -374,10 +393,7 @@ pub mod stats_overlay_default {
             let px = text_uv * vec2f(text_w, text_h);
             let rect = vec4f(0.0, 0.0, text_w, text_h);
             let coverage = slugtext(px, rect, layout_flags, 0u32);
-            if coverage < alpha_discard {
-                return background;
-            }
-            text_color * coverage
+            stats_overlay_shade(coverage, alpha_discard, color_mode, text_color, background)
         }
     }
 }
@@ -759,6 +775,7 @@ pub mod stats_overlay_texture {
         let text_color = params.text_color;
         let layout_flags = params.layout_flags;
         let alpha_discard = params.alpha_discard;
+        let color_mode = params.color_mode;
         let node_size = params.node_size;
         let min_fps = params.min_fps;
         let max_fps = params.max_fps;
@@ -767,10 +784,7 @@ pub mod stats_overlay_texture {
         if in_plot_region(uv) {
             let plot_uv = to_plot_uv(uv);
             let coverage = draw_sparkline(plot_uv, min_fps, max_fps, line_width);
-            if coverage < alpha_discard {
-                return background;
-            }
-            text_color * coverage
+            stats_overlay_shade(coverage, alpha_discard, color_mode, text_color, background)
         } else {
             let text_uv = to_text_uv(uv);
             let text_frac = 1.0 - PLOT_FRAC;
@@ -779,10 +793,7 @@ pub mod stats_overlay_texture {
             let px = text_uv * vec2f(text_w, text_h);
             let rect = vec4f(0.0, 0.0, text_w, text_h);
             let coverage = slugtext(px, rect, layout_flags, 0u32);
-            if coverage < alpha_discard {
-                return background;
-            }
-            text_color * coverage
+            stats_overlay_shade(coverage, alpha_discard, color_mode, text_color, background)
         }
     }
 }

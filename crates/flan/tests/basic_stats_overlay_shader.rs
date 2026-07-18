@@ -3,6 +3,7 @@
 use flan::test::lib::shader::stats_overlay;
 use flan::test::lib::snapshot::{
     DEFAULT_SSIM_THRESHOLD, assert_snapshot, assert_variant_matches_canonical,
+    has_non_background_pixels,
 };
 
 const FONT: &[u8] = include_bytes!("fixtures/FiraMono-Medium.ttf");
@@ -40,6 +41,45 @@ fn snapshot_stats_overlay_texture() {
     assert_variant_matches_canonical(
         stats_overlay::CANONICAL,
         "stats_overlay_texture",
+        &frame,
+        DEFAULT_SSIM_THRESHOLD,
+        None,
+    );
+}
+
+/// `StatsOverlayColorMode::Invert` GPU inversion path needed proof it works.
+#[test]
+fn snapshot_stats_overlay_invert_canonical() {
+    let fps = test_fps_values();
+    let Some(frame) = stats_overlay::render_invert_canonical(FONT, &fps, FPS_TEXT) else {
+        return;
+    };
+    assert!(
+        has_non_background_pixels(&frame),
+        "invert mode path rendered a fully transparent frame"
+    );
+    assert_snapshot(
+        stats_overlay::INVERT_CANONICAL,
+        &frame,
+        DEFAULT_SSIM_THRESHOLD,
+        None,
+    );
+}
+
+/// Texture variant of above.
+#[test]
+fn snapshot_stats_overlay_invert_texture() {
+    let fps = test_fps_values();
+    let Some(frame) = stats_overlay::render_invert_texture(FONT, &fps, FPS_TEXT) else {
+        return;
+    };
+    assert!(
+        has_non_background_pixels(&frame),
+        "invert mode via texture path rendered a fully transparent frame"
+    );
+    assert_variant_matches_canonical(
+        stats_overlay::INVERT_CANONICAL,
+        "stats_overlay_invert_texture",
         &frame,
         DEFAULT_SSIM_THRESHOLD,
         None,

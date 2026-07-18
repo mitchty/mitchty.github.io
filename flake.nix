@@ -830,8 +830,23 @@
           # Clippy lints can be set in source via attributes instead
         };
 
-        devArgs = {
-          CARGO_PROFILE = "dev";
+        # Build the CARGO_PROFILE (+ optional RUSTFLAGS) env args for a given
+        # cargo profile, so each *Args binding below doesn't repeat this shape.
+        # Pass rustflags = null to omit RUSTFLAGS entirely (release-fast/dev
+        # skip the -D warnings spiel).
+        mkCargoProfileArgs =
+          {
+            cargoProfile ? "release",
+            rustflags ? "-D warnings",
+          }:
+          {
+            CARGO_PROFILE = cargoProfile;
+          }
+          // lib.optionalAttrs (rustflags != null) { RUSTFLAGS = rustflags; };
+
+        devArgs = mkCargoProfileArgs {
+          cargoProfile = "dev";
+          rustflags = null;
         };
 
         # Extra env vars needed for any derivation that compiles tikv-jemalloc-sys
@@ -852,33 +867,31 @@
           je_cv_strerror_r_header_pass = "yes";
         };
 
-        releaseArgs = {
-          CARGO_PROFILE = "release";
-          RUSTFLAGS = "-D warnings ${lib.optionalString pkgs.stdenv.isLinux linuxMoldFlags}";
+        releaseArgs = mkCargoProfileArgs {
+          rustflags = "-D warnings ${lib.optionalString pkgs.stdenv.isLinux linuxMoldFlags}";
         };
 
-        # Like releaseArgs but without the mold linker flag: mold is a native
-        # ELF linker and rust-lld (wasm flavor) does not understand -fuse-ld=mold.
-        # Use this everywhere craneLibWasm is involved.
-        wasmReleaseArgs = {
-          CARGO_PROFILE = "release";
-          RUSTFLAGS = "-D warnings";
+        # Like releaseArgs but uses the release-small profile (opt-level =
+        # "z") for the wasm LTO builds, since binary size matters a lot more
+        # than it does for native release builds. No mold flag: mold is a
+        # native ELF linker and rust-lld (wasm flavor) does not understand
+        # -fuse-ld=mold. Use this everywhere craneLibWasm is involved.
+        wasmReleaseSmallArgs = mkCargoProfileArgs {
+          cargoProfile = "release-small";
         };
 
         # Like releaseArgs but without the mold linker flag: the mingw32 cross
         # linker (x86_64-w64-mingw32-cc) does not understand -fuse-ld=mold.
         # Use this everywhere craneLibWindows is involved.
-        windowsReleaseArgs = {
-          CARGO_PROFILE = "release";
-          RUSTFLAGS = "-D warnings";
-        };
+        windowsReleaseArgs = mkCargoProfileArgs { };
 
         # Like releaseArgs but uses the release-fast profile for quicker
         # iteration, also skips the fatal warnings spiel under the same
         # assumption in that I might be iterating and vars might be temp off and
         # idgaf.
-        releaseFastArgs = {
-          CARGO_PROFILE = "release-fast";
+        releaseFastArgs = mkCargoProfileArgs {
+          cargoProfile = "release-fast";
+          rustflags = null;
         };
 
         # Build the top-level crates of the workspace as individual derivations.
@@ -1082,12 +1095,12 @@
         #   }
         # );
 
-        # WebGL LTO build: release profile + wasm-opt, webgl2 feature
+        # WebGL LTO build: release-small profile + wasm-opt, webgl2 feature
         mitchty-webgl-lto =
           let
             wasmBuild = mkCrateBuild {
               craneLib = craneLibWasm;
-              envArgs = commonArgsWasm // nixEnvArgs // wasmReleaseArgs;
+              envArgs = commonArgsWasm // nixEnvArgs // wasmReleaseSmallArgs;
               cargoExtraArgs = "-p mitchty --features mitchty/webgl";
               crate = ./crates/mitchty;
               pathDeps = mitchtyPathDeps;
@@ -1101,7 +1114,7 @@
                 installPhase = ''
                   runHook preInstall
                   mkdir -p $out
-                  cp -r target/wasm32-unknown-unknown/release $out/
+                  cp -r target/wasm32-unknown-unknown/release-small $out/
                   runHook postInstall
                 '';
               };
@@ -1121,7 +1134,7 @@
                 --out-dir $out/wasm \
                 --target web \
                 --no-typescript \
-                ${wasmBuild}/release/mitchty.wasm
+                ${wasmBuild}/release-small/mitchty.wasm
 
               # Optimize with wasm-opt (enable all features needed by Bevy)
               ${pkgsWasm.binaryen}/bin/wasm-opt -Oz \
@@ -1136,12 +1149,12 @@
               mv $out/wasm/mitchty_bg_optimized.wasm $out/wasm/mitchty_bg.wasm
             '';
 
-        # WebGPU LTO build: release profile + wasm-opt, webgpu feature
+        # WebGPU LTO build: release-small profile + wasm-opt, webgpu feature
         mitchty-webgpu-lto =
           let
             wasmBuild = mkCrateBuild {
               craneLib = craneLibWasm;
-              envArgs = commonArgsWasm // nixEnvArgs // wasmReleaseArgs;
+              envArgs = commonArgsWasm // nixEnvArgs // wasmReleaseSmallArgs;
               cargoExtraArgs = "-p mitchty --features mitchty/webgpu";
               crate = ./crates/mitchty;
               pathDeps = mitchtyPathDeps;
@@ -1155,7 +1168,7 @@
                 installPhase = ''
                   runHook preInstall
                   mkdir -p $out
-                  cp -r target/wasm32-unknown-unknown/release $out/
+                  cp -r target/wasm32-unknown-unknown/release-small $out/
                   runHook postInstall
                 '';
               };
@@ -1175,7 +1188,7 @@
                 --out-dir $out/wasm \
                 --target web \
                 --no-typescript \
-                ${wasmBuild}/release/mitchty.wasm
+                ${wasmBuild}/release-small/mitchty.wasm
 
               # Optimize with wasm-opt (enable all features needed by Bevy)
               ${pkgsWasm.binaryen}/bin/wasm-opt -Oz \

@@ -469,21 +469,21 @@ fn analog_clock(ui: &mut egui::Ui, h: u8, m: u8, s: u8, radius: f32, is_off_hour
     let h_angle = (h as f32 % 12.0 + m as f32 / 60.0) / 12.0 * tau;
     painter.line_segment(
         [center, hand(0.55, h_angle)],
-        egui::Stroke::new(2.5, hand_color),
+        egui::Stroke::new(2.5_f32, hand_color),
     );
 
     // Minute
     let m_angle = (m as f32 + s as f32 / 60.0) / 60.0 * tau;
     painter.line_segment(
         [center, hand(0.78, m_angle)],
-        egui::Stroke::new(1.5, hand_color),
+        egui::Stroke::new(1.5_f32, hand_color),
     );
 
     // Second
     let s_angle = s as f32 / 60.0 * tau;
     painter.line_segment(
         [center, hand(0.88, s_angle)],
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 80, 80)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 80, 80)),
     );
 }
 

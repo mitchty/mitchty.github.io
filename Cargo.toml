@@ -71,16 +71,16 @@ opt-level = 1
 [profile.release]
 codegen-units = 1
 lto = "fat"
-opt-level = "z"
+opt-level = 3
 
 [profile.release.build-override]
 codegen-units = 1
-opt-level = "z"
+opt-level = 3
 strip = "debuginfo"
 
 [profile.release.package."*"]
 codegen-units = 1
-opt-level = "z"
+opt-level = 3
 strip = "debuginfo"
 
 # release-fast is release without codegen-units and lto for faster iteration on
@@ -93,11 +93,29 @@ lto = false
 
 [profile.release-fast.build-override]
 codegen-units = 16
-opt-level = "z"
+opt-level = 3
 strip = "debuginfo"
 
 [profile.release-fast.package."*"]
 codegen-units = 16
+opt-level = 3
+strip = "debuginfo"
+
+# release-small is release but optimized for binary/code size over of speed, for
+# now mostly just for the wasm builds but nice to have to compare the final
+# binary sizes for release builds in case I ever need to swap. Was the default
+# but with the physics in I've moved default to 3.
+[profile.release-small]
+inherits = "release"
+opt-level = "z"
+
+[profile.release-small.build-override]
+codegen-units = 1
+opt-level = 3
+strip = "debuginfo"
+
+[profile.release-small.package."*"]
+codegen-units = 1
 opt-level = "z"
 strip = "debuginfo"
 

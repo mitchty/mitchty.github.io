@@ -43,6 +43,7 @@ use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 #[cfg(not(target_arch = "wasm32"))]
 use egui_file_dialog::FileDialog;
 use flan::post_process::{ActiveShader, AvailableShaders, EffectsEnabled};
+use mitchty::ActiveApp;
 use transform_gizmo_bevy::prelude::{GizmoMode, GizmoOptions, GizmoOrientation};
 
 use crate::plugins::theme::{EguiThemeSet, ThemePlugin, resolve_initial_theme};
@@ -132,6 +133,14 @@ pub struct Text3dFontParams<'w> {
     pub active_font: Option<Res<'w, FlanFontId>>,
 }
 
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct AppSwitchParams<'w> {
+    pub active_app: Res<'w, ActiveApp>,
+    pub pending: ResMut<'w, PendingAppSwitch>,
+    #[cfg(all(dev_build, not(target_arch = "wasm32")))]
+    pub plugin_registry: ResMut<'w, PluginRegistry>,
+}
+
 /// Message for when camera projection needs to change.
 ///
 /// Bound to the M key and for now the egui menu item.
@@ -150,6 +159,10 @@ impl bevy::ecs::message::Message for ResetCamera {}
 /// projection.
 #[derive(Resource, Default)]
 pub struct CameraProjectionToggleRequested(pub bool);
+
+/// Staging resource for pending ActiveApp switch.
+#[derive(Resource, Default)]
+pub struct PendingAppSwitch(pub Option<ActiveApp>);
 
 /// Marker component to track whether the Recognizer window is open
 #[derive(Component)]
@@ -234,6 +247,7 @@ impl Plugin for SettingsUiPlugin {
             .add_message::<ResetCamera>()
             .add_message::<crate::ui::losant::DeviceStateEvent>()
             .init_resource::<CameraProjectionToggleRequested>()
+            .init_resource::<PendingAppSwitch>()
             .insert_non_send(engine)
             .add_systems(Startup, (setup_egui, load_egui_noto_font))
             .add_systems(
@@ -242,6 +256,7 @@ impl Plugin for SettingsUiPlugin {
                     send_camera_projection_toggle,
                     apply_camera_projection_toggle,
                     reset_camera,
+                    apply_pending_app_switch,
                 )
                     .chain()
                     .in_set(SettingsUiSystems),
@@ -274,22 +289,25 @@ impl Plugin for SettingsUiPlugin {
                     .default_file_filter("Font files"),
             ));
 
-        // Bevy 0.19 implements chain() for tuples only up to 7 elements.
-        //
-        // This avoids Tuple issues with chain() on tuples over 7 by just
-        // splitting things apart so that it isn't a compiler issue just a
-        // slight hit at startup/runtime.
         app.add_systems(
             Update,
             cache_adapter_info.run_if(|c: Res<CachedAdapterInfo>| c.0.is_none()),
         );
+
+        app.add_systems(
+            EguiPrimaryContextPass,
+            configure_egui_style
+                .run_if(|q: Query<(), With<EguiStyleConfiguring>>| !q.is_empty())
+                .in_set(EguiThemeSet)
+                .in_set(SettingsUiSystems),
+        );
+        app.add_systems(
+            EguiPrimaryContextPass,
+            settings_ui.in_set(SettingsUiSystems),
+        );
         app.add_systems(
             EguiPrimaryContextPass,
             (
-                configure_egui_style
-                    .run_if(|q: Query<(), With<EguiStyleConfiguring>>| !q.is_empty())
-                    .in_set(EguiThemeSet),
-                settings_ui,
                 recognizer_window,
                 #[cfg(not(target_arch = "wasm32"))]
                 data_viewer_window,
@@ -1032,7 +1050,7 @@ fn settings_ui(
     mut ui_config: ResMut<UiConfig>,
     mut camera_proj: ParamSet<(Res<CameraMode>, ResMut<CameraProjectionToggleRequested>)>,
     mut reset_camera_events: MessageWriter<ResetCamera>,
-    #[cfg(all(dev_build, not(target_arch = "wasm32")))] mut plugin_registry: ResMut<PluginRegistry>,
+    mut app_switch: AppSwitchParams<'_>,
 ) -> Result {
     if !ui_state.enabled || !ui_state.menu_bar_visible {
         return Ok(());
@@ -1100,14 +1118,29 @@ fn settings_ui(
                 reveries::render_reveries_menu(ui, &reverie_entries, &mut reverie_params.active);
             }
 
-            apps::render_apps_menu(ui, apps::AppsRenderData { clock }, &mut commands);
+            {
+                let current_app = *app_switch.active_app;
+                let mut next_app = current_app;
+                apps::render_apps_menu(
+                    ui,
+                    apps::AppsRenderData {
+                        clock,
+                        active_app: current_app,
+                    },
+                    &mut commands,
+                    &mut next_app,
+                );
+                if next_app != current_app {
+                    app_switch.pending.0 = Some(next_app);
+                }
+            }
 
             // rhs of the menubar
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 theme_toggle::render_theme_toggle_menu(ui, &mut ui_config);
                 about::render_about_menu(ui, cached_adapter_info.0.as_deref());
                 #[cfg(all(dev_build, not(target_arch = "wasm32")))]
-                debug::render_debug_menu(ui, &mut plugin_registry);
+                debug::render_debug_menu(ui, &mut app_switch.plugin_registry);
                 experiments::render_experiments_menu(
                     ui,
                     experiments::ExperimentsRenderData {
@@ -1329,7 +1362,7 @@ fn recognizer_window(
                     painter.rect_stroke(
                         bbox_rect,
                         0.0,
-                        egui::Stroke::new(1.5, egui::Color32::RED),
+                        egui::Stroke::new(1.5_f32, egui::Color32::RED),
                         egui::StrokeKind::Outside,
                     );
                 }
@@ -1958,5 +1991,17 @@ pub fn reset_camera(
         *camera_mode = CameraMode::Perspective;
 
         bevy::log::debug!("user reset camera to default");
+    }
+}
+
+pub fn apply_pending_app_switch(
+    mut pending: ResMut<PendingAppSwitch>,
+    mut active_app: ResMut<ActiveApp>,
+) {
+    if let Some(next) = pending.0.take()
+        && *active_app != next
+    {
+        *active_app = next;
+        bevy::log::debug!("ActiveApp switched to {:?}", *active_app);
     }
 }

@@ -10,8 +10,8 @@ mod inner {
 
     use crate::shaders::ShadersPlugin;
     use crate::stats::overlay::{
-        StatsOverlayMaterial, StatsOverlayMaterialPlugin, StatsOverlayParams,
-        StatsOverlayTextureMaterial, build_fps_points_image,
+        StatsOverlayColorMode, StatsOverlayMaterial, StatsOverlayMaterialPlugin,
+        StatsOverlayParams, StatsOverlayTextureMaterial, build_fps_points_image,
     };
     use crate::test::lib::GPU_RENDER_LOCK;
     use crate::test::lib::bevy::{
@@ -103,7 +103,10 @@ mod inner {
         }
     }
 
-    fn test_params(fps_values: &[f32; 256]) -> StatsOverlayParams {
+    fn test_params(
+        fps_values: &[f32; 256],
+        color_mode: StatsOverlayColorMode,
+    ) -> StatsOverlayParams {
         let (min_fps, max_fps) = fps_range(fps_values);
         StatsOverlayParams {
             node_size: Vec2::splat(RENDER_SIZE as f32),
@@ -112,7 +115,7 @@ mod inner {
             line_width: 0.01,
             layout_flags: 0x0C, // SLUG_LAYOUT_HFILL - stretch text to fill the text region
             alpha_discard: 0.01,
-            _pad: 0.0,
+            color_mode: color_mode.as_u32(),
             text_color: Vec4::new(0.0, 0.0, 0.0, 1.0),
             background_color: Vec4::new(1.0, 1.0, 1.0, 1.0),
         }
@@ -152,6 +155,7 @@ mod inner {
         font_bytes: &[u8],
         fps_values: &[f32; 256],
         fps_text: &str,
+        color_mode: StatsOverlayColorMode,
     ) -> Option<RenderedFrame> {
         let _guard = GPU_RENDER_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let state: CaptureShared = Arc::new(Mutex::new(CaptureState::Pending));
@@ -160,7 +164,7 @@ mod inner {
         let image_handle = make_render_target(&mut app.world_mut().resource_mut::<Assets<Image>>());
 
         let (layout, run, run_desc) = build_test_data(font_bytes, fps_text);
-        let params = test_params(fps_values);
+        let params = test_params(fps_values, color_mode);
 
         let mk = |data: &[u8], bufs: &mut Assets<ShaderBuffer>| {
             let mut b = ShaderBuffer::new(data, RenderAssetUsages::RENDER_WORLD);
@@ -212,6 +216,7 @@ mod inner {
         font_bytes: &[u8],
         fps_values: &[f32; 256],
         fps_text: &str,
+        color_mode: StatsOverlayColorMode,
     ) -> Option<RenderedFrame> {
         let _guard = GPU_RENDER_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let state: CaptureShared = Arc::new(Mutex::new(CaptureState::Pending));
@@ -220,7 +225,7 @@ mod inner {
         let image_handle = make_render_target(&mut app.world_mut().resource_mut::<Assets<Image>>());
 
         let (layout, run, run_desc) = build_test_data(font_bytes, fps_text);
-        let params = test_params(fps_values);
+        let params = test_params(fps_values, color_mode);
 
         let (curves_h, ci_h, glyphs_h, runs_h, layout_h, fps_h) = {
             let mut imgs = app.world_mut().resource_mut::<Assets<Image>>();

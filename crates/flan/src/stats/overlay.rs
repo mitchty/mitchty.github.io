@@ -18,7 +18,8 @@ use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{
     AsBindGroup, AsBindGroupError, BindGroupEntries, BindGroupLayoutEntry, BindingResources,
-    BindingType, BufferBindingType, Extent3d, PreparedBindGroup, ShaderStages, ShaderType,
+    BindingType, BlendComponent, BlendFactor, BlendOperation, BlendState, BufferBindingType,
+    Extent3d, PreparedBindGroup, RenderPipelineDescriptor, ShaderStages, ShaderType,
     TextureDimension, TextureFormat, TextureSampleType, TextureViewDimension,
 };
 use bevy::render::storage::ShaderBuffer;
@@ -27,6 +28,67 @@ use bytemuck::cast_slice;
 
 use crate::ShaderVariant;
 use crate::shaders::{stats_overlay_default_shader_handle, stats_overlay_texture_shader_handle};
+
+/// Foreground strategy for stats overlay glyph/sparkline "color".
+///
+/// `Color` or `Invert`, pretty self explanatory.
+#[repr(u32)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StatsOverlayColorMode {
+    /// Color uniform values.
+    #[default]
+    Color = 0,
+    /// Color invert via `result = mix(dst, 1.0 - dst, coverage)`.
+    Invert = 1,
+}
+
+impl StatsOverlayColorMode {
+    /// GPU uniform representation, stored in `StatsOverlayParams::color_mode`.
+    pub fn as_u32(self) -> u32 {
+        self as u32
+    }
+
+    /// Decode a raw uniform value. Anything other than `1` decodes to `Color`
+    /// so that if anything else gets yeeted in here it at least renders something.
+    pub fn from_u32(raw: u32) -> Self {
+        match raw {
+            1 => Self::Invert,
+            _ => Self::Color,
+        }
+    }
+}
+
+/// Blend state is just a normal lerp between whatever is behind the thing to
+/// render.
+pub fn stats_overlay_blend_state(mode: StatsOverlayColorMode) -> BlendState {
+    match mode {
+        StatsOverlayColorMode::Color => BlendState::ALPHA_BLENDING,
+        StatsOverlayColorMode::Invert => BlendState {
+            color: BlendComponent {
+                src_factor: BlendFactor::OneMinusDst,
+                dst_factor: BlendFactor::OneMinusSrc,
+                operation: BlendOperation::Add,
+            },
+            alpha: BlendComponent {
+                src_factor: BlendFactor::One,
+                dst_factor: BlendFactor::Zero,
+                operation: BlendOperation::Add,
+            },
+        },
+    }
+}
+
+fn specialize_stats_overlay(
+    descriptor: &mut RenderPipelineDescriptor,
+    mode: StatsOverlayColorMode,
+) {
+    let Some(fragment) = descriptor.fragment.as_mut() else {
+        return;
+    };
+    for target in fragment.targets.iter_mut().flatten() {
+        target.blend = Some(stats_overlay_blend_state(mode));
+    }
+}
 
 /// CPU-side mirror of `StatsOverlayUniform`.
 ///
@@ -37,7 +99,7 @@ use crate::shaders::{stats_overlay_default_shader_handle, stats_overlay_texture_
 /// offset 16  line_width        f32
 /// offset 20  layout_flags      u32
 /// offset 24  alpha_discard     f32
-/// offset 28  _pad              f32
+/// offset 28  color_mode        u32
 /// offset 32  text_color        vec4<f32>
 /// offset 48  background_color  vec4<f32>
 /// total = 64 bytes
@@ -50,7 +112,7 @@ pub struct StatsOverlayParams {
     pub line_width: f32,
     pub layout_flags: u32,
     pub alpha_discard: f32,
-    pub _pad: f32,
+    pub color_mode: u32,
     pub text_color: Vec4,
     pub background_color: Vec4,
 }
@@ -64,7 +126,7 @@ impl Default for StatsOverlayParams {
             line_width: 0.01,
             layout_flags: 0x08, // SLUG_LAYOUT_RIGHT | VCENTER
             alpha_discard: 0.01,
-            _pad: 0.0,
+            color_mode: StatsOverlayColorMode::Color.as_u32(),
             text_color: Vec4::new(0.0, 0.0, 0.0, 1.0),
             background_color: Vec4::new(1.0, 1.0, 1.0, 0.0),
         }
@@ -84,6 +146,7 @@ impl Default for StatsOverlayParams {
 /// 6  storage   glyph_layout              RuntimeArray<SlugGlyphLayout>
 /// ```
 #[derive(Asset, AsBindGroup, TypePath, Clone)]
+#[bind_group_data(StatsOverlayColorMode)]
 pub struct StatsOverlayMaterial {
     #[uniform(0)]
     pub params: StatsOverlayParams,
@@ -101,9 +164,20 @@ pub struct StatsOverlayMaterial {
     pub glyph_layout: Handle<ShaderBuffer>,
 }
 
+// For bind_group_data and AsBindGroup setup.
+impl From<&StatsOverlayMaterial> for StatsOverlayColorMode {
+    fn from(material: &StatsOverlayMaterial) -> Self {
+        StatsOverlayColorMode::from_u32(material.params.color_mode)
+    }
+}
+
 impl UiMaterial for StatsOverlayMaterial {
     fn fragment_shader() -> ShaderRef {
         ShaderRef::Handle(stats_overlay_default_shader_handle())
+    }
+
+    fn specialize(descriptor: &mut RenderPipelineDescriptor, key: UiMaterialKey<Self>) {
+        specialize_stats_overlay(descriptor, key.bind_group_data);
     }
 }
 
@@ -136,7 +210,7 @@ pub struct StatsOverlayTextureMaterial {
 }
 
 impl AsBindGroup for StatsOverlayTextureMaterial {
-    type Data = ();
+    type Data = StatsOverlayColorMode;
     type Param = (
         bevy::ecs::system::lifetimeless::SRes<
             bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>,
@@ -147,7 +221,9 @@ impl AsBindGroup for StatsOverlayTextureMaterial {
     fn label() -> &'static str {
         "stats_overlay_texture_material"
     }
-    fn bind_group_data(&self) {}
+    fn bind_group_data(&self) -> Self::Data {
+        StatsOverlayColorMode::from_u32(self.params.color_mode)
+    }
 
     fn as_bind_group(
         &self,
@@ -271,6 +347,10 @@ impl AsBindGroup for StatsOverlayTextureMaterial {
 impl UiMaterial for StatsOverlayTextureMaterial {
     fn fragment_shader() -> ShaderRef {
         ShaderRef::Handle(stats_overlay_texture_shader_handle())
+    }
+
+    fn specialize(descriptor: &mut RenderPipelineDescriptor, key: UiMaterialKey<Self>) {
+        specialize_stats_overlay(descriptor, key.bind_group_data);
     }
 }
 

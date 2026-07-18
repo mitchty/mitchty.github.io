@@ -151,7 +151,7 @@ skip = [
   { name = "jni-sys", version = "=0.4.1" },
   # Bevy and bevy_egui
   { name = "accesskit_consumer", version = "=0.35.0" },
-  { name = "accesskit_consumer", version = "=0.37.0" },
+  #  { name = "accesskit_consumer", version = "=0.37.0" },
   { name = "calloop-wayland-source", version = "=0.3.0" },
   { name = "calloop-wayland-source", version = "=0.4.1" },
   { name = "calloop", version = "=0.13.0" },
@@ -171,6 +171,15 @@ skip = [
   { name = "thiserror", version = "=2.0.18" },
   { name = "thiserror-impl", version = "=1.0.69" },
   { name = "thiserror-impl", version = "=2.0.18" },
+  # avian3d and earcutr
+  { name = "itertools", version = "=0.11.0" },
+  { name = "itertools", version = "=0.15.0" },
+  # Note, these are from everything else there is like 4 different transitive deps now for this
+  { name = "itertools", version = "=0.13.0" },
+  { name = "itertools", version = "=0.14.0" },
+  # avian3d and bevy
+  { name = "heapless", version = "=0.8.0" },
+  { name = "heapless", version = "=0.9.3" },
   # From bevy-pretty-text
   { name = "winnow", version = "=0.7.15" },
   # Kinda from wesl in flan, sometimes polars contributes too
@@ -179,8 +188,6 @@ skip = [
   { name = "hashbrown", version = "=0.13.2" },
   { name = "hashbrown", version = "=0.15.5" },
   { name = "hashbrown", version = "=0.16.1" },
-  { name = "itertools", version = "=0.13.0" },
-  { name = "itertools", version = "=0.14.0" },
   { name = "phf_shared", version = "=0.11.3" },
   { name = "phf_shared", version = "=0.12.1" },
   { name = "redox_syscall", version = "=0.4.1" },
@@ -235,8 +242,6 @@ skip = [
   # chrono-tz &/or unicode_names2
   { name = "phf", version = "=0.11.3" },
   { name = "phf", version = "=0.12.1" },
-  { name = "rand", version = "=0.8.6" },
-  { name = "rand", version = "=0.9.4" },
   { name = "rand_chacha", version = "=0.3.1" },
   { name = "rand_chacha", version = "=0.9.0" },
   { name = "rand_core", version = "=0.6.4" },
@@ -256,13 +261,17 @@ skip = [
   # rand and... wesl?bevy
   { name = "cpufeatures", version = "=0.2.17" },
   { name = "cpufeatures", version = "=0.3.0" },
+  # Bevy and burn and polars
+  { name = "rand", version = "=0.8.7" },
+  { name = "rand", version = "=0.9.5" },
+  { name = "rand", version = "=0.10.2" },
   # Bevy and burn
   { name = "async-channel", version = "=1.9.0" },
   { name = "async-channel", version = "=2.5.0" },
   { name = "event-listener", version = "=2.5.3" },
   { name = "event-listener", version = "=5.4.1" },
-  { name = "spin", version = "=0.9.8" },
-  { name = "spin", version = "=0.10.0" },
+  { name = "ordered-float", version = "=4.6.0" },
+  { name = "ordered-float", version = "=5.3.0" },
   # Bevy and transform gizmo
   { name = "glam", version = "=0.30.10" },
   { name = "glam", version = "=0.32.1" },
@@ -299,6 +308,9 @@ skip = [
   { name = "vello_common", version = "=0.0.8" },
   { name = "vello_cpu", version = "=0.0.6" },
   { name = "vello_cpu", version = "=0.0.8" },
+  # bevy and burn and typst
+  { name = "spin", version = "=0.9.9" },
+  { name = "spin", version = "=0.10.1" },
   # burn and typst
   { name = "serde_spanned", version = "=0.6.9" },
   { name = "serde_spanned", version = "=1.1.1" },
@@ -312,7 +324,7 @@ skip = [
   { name = "toml_datetime", version = "=0.6.11" },
   { name = "toml_datetime", version = "=1.1.1+spec-1.1.0" },
   { name = "toml_edit", version = "=0.22.27" },
-  { name = "toml_edit", version = "=0.25.12+spec-1.1.0" },
+  #  { name = "toml_edit", version = "=0.25.12+spec-1.1.0" },
 ]
 skip-tree = []
 

@@ -64,8 +64,8 @@ pub use slug_text_material::{
     SlugAtlasImages, SlugText3dTextureMaterial, SlugTextMaterialPlugin, SlugTextTextureMaterial,
 };
 pub use stats::overlay::{
-    StatsOverlayHandle, StatsOverlayMaterial, StatsOverlayMaterialPlugin, StatsOverlayParams,
-    StatsOverlayTextureMaterial, build_fps_points_image,
+    StatsOverlayColorMode, StatsOverlayHandle, StatsOverlayMaterial, StatsOverlayMaterialPlugin,
+    StatsOverlayParams, StatsOverlayTextureMaterial, build_fps_points_image,
 };
 pub use text3d::{
     ShowText3d, SlugText3dApply, SlugText3dFontValidation, SlugText3dPlugin, SlugText3dState,

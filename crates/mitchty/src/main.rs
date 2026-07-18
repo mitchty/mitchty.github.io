@@ -24,6 +24,7 @@ pub static ALLOC_STATS: &stats_alloc::StatsAlloc<std::alloc::System> =
 static JEMALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod ai;
+mod apps;
 mod assets;
 mod mesh_effect;
 mod plugins;
@@ -32,6 +33,8 @@ mod ui;
 
 pub use mitchty::CameraMode;
 
+use apps::jenga::JengaPlugin;
+use apps::pachinko::PachinkoPlugin;
 use plugins::camera::CameraPlugin;
 use plugins::fonts::FontsPlugin;
 use plugins::fps::FpsPlugin;
@@ -79,8 +82,8 @@ fn main() {
     #[cfg(target_arch = "wasm32")]
     let ui_config = plugins::cli::parse_wasm_args();
 
-    // wasm always builds with CARGO_PROFILE=release, so without_plugins
-    // declared here only so the let _ = below compiles.
+    // wasm always builds with release-small cause "web/network transfer", so
+    // without_plugins declared here only so the let _ = below compiles.
     #[cfg(target_arch = "wasm32")]
     let without_plugins: Vec<String> = Vec::new();
 
@@ -147,6 +150,9 @@ fn main() {
         .add_plugins(SettingsUiPlugin)
         .add_plugins(ReveriesPlugin)
         .add_plugins(TerminalPlugin);
+
+    app.add_plugins(JengaPlugin);
+    app.add_plugins(PachinkoPlugin);
 
     app.add_plugins(profiling::ProfilingPlugin);
 

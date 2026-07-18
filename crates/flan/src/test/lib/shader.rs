@@ -107,17 +107,24 @@ pub mod slug_text {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod stats_overlay {
+    use crate::stats::overlay::StatsOverlayColorMode;
     use crate::test::lib::bevy::RenderedFrame;
     use crate::test::lib::stats_overlay::{render_stats_overlay, render_stats_overlay_texture};
 
     pub const CANONICAL: &[&str] = &["stats_overlay", "canonical"];
+    pub const INVERT_CANONICAL: &[&str] = &["stats_overlay", "invert_canonical"];
 
     pub fn render_canonical(
         font_bytes: &[u8],
         fps_values: &[f32; 256],
         fps_text: &str,
     ) -> Option<RenderedFrame> {
-        render_stats_overlay(font_bytes, fps_values, fps_text)
+        render_stats_overlay(
+            font_bytes,
+            fps_values,
+            fps_text,
+            StatsOverlayColorMode::Color,
+        )
     }
 
     pub fn render_texture(
@@ -125,6 +132,37 @@ pub mod stats_overlay {
         fps_values: &[f32; 256],
         fps_text: &str,
     ) -> Option<RenderedFrame> {
-        render_stats_overlay_texture(font_bytes, fps_values, fps_text)
+        render_stats_overlay_texture(
+            font_bytes,
+            fps_values,
+            fps_text,
+            StatsOverlayColorMode::Color,
+        )
+    }
+
+    pub fn render_invert_canonical(
+        font_bytes: &[u8],
+        fps_values: &[f32; 256],
+        fps_text: &str,
+    ) -> Option<RenderedFrame> {
+        render_stats_overlay(
+            font_bytes,
+            fps_values,
+            fps_text,
+            StatsOverlayColorMode::Invert,
+        )
+    }
+
+    pub fn render_invert_texture(
+        font_bytes: &[u8],
+        fps_values: &[f32; 256],
+        fps_text: &str,
+    ) -> Option<RenderedFrame> {
+        render_stats_overlay_texture(
+            font_bytes,
+            fps_values,
+            fps_text,
+            StatsOverlayColorMode::Invert,
+        )
     }
 }

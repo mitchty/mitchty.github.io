@@ -61,6 +61,11 @@ transform-gizmo-bevy = { git = "https://github.com/mitchty/transform-gizmo", def
   "mouse_interaction",
   "gizmo_picking_backend",
 ] }
+avian3d = { version = "0.7", default-features = false, features = [
+  "3d",
+  "f32",
+  "parry-f32",
+] }
 # bevy_pretty_text = "~0.4" # TODO: waiting for bevy 0.19 support
 jiff = { version = "~0.2", features = ["tzdb-bundle-platform"] }
 humantime = "~2"
@@ -86,7 +91,7 @@ tikv-jemalloc-ctl = { version = "~0.7", features = ["stats"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 sys = { path = "../sys" }
-polars = { version = "~0.53", default-features = false, features = ["lazy"] }
+polars = { workspace = true, features = ["lazy"] }
 # Needs an egui update too, so.. whatever
 egui-file-dialog = { version = "~0.13" }
 # Tokio runtime needed so reqwest's reactor is available when running inside
@@ -128,7 +133,7 @@ jiff = { version = "~0.2", features = ["tzdb-bundle-platform", "js"] }
 getrandom.workspace = true
 # Note: polars on wasm is.... not fun, feature gates need to constrain it so it
 # runs wicked slower than native
-polars = { version = "~0.53", default-features = false }
+polars.workspace = true
 web-sys = { version = "~0.3", features = [
   "Navigator",
   "Window",

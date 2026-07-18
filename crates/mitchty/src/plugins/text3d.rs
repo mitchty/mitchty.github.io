@@ -10,6 +10,7 @@
 //! - Typst demo entity spawn (feature = "typst" on flan, this is a complete work in progress)
 
 use bevy::prelude::*;
+use mitchty::ActiveApp;
 
 use crate::plugins::fonts::RegisteredFonts;
 use crate::plugins::reveries::{ActiveReverie, ReverieDisplayName};
@@ -148,6 +149,20 @@ pub fn sync_text3d_to_active_reverie(
     }
 }
 
+/// Hides/shows the 3D text whenever `ActiveApp` changes.
+pub fn sync_text3d_visibility_to_active_app(
+    active_app: Res<ActiveApp>,
+    mut state: ResMut<SlugText3dState>,
+) {
+    if !active_app.is_changed() {
+        return;
+    }
+    let should_show = *active_app == ActiveApp::Default;
+    if state.visible != should_show {
+        state.visible = should_show;
+    }
+}
+
 /// Debug "feature" specific log asset/entity counts once per second.
 #[cfg(feature = "debug")]
 fn debug_asset_counts(
@@ -184,6 +199,9 @@ impl Plugin for Text3dPlugin {
         app.add_plugins(flan::typst_text::TypstTextPlugin);
 
         app.init_resource::<Text3dFontHandle>();
+        // PostUpdate so it sees the ActiveApp value finalised by
+        // apply_pending_app_switch before the frame renders.
+        app.add_systems(PostUpdate, sync_text3d_visibility_to_active_app);
         app.add_systems(Startup, setup_3d_text)
             .add_systems(
                 Update,

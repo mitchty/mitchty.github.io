@@ -1,3 +1,4 @@
+use bevy::camera::primitives::MeshAabb;
 use bevy::prelude::*;
 
 use crate::plugins::fonts::RegisteredFonts;
@@ -305,10 +306,16 @@ struct ReverieViewState {
 }
 
 /// Compute a `Transform` that places a reverie view directly in front of the
-/// current camera, facing it, sized to fill around 85% of the viewport height.
+/// current camera, facing it, scaled so it fills at most 85% of whichever
+/// viewport dimension is the binding constraint for the content's own aspect
+/// ratio. TODO: its buggy and i'm sick of debugging it for now.
 ///
-/// TODO: width too, I was lazy.
-fn compute_reverie_transform(cam_gt: &GlobalTransform, proj: &Projection) -> Transform {
+/// `content_size` is the (width, height) of the mesh in model space via aabb.
+fn compute_reverie_transform(
+    cam_gt: &GlobalTransform,
+    proj: &Projection,
+    content_size: Option<(f32, f32)>,
+) -> Transform {
     let cam_mat = cam_gt.to_matrix();
     let cam_pos = cam_gt.translation();
     let cam_right = cam_mat.x_axis.truncate().normalize();
@@ -319,9 +326,20 @@ fn compute_reverie_transform(cam_gt: &GlobalTransform, proj: &Projection) -> Tra
 
     let depth = 3.0_f32;
     let clip = proj.get_clip_from_view();
-    let cot_fov = clip.y_axis.y.max(0.001);
-    let vis_h = 2.0 * depth / cot_fov;
-    let scale = vis_h * 0.85;
+    let cot_fov_y = clip.y_axis.y.max(0.001);
+    let cot_fov_x = clip.x_axis.x.max(0.001);
+    let vis_h = 2.0 * depth / cot_fov_y;
+    let vis_w = 2.0 * depth / cot_fov_x;
+
+    // Try scaling to 85% of whatever is wider... its not working and its hot out
+    // I'll fix it in post.
+    let scale = if let Some((cw, ch)) = content_size.filter(|&(cw, ch)| cw > 0.0 && ch > 0.0) {
+        let scale_for_h = (vis_h * 0.85) / ch;
+        let scale_for_w = (vis_w * 0.85) / cw;
+        scale_for_h.min(scale_for_w)
+    } else {
+        vis_h.min(vis_w) * 0.85
+    };
 
     let text_pos = cam_pos + cam_forward * depth;
 
@@ -491,6 +509,8 @@ fn reveal_ready_reverie_view(
             Without<flan::Text3dDirty>,
         ),
     >,
+    mesh_q: Query<&Mesh3d, With<TypstReverieView>>,
+    meshes: Res<Assets<Mesh>>,
     camera_q: Query<(&GlobalTransform, &Projection), With<Camera3d>>,
     mut commands: Commands,
 ) {
@@ -508,7 +528,24 @@ fn reveal_ready_reverie_view(
         return;
     };
 
-    let transform = compute_reverie_transform(cam_gt, proj);
+    // Attempt to read the content reveries AABB to fit it correctly against
+    // both viewport axes.
+    let content_size = mesh_q.get(pending).ok().and_then(|mesh3d| {
+        meshes.get(&mesh3d.0).and_then(|mesh| {
+            mesh.compute_aabb().map(|aabb| {
+                let full = aabb.half_extents * 2.0;
+                (full.x, full.y)
+            })
+        })
+    });
+
+    bevy::log::trace!(
+        "reveal_ready_reverie_view: content_size for {:?} = {:?}",
+        pending,
+        content_size
+    );
+
+    let transform = compute_reverie_transform(cam_gt, proj, content_size);
 
     if let Some(prev) = state.visible
         && prev != pending

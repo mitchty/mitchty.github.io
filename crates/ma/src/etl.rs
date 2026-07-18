@@ -1884,7 +1884,7 @@ pub fn write_merged_etlcdb(
         (Some(test_imgs), Some(test_labels)) => {
             let train_n = ((n as f64 * train_fraction).round() as usize).clamp(1, n - 1);
 
-            write_pb.set_message(format!("writing {}", &paths.imgs));
+            write_pb.set_message(format!("writing {}", paths.imgs));
             write_pb.set_length((images.len() + label_bytes.len()) as u64);
             write_npz(
                 &paths.imgs,
@@ -1893,7 +1893,7 @@ pub fn write_merged_etlcdb(
                 "|u1",
             )?;
             write_pb.set_position((train_n * ppi) as u64);
-            write_pb.set_message(format!("writing {}", &paths.labels));
+            write_pb.set_message(format!("writing {}", paths.labels));
             write_npz(
                 &paths.labels,
                 &label_bytes[..train_n * label_stride],
@@ -1924,11 +1924,11 @@ pub fn write_merged_etlcdb(
             tracing::info!(train = train_n, test = n - train_n, "merged split written");
         }
         _ => {
-            write_pb.set_message(format!("writing {}", &paths.imgs));
+            write_pb.set_message(format!("writing {}", paths.imgs));
             write_pb.set_length(images.len() as u64);
             write_npz(&paths.imgs, &images, &[n, out_h, out_w], "|u1")?;
             write_pb.set_position(images.len() as u64);
-            write_pb.set_message(format!("writing {}", &paths.labels));
+            write_pb.set_message(format!("writing {}", paths.labels));
             write_npz(&paths.labels, &label_bytes, &[n], label_dtype)?;
             write_pb.finish_with_message(format!(
                 "wrote {} images ({})",

@@ -9,6 +9,7 @@
 
 use bevy::prelude::*;
 use bevy::world_serialization::{WorldAssetRoot, WorldInstanceReady, WorldInstanceSpawner};
+use mitchty::ActiveApp;
 use transform_gizmo_bevy::{GizmoDragStarted, GizmoDragging, prelude::*};
 
 use crate::assets::asset_path;
@@ -336,6 +337,26 @@ pub fn on_scene_ready(
     }
 }
 
+/// Hides/shows the scene and 3D text whenever `ActiveApp` changes.
+pub fn sync_scene_visibility_to_active_app(
+    active_app: Res<ActiveApp>,
+    show_query: Query<Entity, With<ShowSceneModel>>,
+    mut commands: Commands,
+) {
+    if !active_app.is_changed() {
+        return;
+    }
+    let is_default = *active_app == ActiveApp::Default;
+    let currently_shown = !show_query.is_empty();
+    if is_default && !currently_shown {
+        commands.spawn(ShowSceneModel);
+    } else if !is_default && currently_shown {
+        for entity in show_query.iter() {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
 /// Syncs background clear color to the `ColorState` resource.
 ///
 /// When `color_state.color` is `None` the color follows the active dark/light
@@ -424,6 +445,9 @@ impl Plugin for ScenePlugin {
                 (sync_scene_config_from_gizmo, preserve_origin_on_scale).chain(),
             )
             .add_systems(Update, sync_color_state_to_clear_color)
-            .add_systems(Update, apply_device_state);
+            .add_systems(Update, apply_device_state)
+            // PostUpdate so it sees the ActiveApp value finalised by
+            // apply_pending_app_switch before the frame renders.
+            .add_systems(PostUpdate, sync_scene_visibility_to_active_app);
     }
 }
