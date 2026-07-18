@@ -62,12 +62,12 @@ impl<B: Backend> ConvEncoder<B> {
 
         let conv1 = Conv2dConfig::new([1, c], [3, 3])
             .with_stride([2, 2])
-            .with_padding(PaddingConfig2d::Explicit(1, 1)) // Keeps alignment
+            .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1)) // Keeps alignment
             .init(device);
 
         let conv2 = Conv2dConfig::new([c, c * 2], [3, 3])
             .with_stride([2, 2])
-            .with_padding(PaddingConfig2d::Explicit(1, 1))
+            .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init(device);
 
         let flattened_dim = (c * 2) * 7 * 7;

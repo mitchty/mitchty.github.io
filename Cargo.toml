@@ -19,20 +19,29 @@ bevy = { version = "~0.19", default-features = false }
 rand = { version = "~0.10", default-features = false, features = [
   "thread_rng",
 ] }
-# Needed for now for use of burn with wgpu with tui feature in `ma`
-naga = { version = "26", features = ["termcolor"] }
+# Needed for now for use of burn with wgpu with tui feature in `ma` gated to
+# burn's version mostly. Here cause mitchty uses the ndarray version and ma uses
+# burn for training.
+naga = { version = "~29", features = ["termcolor"] }
 # FUTURE MITCH: this is a dependency OF rand, and without the wasm_js feature
 # crap don't work. Stop uncommenting things dammit trust past mitch.
 getrandom = { version = "~0.4.3", features = ["wasm_js"] }
 # For now ndarray until I can figure out a way to get a shared wgpu instance and
 # version between burn and bevy. They are like ships in the night though.
-burn = { version = "~0.20", default-features = false, features = [
+burn = { version = "~0.21", default-features = false, features = [
   "std",
   "ndarray",
 ] }
 # polars is setup at workspace level mostly to pin versions. Features are chosen
 # per crate with features that make sense for whatever platform/cfg() attribute
 # is pertinent.
+#
+# Pinned to ~0.53 for now. 0.54.0 introduced a new `polars-async` crate that
+# `polars-core` depends on unconditionally. That breaks wasm targets entirely so
+# I can't use it. Future mitch test with 0.55 and see if there is a feature gate
+# that can toggle that stuff off.
+#
+# Opened https://github.com/pola-rs/polars/issues/28423 to track it.
 polars = { version = "~0.53", default-features = false }
 bytemuck = { version = "1", features = ["derive"] }
 clap = { version = "~4.6", features = ["derive"] }
@@ -44,10 +53,10 @@ rustc_version = "~0.4"
 zip = { version = "~8.6", default-features = false, features = ["deflate"] }
 tracing = { version = "~0.1", features = ["release_max_level_debug"] }
 tracing-subscriber = { version = "~0.3", features = ["env-filter"] }
-unicode_names2 = "~2.0"
+unicode_names2 = "~3.1"
 dark-light = "~2.0"
 indicatif = { version = "~0.18", features = ["rayon"] }
-rayon = "~1.10"
+rayon = "~1.12"
 
 [workspace.metadata.crane]
 name = "mitchty"

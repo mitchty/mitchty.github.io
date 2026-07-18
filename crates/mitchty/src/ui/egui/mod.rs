@@ -183,6 +183,28 @@ pub struct ShowLosant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SystemSet)]
 pub struct SettingsUiSystems;
 
+/// egui 0.35's panel changes require explicit root.
+#[derive(Default)]
+pub struct PanelRootUi(pub Option<egui::Ui>);
+
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct PanelUiParams<'w, 's> {
+    pub contexts: EguiContexts<'w, 's>,
+    pub root_ui: NonSendMut<'w, PanelRootUi>,
+}
+
+fn build_panel_root_ui(mut contexts: EguiContexts, mut root_ui: NonSendMut<PanelRootUi>) -> Result {
+    let ctx = contexts.ctx_mut()?;
+    root_ui.0 = Some(egui::Ui::new(
+        ctx.clone(),
+        "app_root_panel_ui".into(),
+        egui::UiBuilder::new()
+            .layer_id(egui::LayerId::background())
+            .max_rect(ctx.viewport_rect()),
+    ));
+    Ok(())
+}
+
 /// Plugin for egui UI
 pub struct SettingsUiPlugin;
 
@@ -248,6 +270,7 @@ impl Plugin for SettingsUiPlugin {
             .add_message::<crate::ui::losant::DeviceStateEvent>()
             .init_resource::<CameraProjectionToggleRequested>()
             .init_resource::<PendingAppSwitch>()
+            .init_non_send::<PanelRootUi>()
             .insert_non_send(engine)
             .add_systems(Startup, (setup_egui, load_egui_noto_font))
             .add_systems(
@@ -303,7 +326,16 @@ impl Plugin for SettingsUiPlugin {
         );
         app.add_systems(
             EguiPrimaryContextPass,
-            settings_ui.in_set(SettingsUiSystems),
+            build_panel_root_ui
+                .in_set(SettingsUiSystems)
+                .before(settings_ui)
+                .before(scene_config_window),
+        );
+        app.add_systems(
+            EguiPrimaryContextPass,
+            settings_ui
+                .in_set(SettingsUiSystems)
+                .before(scene_config_window),
         );
         app.add_systems(
             EguiPrimaryContextPass,
@@ -593,7 +625,7 @@ fn draw_scene_url_popup(ctx: &egui::Context, state: &mut SceneUrlState) {
 /// input and Reset button as a precision fallback alongside the gizmo.
 #[allow(clippy::too_many_arguments)]
 fn scene_config_window(
-    mut contexts: EguiContexts,
+    mut panel_ui: PanelUiParams,
     scene_config_query: Query<Entity, With<ShowSceneConfig>>,
     show_scene_model_query: Query<Entity, With<ShowSceneModel>>,
     mut scene_transform: ResMut<SceneTransformConfig>,
@@ -615,7 +647,7 @@ fn scene_config_window(
     // Drive the file dialog update and pick result every frame, native only obviously.
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let ctx = contexts.ctx_mut()?;
+        let ctx = panel_ui.contexts.ctx_mut()?;
         scene_file_dialog.0.update(ctx);
         if let Some(path) = scene_file_dialog.0.take_picked() {
             scene_config.custom_scene = Some(path.to_string_lossy().into_owned());
@@ -643,16 +675,21 @@ fn scene_config_window(
     }
 
     // URL popup + 2-phase commit logic for the scene load setup.
-    draw_scene_url_popup(contexts.ctx_mut()?, &mut scene_url_state);
+    draw_scene_url_popup(panel_ui.contexts.ctx_mut()?, &mut scene_url_state);
     if let Some(url) = scene_url_state.confirmed_url.take() {
         scene_config.custom_scene = Some(url);
     }
 
-    #[allow(deprecated)]
+    let root_ui = panel_ui
+        .root_ui
+        .0
+        .as_mut()
+        .expect("build_panel_root_ui must be run before scene_config_window");
+
     egui::Panel::left("scene_config_panel")
         .resizable(true)
         .default_size(240.0)
-        .show(contexts.ctx_mut()?, |ui| {
+        .show(root_ui, |ui| {
             ui.label(egui::RichText::new("GLTF Config").strong());
             ui.horizontal(|ui| {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1028,7 +1065,7 @@ fn scene_config_window(
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
 fn settings_ui(
-    mut contexts: EguiContexts,
+    mut panel_ui: PanelUiParams,
     mut color_state: ResMut<ColorState>,
     mut effects_enabled: Option<ResMut<EffectsEnabled>>,
     ui_state: Res<UiState>,
@@ -1099,8 +1136,13 @@ fn settings_ui(
         theme: ui_config.theme,
     };
 
-    #[allow(deprecated)]
-    egui::Panel::top("menu_bar").show(contexts.ctx_mut()?, |ui| {
+    let root_ui = panel_ui
+        .root_ui
+        .0
+        .as_mut()
+        .expect("build_panel_root_ui must be run before settings_ui");
+
+    egui::Panel::top("menu_bar").show(root_ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
             // lhs of the menubar
             #[cfg(not(target_arch = "wasm32"))]

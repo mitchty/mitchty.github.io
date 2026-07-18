@@ -46,7 +46,7 @@ ttf-parser = { version = "~0.25", features = ["variable-fonts"] }
 bytemuck = { workspace = true }
 # Abusing earcutr to cap off the 3d SlugText walls. Not well cause I keep
 # finding seams zooming in ungghhhh so lame.
-earcutr = "~0.4"
+earcutr = "~0.5"
 
 # Lazy feature pulls in tokio which pulls in mio which has a failure when
 # building in wasm32. So web version of this is slower. OH WELL.

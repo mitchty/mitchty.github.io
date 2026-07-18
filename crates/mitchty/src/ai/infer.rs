@@ -459,7 +459,7 @@ impl InferenceEngine {
         }
 
         let sz = canvas.size;
-        let device: <NdArrayBackend as Backend>::Device = Default::default();
+        let device: Device<NdArrayBackend> = Default::default();
 
         // Normalize with the stats recorded in config.json at training time.
         let mean = self.norm_mean;
