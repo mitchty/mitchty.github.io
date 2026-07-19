@@ -82,7 +82,7 @@ jobs:
       # test suite. The linux side will run the docs, deny, clippy, etc stuff
       # for us.
       - name: Run nextest
-        run: nix build .#nextest -L
+        run: nix build .#checks.aarch64-darwin.mitchty-nextest -L
 
       - name: Space after check
         run: df -h /System/Volumes/Data
